@@ -1,0 +1,400 @@
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 029 Hydralisk (zerg\hydra.grp)
+.headerstart
+IsId            18
+Type            26
+Init            HydraliskInit
+Death           HydraliskDeath
+GndAttkInit     HydraliskGndAttkInit
+AirAttkInit     HydraliskGndAttkInit
+Unused1         [NONE]
+GndAttkRpt      HydraliskGndAttkRpt
+AirAttkRpt      HydraliskGndAttkRpt
+CastSpell       [NONE]
+GndAttkToIdle   HydraliskGndAttkToIdle
+AirAttkToIdle   HydraliskGndAttkToIdle
+Unused2         [NONE]
+Walking         HydraliskWalking
+WalkingToIdle   HydraliskWalkingToIdle
+SpecialState1   [NONE]
+SpecialState2   HydraliskSpecialState2
+AlmostBuilt     [NONE]
+Built           [NONE]
+Landing         [NONE]
+LiftOff         [NONE]
+IsWorking       [NONE]
+WorkingToIdle   [NONE]
+WarpIn          [NONE]
+Unused3         [NONE]
+StarEditInit    [NONE]
+Disable         [NONE]
+Burrow          HydraliskBurrow
+UnBurrow        HydraliskUnBurrow
+Enable          [NONE]
+.headerend
+# ----------------------------------------------------------------------------- #
+
+HydraliskInit:
+    imgul           30 0 0  # HydraliskShad (zerg\zhyShad.grp)
+HydraliskWalkingToIdle:
+    playfram        0x17e
+    if unit_id == 53 goto HydraliskLocal02
+    playfram        0x55    # frame set 5
+HydraliskLocal02:
+    waitrand        63 75
+    randcondjmp     25 HydraliskLocal00
+    randcondjmp     128 HydraliskLocal01
+    goto            HydraliskLocal02
+
+HydraliskLocal00:
+    if unit_id == 53 goto HunuLocal00
+    playfram        0x00    # frame set 0
+    wait            1
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x22    # frame set 2
+    wait            1
+    playfram        0x33    # frame set 3
+    wait            25
+    playfram        0x22    # frame set 2
+    wait            1
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x00    # frame set 0
+    wait            1
+    goto            HydraliskWalkingToIdle
+
+HunuLocal00:
+    playfram        0x129    # frame set 0
+    wait            1
+    playfram        0x13a    # frame set 1
+    wait            1
+    playfram        0x14b    # frame set 2
+    wait            1
+    playfram        0x15c    # frame set 3
+    wait            25
+    playfram        0x14b    # frame set 2
+    wait            1
+    playfram        0x13a    # frame set 1
+    wait            1
+    playfram        0x129    # frame set 0
+    wait            1
+    goto            HydraliskWalkingToIdle
+
+HydraliskLocal01:
+    randcondjmp     128 HydraliskLocal03
+    if unit_id == 53 goto HunuLocal01
+    playfram        0x66    # frame set 6
+    wait            1
+    turnccwise      1
+    playfram        0x77    # frame set 7
+    wait            1
+    turnccwise      1
+    playfram        0x88    # frame set 8
+    wait            1
+    turnccwise      1
+    playfram        0x99    # frame set 9
+    wait            1
+    turnccwise      1
+    playfram        0xaa    # frame set 10
+    wait            1
+    turnccwise      1
+    playfram        0xbb    # frame set 11
+    wait            1
+    turnccwise      1
+    goto            HydraliskWalkingToIdle
+
+HunuLocal01:
+    playfram        0x18f    # frame set 6
+    wait            1
+    turnccwise      1
+    playfram        0x1a0    # frame set 7
+    wait            1
+    turnccwise      1
+    playfram        0x1b1    # frame set 8
+    wait            1
+    turnccwise      1
+    playfram        0x1c2    # frame set 9
+    wait            1
+    turnccwise      1
+    playfram        0x1d3    # frame set 10
+    wait            1
+    turnccwise      1
+    playfram        0x1e4    # frame set 11
+    wait            1
+    turnccwise      1
+    goto            HydraliskWalkingToIdle
+
+HydraliskLocal03:
+    if unit_id == 53 goto HunuLocal03
+    playfram        0x66    # frame set 6
+    wait            1
+    turncwise       1
+    playfram        0x77    # frame set 7
+    wait            1
+    turncwise       1
+    playfram        0x88    # frame set 8
+    wait            1
+    turncwise       1
+    playfram        0x99    # frame set 9
+    wait            1
+    turncwise       1
+    playfram        0xaa    # frame set 10
+    wait            1
+    turncwise       1
+    playfram        0xbb    # frame set 11
+    wait            1
+    turncwise       1
+    goto            HydraliskWalkingToIdle
+
+HunuLocal03:
+    playfram        0x18f    # frame set 6
+    wait            1
+    turncwise      1
+    playfram        0x1a0    # frame set 7
+    wait            1
+    turncwise      1
+    playfram        0x1b1    # frame set 8
+    wait            1
+    turncwise      1
+    playfram        0x1c2    # frame set 9
+    wait            1
+    turncwise      1
+    playfram        0x1d3    # frame set 10
+    wait            1
+    turncwise      1
+    playfram        0x1e4    # frame set 11
+    wait            1
+    turncwise      1
+    goto            HydraliskWalkingToIdle
+
+HydraliskDeath:
+    playsnd         867 # Zerg\Hydra\ZHyDth00.WAV
+    setfldirect     0
+    if unit_id == 53 goto HunuDeath
+    playfram        0xcc    # frame set 12
+    wait            2
+    playfram        0xcd    # frame set 12
+    wait            2
+    playfram        0xce    # frame set 12
+    wait            2
+    playfram        0xcf    # frame set 12
+    wait            2
+    playfram        0xd0    # frame set 12
+    wait            2
+    playfram        0xd1    # frame set 12
+    wait            2
+    playfram        0xd2    # frame set 12
+    wait            2
+    playfram        0xd3    # frame set 12
+    wait            2
+    lowsprul        147 0 0 # HydraliskDeath (zerg\zhyDeath.grp)
+    wait            1
+    end
+
+HunuDeath:
+    playfram        0x1f5    # frame set 12
+    wait            2
+    playfram        0x1f6    # frame set 12
+    wait            2
+    playfram        0x1f7    # frame set 12
+    wait            2
+    playfram        0x1f8    # frame set 12
+    wait            2
+    playfram        0x1f9    # frame set 12
+    wait            2
+    playfram        0x1fa    # frame set 12
+    wait            2
+    playfram        0x1fb    # frame set 12
+    wait            2
+    playfram        0x1fc    # frame set 12
+    wait            2
+    lowsprul        147 0 0 # HydraliskDeath (zerg\zhyDeath.grp)
+    wait            1
+    end
+
+HydraliskGndAttkInit:
+    if unit_id == 53 goto HunuGndInit
+    playfram        0x00    # frame set 0
+    wait            1
+    nobrkcodestart
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x22    # frame set 2
+    wait            1
+    playfram        0x33    # frame set 3
+    wait            1
+HydraliskGndAttkRpt:
+    if unit_id == 53 goto HunuGndRpt
+    wait            1
+    playfram        0x44    # frame set 4
+    playsnd         64  # Bullet\SpoogHit.wav
+    sproluselo      332 0   # NeedleSpines (thingy\spooge.grp)
+    attack
+    wait            1
+    playfram        0x33    # frame set 3
+    wait            1
+    nobrkcodeend
+    gotorepeatattk
+    ignorerest
+HydraliskGndAttkToIdle:
+    if unit_id == 53 goto HunuGndIdle
+    playfram        0x22    # frame set 2
+    wait            1
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x00    # frame set 0
+    wait            1
+    goto            HydraliskWalkingToIdle
+
+HunuGndInit:
+    playfram        0x129    # frame set 0
+    wait            1
+    nobrkcodestart
+    playfram        0x13a    # frame set 1
+    wait            1
+    playfram        0x14b    # frame set 2
+    wait            1
+    playfram        0x15c    # frame set 3
+    wait            1
+HunuGndRpt:
+    wait            1
+    playfram        0x16d    # frame set 4
+    playsnd         64  # Bullet\SpoogHit.wav
+    sproluselo      332 0   # NeedleSpines (thingy\spooge.grp)
+    attack
+    wait            1
+    playfram        0x15c    # frame set 3
+    wait            1
+    nobrkcodeend
+    gotorepeatattk
+    ignorerest
+HunuGndIdle:
+    playfram        0x14b    # frame set 2
+    wait            1
+    playfram        0x13a    # frame set 1
+    wait            1
+    playfram        0x129    # frame set 0
+    wait            1
+    goto            HydraliskWalkingToIdle
+
+HydraliskWalking:
+    if unit_id == 53 goto HunuWalking
+    move            2
+    wait            1
+    playfram        0x66    # frame set 6
+    move            2
+    wait            1
+    playfram        0x77    # frame set 7
+    move            2
+    wait            1
+    playfram        0x88    # frame set 8
+    move            6
+    wait            1
+    playfram        0x99    # frame set 9
+    move            6
+    wait            1
+    playfram        0xaa    # frame set 10
+    move            6
+    wait            1
+    playfram        0xbb    # frame set 11
+    move            2
+    wait            1
+    playfram        0x55    # frame set 5
+    goto            HydraliskWalking
+
+HunuWalking:
+    move            2
+    wait            1
+    playfram        0x18f    # frame set 6
+    move            2
+    wait            1
+    playfram        0x1a0    # frame set 7
+    move            2
+    wait            1
+    playfram        0x1b1    # frame set 8
+    move            6
+    wait            1
+    playfram        0x1c2    # frame set 9
+    move            6
+    wait            1
+    playfram        0x1d3    # frame set 10
+    move            6
+    wait            1
+    playfram        0x1e4    # frame set 11
+    move            2
+    wait            1
+    playfram        0x17e    # frame set 5
+    goto            HydraliskWalking
+
+HydraliskSpecialState2:
+    playfram        0x241   # frame set 16
+    if unit_id == 53 goto long00
+    playfram        0x118   # frame set 16
+    goto            long00
+
+HydraliskBurrow:
+    if unit_id == 53 goto HunuBurrow
+    imgol           423 0 0 # Unknown423 (thingy\bDust.grp)
+    playfram        0xd4    # frame set 12
+    wait            1
+    playfram        0xe5    # frame set 13
+    wait            1
+    playfram        0xf6    # frame set 14
+    wait            1
+    playfram        0x107   # frame set 15
+    wait            1
+    playfram        0x118   # frame set 16
+    wait            1
+    sigorder        4
+    goto            long00
+
+HunuBurrow:
+    imgol           423 0 0 # Unknown423 (thingy\bDust.grp)
+    playfram        0x1fd    # frame set 12
+    wait            1
+    playfram        0x20e    # frame set 13
+    wait            1
+    playfram        0x21f    # frame set 14
+    wait            1
+    playfram        0x230   # frame set 15
+    wait            1
+    playfram        0x241   # frame set 16
+    wait            1
+    sigorder        4
+    goto            long00
+
+HydraliskUnBurrow:
+    if unit_id == 53 goto HunuUnBurrow
+    waitrand        1 5
+    imgul           423 0 0 # Unknown423 (thingy\bDust.grp)
+    playfram        0x107   # frame set 15
+    wait            1
+    playfram        0xf6    # frame set 14
+    wait            1
+    playfram        0xe5    # frame set 13
+    wait            1
+    playfram        0xd4    # frame set 12
+    wait            1
+    sigorder        4
+    goto            HydraliskWalkingToIdle
+
+HunuUnBurrow:
+    waitrand        1 5
+    imgul           423 0 0 # Unknown423 (thingy\bDust.grp)
+    playfram        0x230   # frame set 15
+    wait            1
+    playfram        0x21f    # frame set 14
+    wait            1
+    playfram        0x20e    # frame set 13
+    wait            1
+    playfram        0x1fd    # frame set 12
+    wait            1
+    sigorder        4
+    goto            HydraliskWalkingToIdle
+
+
+long00:
+    wait            125
+    goto            long00
