@@ -221,9 +221,13 @@ impl SpriteOwnerMap {
 }
 
 unsafe fn invalid_aice_command(iscript: *mut bw::Iscript, image: *mut bw::Image, offset: CodePos) {
+    let sprite_id = match (*image).parent.is_null() {
+        true => !0,
+        false => (*(*image).parent).sprite_id,
+    };
     let msg = format!(
-        "Invalid aice command at {}, image {:04x}, animation {}",
-        offset, (*image).image_id, animation_name((*iscript).animation),
+        "Invalid aice command at {}, sprite {:04x} image {:04x}, animation {}",
+        offset, sprite_id, (*image).image_id, animation_name((*iscript).animation),
     );
     error!("{}", msg);
     bw_print!("{}", msg);
