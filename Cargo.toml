@@ -53,4 +53,5 @@ git = "https://github.com/neivv/whack/"
 git = "https://github.com/neivv/samase_plugin"
 
 [dependencies.bw_dat]
-git = "https://github.com/neivv/aise"
+#git = "https://github.com/neivv/aise"
+path = "../ais_attackto/bw_dat"

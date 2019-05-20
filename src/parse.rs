@@ -18,6 +18,7 @@
 use std::collections::hash_map::Entry;
 use std::convert::TryFrom;
 use std::fmt;
+use std::rc::Rc;
 
 use bstr::{BStr, BString};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
@@ -192,7 +193,7 @@ pub struct Iscript {
     pub aice_data: Vec<u8>,
     pub bw_aice_cmd_offsets: FxHashMap<u16, u32>,
     pub headers: Vec<ResolvedHeader>,
-    pub conditions: Vec<BoolExpr>,
+    pub conditions: Vec<Rc<BoolExpr>>,
 }
 
 pub struct ResolvedHeader {
@@ -489,7 +490,8 @@ struct Compiler<'a> {
     needed_label_positions: Vec<(CodePosition, Label<'a>)>,
     bw_required_labels: FxHashSet<Label<'a>>,
     bw_aice_cmd_offsets: Vec<(u16, u32)>,
-    conditions: Vec<BoolExpr>,
+    conditions: Vec<Rc<BoolExpr>>,
+    existing_conditions: FxHashMap<Rc<BoolExpr>, u32>,
     flow_in_bw: bool,
 }
 
@@ -555,6 +557,7 @@ impl<'a> Compiler<'a> {
             needed_label_positions: Vec::with_capacity(128),
             bw_required_labels: FxHashSet::with_capacity_and_hasher(1024, Default::default()),
             conditions: Vec::with_capacity(16),
+            existing_conditions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
             flow_in_bw: true,
         }
     }
@@ -637,8 +640,16 @@ impl<'a> Compiler<'a> {
             self.emit_bw_jump_to_aice(self.aice_bytecode.len() as u32);
             self.flow_in_bw = false;
         }
-        let index = self.conditions.len();
-        self.conditions.push(condition);
+        let index = match self.existing_conditions.get(&condition).cloned() {
+            Some(s) => s,
+            None => {
+                let index = self.conditions.len() as u32;
+                let rc = Rc::new(condition);
+                self.conditions.push(rc.clone());
+                self.existing_conditions.insert(rc, index);
+                index
+            }
+        };
         let pos = self.label_location(dest)
             .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
 
@@ -961,6 +972,8 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
 mod test {
     use super::*;
 
+    use bw_dat::expr::{IntExpr, IntFunc};
+
     fn read(filename: &str) -> Vec<u8> {
         std::fs::read(format!("test_scripts/{}", filename)).unwrap()
     }
@@ -1003,5 +1016,11 @@ mod test {
                 panic!("{} errors", errors.len());
             }
         };
+        assert_eq!(iscript.conditions.len(), 1);
+        let expr = BoolExpr::EqualInt(Box::new((
+            IntExpr::Func(IntFunc::UnitId),
+            IntExpr::Integer(53),
+        )));
+        assert_eq!(*iscript.conditions[0], expr);
     }
 }
