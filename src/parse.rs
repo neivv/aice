@@ -26,12 +26,14 @@ use fxhash::{FxHashMap, FxHashSet};
 use quick_error::quick_error;
 use serde_derive::{Serialize, Deserialize};
 
-use bw_dat::expr::{BoolExpr};
+use bw_dat::expr::{BoolExpr, IntExpr};
 
 pub mod aice_op {
     pub const JUMP_TO_BW: u8 = 0x00;
     pub const ANIMATION_START: u8 = 0x01;
     pub const IF: u8 = 0x02;
+    pub const PRE_END: u8 = 0x03;
+    pub const SET: u8 = 0x04;
 }
 
 quick_error! {
@@ -132,7 +134,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"spruluselo", bw_cmd(0x13, &[U16, U8, U8])),
         (b"sprul", bw_cmd(0x14, &[U16, U8, U8])),
         (b"sproluselo", bw_cmd(0x15, &[U16, U8])),
-        (b"end", bw_cmd_final(0x16, &[])),
+        (b"end", End),
         (b"setflipstate", bw_cmd(0x17, &[U8])),
         (b"playsnd", bw_cmd(0x18, &[U16])),
         (b"playsndrand", bw_cmd(0x19, &[U16VarLen])),
@@ -179,6 +181,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"__43", bw_cmd(0x43, &[])),
         (b"dogrddamage", bw_cmd(0x44, &[])),
         (b"if", If),
+        (b"set", Set),
     ]
 };
 
@@ -186,6 +189,8 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
 enum CommandPrototype {
     BwCommand(u8, &'static [BwCommandParam], bool),
     If,
+    Set,
+    End,
 }
 
 pub struct Iscript {
@@ -194,6 +199,7 @@ pub struct Iscript {
     pub bw_aice_cmd_offsets: FxHashMap<u16, u32>,
     pub headers: Vec<ResolvedHeader>,
     pub conditions: Vec<Rc<BoolExpr>>,
+    pub int_expressions: Vec<Rc<IntExpr>>,
 }
 
 pub struct ResolvedHeader {
@@ -301,15 +307,24 @@ impl<'a> Parser<'a> {
                 mark_required_bw_labels(rest, commands, compiler)?;
                 compiler.flow_to_bw();
                 self.is_continuing_commands = !ends_flow;
-                Ok(())
             }
             Some(CommandPrototype::If) => {
                 compiler.flow_to_aice();
                 self.is_continuing_commands = true;
-                Ok(())
             }
-            None => Err(Error::UnknownCommand(command.into())),
+            Some(CommandPrototype::End) => {
+                compiler.flow_to_bw();
+                self.is_continuing_commands = false;
+            }
+            Some(CommandPrototype::Set) => {
+                let (ty, var_name, _rest) = parse_set_place(rest)?;
+                //compiler.add_set_decl(var_name, ty)?;
+                compiler.flow_to_aice();
+                self.is_continuing_commands = true;
+            }
+            None => return Err(Error::UnknownCommand(command.into())),
         }
+        Ok(())
     }
 
     fn parse_line_add_label(
@@ -372,13 +387,59 @@ impl<'a> Parser<'a> {
                     .ok_or_else(|| Error::Msg("Expected label after goto"))?;
                 compiler.add_if(condition, label)
             }
+            Some(CommandPrototype::End) => {
+                compiler.add_aice_command(aice_op::PRE_END);
+                compiler.flow_to_bw();
+                Ok(())
+            }
+            Some(CommandPrototype::Set) => {
+                let (_ty, var_name, rest) = parse_set_place(rest)?;
+                let (expr, rest) = parse_int_expr(rest)?;
+                if !rest.is_empty() {
+                    return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
+                }
+                compiler.add_set(var_name, expr);
+                Ok(())
+            }
             None => unreachable!(),
         }
     }
 }
 
+fn split_first_token(text: &BStr) -> Option<(&BStr, &BStr)> {
+    let start = text.bytes().position(|x| x != b' ' && x != b'\t')?;
+    let end = start + text.bytes().skip(start).position(|x| x == b' ' && x == b'\t')?;
+    let first = &text[start..end];
+    Some(match text.bytes().skip(end).position(|x| x != b' ' && x != b'\t') {
+        Some(s) => (first, &text[end + s..]),
+        None => (first, BStr::new(&[])),
+    })
+}
+
+fn parse_set_place(text: &BStr) -> Result<(VariableType, &BStr, &BStr), Error> {
+    let (ty, rest) = split_first_token(text)
+        .ok_or_else(|| Error::Msg("Expected place"))?;
+    let (name, rest) = split_first_token(rest)
+        .ok_or_else(|| Error::Msg("Expected variable name"))?;
+    let (_, rest) = split_first_token(rest)
+        .filter(|x| x.0 == "=")
+        .ok_or_else(|| Error::Msg("Expected '='"))?;
+    let ty = match ty {
+        x if x == "global" => VariableType::Global,
+        x if x == "spritelocal" => VariableType::SpriteLocal,
+        x => return Err(Error::Dynamic(format!("Unknown variable type '{}'", x))),
+    };
+    Ok((ty, name, rest))
+}
+
 fn parse_bool_expr(text: &BStr) -> Result<(BoolExpr, &BStr), Error> {
     BoolExpr::parse_part(text.as_ref())
+        .map(|(a, b)| (a, BStr::new(b)))
+        .map_err(|e| e.into())
+}
+
+fn parse_int_expr(text: &BStr) -> Result<(IntExpr, &BStr), Error> {
+    IntExpr::parse_part(text.as_ref())
         .map(|(a, b)| (a, BStr::new(b)))
         .map_err(|e| e.into())
 }
@@ -492,7 +553,40 @@ struct Compiler<'a> {
     bw_aice_cmd_offsets: Vec<(u16, u32)>,
     conditions: Vec<Rc<BoolExpr>>,
     existing_conditions: FxHashMap<Rc<BoolExpr>, u32>,
+    int_expressions: Vec<Rc<IntExpr>>,
+    existing_int_expressions: FxHashMap<Rc<IntExpr>, u32>,
+    variables: FxHashMap<&'a BStr, VariableId>,
+    variable_counts: Vec<u32>,
     flow_in_bw: bool,
+}
+
+/// 0xc000_0000 == tag
+#[derive(Copy, Clone, Serialize, Deserialize, Debug)]
+pub struct VariableId(pub u32);
+
+#[repr(u8)]
+pub enum VariableType {
+    Global = 0x0,
+    SpriteLocal = 0x1,
+}
+
+impl VariableId {
+    fn new(id: u32, ty: VariableType) -> VariableId {
+        assert!(id & 0xc000_0000 == 0);
+        VariableId(id | ((ty as u32) << 30))
+    }
+
+    pub fn index(self) -> u32 {
+        (self.0 & !0xc000_0000)
+    }
+
+    pub fn ty(self) -> Option<VariableType> {
+        Some(match self.0 >> 30 {
+            0 => VariableType::Global,
+            1 => VariableType::Global,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize)]
@@ -558,6 +652,10 @@ impl<'a> Compiler<'a> {
             bw_required_labels: FxHashSet::with_capacity_and_hasher(1024, Default::default()),
             conditions: Vec::with_capacity(16),
             existing_conditions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
+            int_expressions: Vec::with_capacity(16),
+            existing_int_expressions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
+            variables: FxHashMap::with_capacity_and_hasher(16, Default::default()),
+            variable_counts: vec![0; 4],
             flow_in_bw: true,
         }
     }
@@ -601,6 +699,7 @@ impl<'a> Compiler<'a> {
                 self.flow_in_bw = true;
             }
         }
+        debug!("Label {} -> {:04x}", label.0, self.code_position().0);
         *self.labels.get_mut(&label).expect("Label not added?") = self.code_position();
     }
 
@@ -635,11 +734,36 @@ impl<'a> Compiler<'a> {
         self.flow_in_bw = false;
     }
 
-    fn add_if(&mut self, condition: BoolExpr, dest: Label<'a>) -> Result<(), Error> {
+    fn add_flow_to_aice(&mut self) {
         if self.flow_in_bw {
             self.emit_bw_jump_to_aice(self.aice_bytecode.len() as u32);
             self.flow_in_bw = false;
         }
+    }
+
+    fn add_set(&mut self, var_name: &'a BStr, value: IntExpr) {
+        self.add_flow_to_aice();
+        let index = match self.existing_int_expressions.get(&value).cloned() {
+            Some(s) => s,
+            None => {
+                let index = self.int_expressions.len() as u32;
+                let rc = Rc::new(value);
+                self.int_expressions.push(rc.clone());
+                self.existing_int_expressions.insert(rc, index);
+                index
+            }
+        };
+        let var_id = match self.variables.get(var_name) {
+            Some(&s) => s,
+            None => unreachable!(),
+        };
+        self.aice_bytecode.push(aice_op::SET);
+        self.aice_bytecode.write_u32::<LE>(var_id.0).unwrap();
+        self.aice_bytecode.write_u32::<LE>(index as u32).unwrap();
+    }
+
+    fn add_if(&mut self, condition: BoolExpr, dest: Label<'a>) -> Result<(), Error> {
+        self.add_flow_to_aice();
         let index = match self.existing_conditions.get(&condition).cloned() {
             Some(s) => s,
             None => {
@@ -655,7 +779,7 @@ impl<'a> Compiler<'a> {
 
         self.aice_bytecode.push(aice_op::IF);
         self.aice_bytecode.write_u32::<LE>(index as u32).unwrap();
-        self.aice_bytecode.write_u32::<LE>(pos.0 as u32).unwrap();
+        self.aice_bytecode.write_u32::<LE>(pos.0).unwrap();
         let offset = self.aice_bytecode.len() as u32 - 4;
         if pos.is_unknown() {
             self.needed_label_positions.push((CodePosition::aice(offset), dest));
@@ -664,6 +788,14 @@ impl<'a> Compiler<'a> {
             self.bw_offsets_in_aice.push(offset);
         }
         Ok(())
+    }
+
+    fn add_aice_command(
+        &mut self,
+        byte: u8,
+    ) {
+        self.add_flow_to_aice();
+        self.aice_bytecode.push(byte);
     }
 
     fn add_bw_command(
@@ -754,9 +886,12 @@ impl<'a> Compiler<'a> {
 
         let mut bw_data = Vec::with_capacity(32768);
         bw_data.resize(0x1c, AICE_COMMAND);
+        bw_data[0x4] = 0x16; // Global end command
         bw_data.extend((0..headers.len()).flat_map(|_| [
             0x53, 0x43, 0x50, 0x45, 0x1b, 0x00, 0x00, 0x00,
         ].iter().cloned()));
+        // Add animation offsets for the last script
+        bw_data.resize(bw_data.len() + 0x1c * 2, 0x00);
         if bw_data.len() > 0x4353 {
             // FIXME
             return Err(Error::Msg("Too many iscript ids"));
@@ -834,6 +969,7 @@ impl<'a> Compiler<'a> {
             bw_data: bw_data.into_boxed_slice(),
             aice_data: self.aice_bytecode,
             conditions: self.conditions,
+            int_expressions: self.int_expressions,
             bw_aice_cmd_offsets,
             headers,
         })
@@ -972,7 +1108,7 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
 mod test {
     use super::*;
 
-    use bw_dat::expr::{IntFunc, BoolExprTree, IntExprTree};
+    use bw_dat::expr::{IntFunc, IntFuncType, BoolExprTree, IntExprTree};
 
     fn read(filename: &str) -> Vec<u8> {
         std::fs::read(format!("test_scripts/{}", filename)).unwrap()
@@ -1010,7 +1146,10 @@ mod test {
         let iscript = compile_success("if1.txt");
         assert_eq!(iscript.conditions.len(), 1);
         let expr = BoolExprTree::EqualInt(Box::new((
-            IntExprTree::Func(IntFunc::UnitId),
+            IntExprTree::Func(IntFunc {
+                ty: IntFuncType::UnitId,
+                args: Box::new([]),
+            }),
             IntExprTree::Integer(53),
         )));
         assert_eq!(*iscript.conditions[0].inner(), expr);

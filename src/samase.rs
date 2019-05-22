@@ -110,9 +110,12 @@ pub fn players() -> *mut bw::Player {
 
 static mut GET_ISCRIPT_BIN: GlobalFunc<fn() -> *mut u8> = GlobalFunc(None);
 pub fn get_iscript_bin() -> *mut u8 {
-    unsafe {
-        GET_ISCRIPT_BIN.get()()
-    }
+    unsafe { GET_ISCRIPT_BIN.get()() }
+}
+
+static mut SPRITE_HLINES: GlobalFunc<fn() -> *mut *mut bw::Sprite> = GlobalFunc(None);
+pub fn sprite_hlines() -> *mut *mut bw::Sprite {
+    unsafe { SPRITE_HLINES.get()() }
 }
 
 static mut PRINT_TEXT: GlobalFunc<fn(*const u8)> = GlobalFunc(None);
@@ -175,7 +178,7 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
 
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
-    let required_version = 14;
+    let required_version = 15;
     if (*api).version < required_version {
         fatal(&format!(
             "Newer samase is required. (Plugin API version {}, this plugin requires version {})",
@@ -220,6 +223,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         ((*api).get_iscript_bin)().map(|x| mem::transmute(x)),
         "get_iscript_bin",
     );
+    SPRITE_HLINES.init(((*api).sprite_hlines)().map(|x| mem::transmute(x)), "sprite_hlines");
 
     PRINT_TEXT.0 = Some(mem::transmute(((*api).print_text)()));
     RNG_SEED.0 = Some(mem::transmute(((*api).rng_seed)()));
@@ -238,5 +242,6 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     if ok == 0 {
         fatal("Can't hook iscript");
     }
+    ((*api).hook_file_read)(b"scripts\\iscript.bin\0".as_ptr(), iscript::iscript_read_hook);
     crate::init();
 }
