@@ -780,7 +780,7 @@ impl<'a> Compiler<'a> {
         let padding_length = if bw_data.len() as u8 <= AICE_COMMAND {
             (AICE_COMMAND - bw_data.len() as u8) as usize
         } else {
-            (bw_data.len() as u8 - AICE_COMMAND) as usize + 0x100
+            0x100 - (bw_data.len() as u8 - AICE_COMMAND) as usize
         };
         bw_data.extend((0..padding_length).map(|_| AICE_COMMAND));
         if bw_data.len() > 0x10000 {
@@ -972,16 +972,15 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
 mod test {
     use super::*;
 
-    use bw_dat::expr::{IntExpr, IntFunc};
+    use bw_dat::expr::{IntFunc, BoolExprTree, IntExprTree};
 
     fn read(filename: &str) -> Vec<u8> {
         std::fs::read(format!("test_scripts/{}", filename)).unwrap()
     }
 
-    #[test]
-    fn parse_vanilla() {
-        let text = read("vanilla.txt");
-        let iscript = match compile_iscript_txt(&text) {
+    fn compile_success(filename: &str) -> Iscript {
+        let text = read(filename);
+        match compile_iscript_txt(&text) {
             Ok(o) => o,
             Err(errors) => {
                 for e in &errors {
@@ -993,8 +992,14 @@ mod test {
                 }
                 panic!("{} errors", errors.len());
             }
-        };
+        }
+    }
+
+    #[test]
+    fn parse_vanilla() {
+        let iscript = compile_success("vanilla.txt");
         assert_eq!(iscript.bw_data[0], AICE_COMMAND);
+        assert_eq!(iscript.bw_data[0x4], 0x16);
         assert_eq!(iscript.bw_data[0x1b], AICE_COMMAND);
         assert_eq!(iscript.bw_data[0x4550], AICE_COMMAND);
         assert_eq!(iscript.bw_data[0x4353], AICE_COMMAND);
@@ -1002,25 +1007,22 @@ mod test {
 
     #[test]
     fn parse_if1() {
-        let text = read("if1.txt");
-        let iscript = match compile_iscript_txt(&text) {
-            Ok(o) => o,
-            Err(errors) => {
-                for e in &errors {
-                    if let Some(line) = e.line {
-                        println!("Line {}: {}", line, e.error);
-                    } else {
-                        println!("{}", e.error);
-                    }
-                }
-                panic!("{} errors", errors.len());
-            }
-        };
+        let iscript = compile_success("if1.txt");
         assert_eq!(iscript.conditions.len(), 1);
-        let expr = BoolExpr::EqualInt(Box::new((
-            IntExpr::Func(IntFunc::UnitId),
-            IntExpr::Integer(53),
+        let expr = BoolExprTree::EqualInt(Box::new((
+            IntExprTree::Func(IntFunc::UnitId),
+            IntExprTree::Integer(53),
         )));
-        assert_eq!(*iscript.conditions[0], expr);
+        assert_eq!(*iscript.conditions[0].inner(), expr);
+    }
+
+    #[test]
+    fn test1() {
+        let iscript = compile_success("test1.txt");
+        assert_eq!(iscript.bw_data[0], AICE_COMMAND);
+        assert_eq!(iscript.bw_data[0x4], 0x16);
+        assert_eq!(iscript.bw_data[0x1b], AICE_COMMAND);
+        assert_eq!(iscript.bw_data[0x4550], AICE_COMMAND);
+        assert_eq!(iscript.bw_data[0x4353], AICE_COMMAND);
     }
 }
