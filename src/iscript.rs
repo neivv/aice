@@ -10,7 +10,9 @@ use bw_dat::{Game, Unit};
 
 use crate::bw;
 use crate::globals::{Globals, SerializableSprite};
-use crate::parse::{self, Int, Bool, CodePosition, CodePos, Iscript, VariableType, VariableId};
+use crate::parse::{
+    self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
+};
 use crate::recurse_checked_mutex::{Mutex};
 use crate::unit;
 use crate::windows;
@@ -95,6 +97,8 @@ pub unsafe extern fn run_aice_script(
 struct CustomCtx<'a> {
     state: &'a IscriptState,
     image: *mut bw::Image,
+    unit: Option<Unit>,
+    bullet: Option<*mut bw::Bullet>,
 }
 
 impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
@@ -103,11 +107,11 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
     fn eval_int(&mut self, val: &Int) -> i32 {
         match val {
             Int::Variable(id) => {
-                match id.ty().unwrap() {
-                    VariableType::Global => self.state.globals[id.index() as usize],
-                    VariableType::SpriteLocal => {
+                match id.place() {
+                    Place::Global(id) => self.state.globals[id as usize],
+                    Place::SpriteLocal(id) => {
                         let value = self.state.get_sprite_locals(unsafe { (*self.image).parent })
-                            .and_then(|locals| locals.iter().find(|x| x.id == id.index()));
+                            .and_then(|locals| locals.iter().find(|x| x.id == id));
                         match value {
                             Some(s) => s.value,
                             None => unsafe {
@@ -123,6 +127,63 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                             }
                         }
                     }
+                    Place::Flingy(ty) => unsafe {
+                        let flingy = self.unit.map(|x| *x)
+                            .or_else(|| self.bullet.map(|x| x as *mut bw::Unit));
+                        let flingy = match flingy {
+                            Some(s) => s,
+                            None => {
+                                error!(
+                                    "Error: image {:04x} has no flingy",
+                                    (*self.image).image_id,
+                                );
+                                bw_print!(
+                                    "Error: image {:04x} has no flingy",
+                                    (*self.image).image_id,
+                                );
+                                return i32::min_value();
+                            }
+                        };
+                        match ty {
+                            FlingyVar::MoveTargetX => (*flingy).move_target.x as i32,
+                            FlingyVar::MoveTargetY => (*flingy).move_target.y as i32,
+                            FlingyVar::FacingDirection => {
+                                bw_angle_to_degrees((*flingy).facing_direction) as i32
+                            }
+                            FlingyVar::MovementDirection => {
+                                bw_angle_to_degrees((*flingy).movement_direction) as i32
+                            }
+                            FlingyVar::TargetDirection => {
+                                bw_angle_to_degrees((*flingy).target_direction) as i32
+                            }
+                            FlingyVar::TurnSpeed => (*flingy).flingy_turn_speed as i32,
+                            FlingyVar::Acceleration => (*flingy).acceleration as i32,
+                            FlingyVar::TopSpeed => (*flingy).flingy_top_speed as i32,
+                            FlingyVar::Speed => (*flingy).current_speed as i32,
+                        }
+                    },
+                    Place::Bullet(ty) => unsafe {
+                        let bullet = match self.bullet {
+                            Some(s) => s,
+                            None => {
+                                error!(
+                                    "Error: image {:04x} has no bullet",
+                                    (*self.image).image_id,
+                                );
+                                bw_print!(
+                                    "Error: image {:04x} has no bullet",
+                                    (*self.image).image_id,
+                                );
+                                return i32::min_value();
+                            }
+                        };
+                        match ty {
+                            BulletVar::State => (*bullet).state as i32,
+                            BulletVar::WeaponId => (*bullet).weapon_id as i32,
+                            BulletVar::BouncesRemaining => (*bullet).bounces_remaining as i32,
+                            BulletVar::DeathTimer => (*bullet).death_timer as i32,
+                        }
+                    },
                 }
             }
         }
@@ -146,6 +207,7 @@ struct IscriptRunner<'a> {
     owner_read: bool,
     game: Game,
     unit: Option<Unit>,
+    bullet: Option<*mut bw::Bullet>,
 }
 
 impl<'a> IscriptRunner<'a> {
@@ -171,6 +233,7 @@ impl<'a> IscriptRunner<'a> {
             owner_read: false,
             in_aice_code: true,
             unit: None,
+            bullet: None,
         }
     }
 
@@ -179,6 +242,7 @@ impl<'a> IscriptRunner<'a> {
             if !self.owner_read {
                 self.owner_read = true;
                 self.unit = self.sprite_owner_map.get_unit((*self.image).parent);
+                self.bullet = self.sprite_owner_map.get_bullet((*self.image).parent);
             }
         }
         bw_dat::expr::EvalCtx {
@@ -187,6 +251,8 @@ impl<'a> IscriptRunner<'a> {
             custom: CustomCtx {
                 state: self.state,
                 image: self.image,
+                bullet: self.bullet,
+                unit: self.unit,
             },
         }
     }
@@ -194,7 +260,7 @@ impl<'a> IscriptRunner<'a> {
     /// Return error pos on error
     unsafe fn run_script(&mut self) -> Result<(), u32> {
         use crate::parse::aice_op::*;
-        while self.in_aice_code {
+        'op_loop: while self.in_aice_code {
             let opcode_pos = self.pos as u32;
             let opcode = self.read_u8()?;
             match opcode {
@@ -224,7 +290,7 @@ impl<'a> IscriptRunner<'a> {
                     }
                 }
                 SET => {
-                    let place = VariableId(self.read_u32()?);
+                    let place = PlaceId(self.read_u32()?);
                     let expr = self.read_u32()?;
                     if self.dry_run {
                         // Bad? Ideally would have dry-run state
@@ -235,17 +301,9 @@ impl<'a> IscriptRunner<'a> {
                     let expression = &self.iscript.int_expressions[expr as usize];
                     let mut eval_ctx = self.eval_ctx();
                     let value = eval_ctx.eval_int(&expression);
-                    let id = place.index();
-                    let ty = match place.ty() {
-                        Some(s) => s,
-                        None => {
-                            error!("Invalid set place {:x?}", place);
-                            return Err(opcode_pos);
-                        }
-                    };
-                    match ty {
-                        VariableType::Global => self.state.globals[id as usize] = value,
-                        VariableType::SpriteLocal => {
+                    match place.place() {
+                        Place::Global(id) => self.state.globals[id as usize] = value,
+                        Place::SpriteLocal(id) => {
                             let locals = self.state.get_sprite_locals_mut((*self.image).parent);
                             match locals.iter().position(|x| x.id == id) {
                                 Some(s) => locals[s].value = value,
@@ -253,6 +311,49 @@ impl<'a> IscriptRunner<'a> {
                                     value,
                                     id,
                                 }),
+                            }
+                        }
+                        Place::Flingy(ty) => {
+                            let flingy = self.unit.map(|x| *x)
+                                .or_else(|| self.bullet.map(|x| x as *mut bw::Unit));
+                            let flingy = match flingy {
+                                Some(s) => s,
+                                None => {
+                                    error!(
+                                        "Error: image {:04x} has no flingy",
+                                        (*self.image).image_id,
+                                    );
+                                    bw_print!(
+                                        "Error: image {:04x} has no flingy",
+                                        (*self.image).image_id,
+                                    );
+                                    continue 'op_loop;
+                                }
+                            };
+                            set_flingy_var(flingy, ty, value);
+                        }
+                        Place::Bullet(ty) => {
+                            let bullet = match self.bullet {
+                                Some(s) => s,
+                                None => {
+                                    error!(
+                                        "Error: image {:04x} has no bullet",
+                                        (*self.image).image_id,
+                                    );
+                                    bw_print!(
+                                        "Error: image {:04x} has no bullet",
+                                        (*self.image).image_id,
+                                    );
+                                    continue 'op_loop;
+                                }
+                            };
+                            match ty {
+                                BulletVar::State => (*bullet).state = value as u8,
+                                BulletVar::WeaponId => (*bullet).weapon_id = value as u8,
+                                BulletVar::BouncesRemaining => {
+                                    (*bullet).bounces_remaining = value as u8;
+                                }
+                                BulletVar::DeathTimer => (*bullet).death_timer = value as u8,
                             }
                         }
                     }
@@ -326,6 +427,57 @@ impl<'a> IscriptRunner<'a> {
     }
 }
 
+unsafe fn set_flingy_var(flingy: *mut bw::Unit, ty: FlingyVar, value: i32) {
+    match ty {
+        FlingyVar::MoveTargetX => {
+            (*flingy).move_target.x = value as i16;
+            (*flingy).next_move_waypoint.x = value as i16;
+            (*flingy).unk_move_waypoint.x = value as i16;
+        }
+        FlingyVar::MoveTargetY => {
+            (*flingy).move_target.y = value as i16;
+            (*flingy).next_move_waypoint.y = value as i16;
+            (*flingy).unk_move_waypoint.y = value as i16;
+        }
+        FlingyVar::FacingDirection => {
+            (*flingy).facing_direction = degrees_to_bw_angle(value);
+        }
+        FlingyVar::MovementDirection => {
+            (*flingy).movement_direction = degrees_to_bw_angle(value);
+        }
+        FlingyVar::TargetDirection => {
+            (*flingy).target_direction = degrees_to_bw_angle(value);
+        }
+        FlingyVar::TurnSpeed => (*flingy).flingy_turn_speed = value as u8,
+        FlingyVar::Acceleration => (*flingy).acceleration = value as u16,
+        FlingyVar::TopSpeed => (*flingy).flingy_top_speed = value.max(0) as u32,
+        FlingyVar::Speed => {
+            (*flingy).current_speed = value;
+            (*flingy).next_speed = value;
+        }
+    }
+}
+
+fn degrees_to_bw_angle(value: i32) -> u8 {
+    (((value % 360) * 256 / -360) + 64) as u8
+}
+
+fn bw_angle_to_degrees(value: u8) -> i32 {
+    ((((value as i32) + 192) * -1) & 0xff) * 360 / 256
+}
+
+#[test]
+fn test_angle_conversions() {
+    assert_eq!(degrees_to_bw_angle(0), 64);
+    assert_eq!(degrees_to_bw_angle(90), 0);
+    assert_eq!(degrees_to_bw_angle(180), 192);
+    assert_eq!(degrees_to_bw_angle(270), 128);
+    assert_eq!(bw_angle_to_degrees(0), 90);
+    assert_eq!(bw_angle_to_degrees(64), 0);
+    assert_eq!(bw_angle_to_degrees(128), 270);
+    assert_eq!(bw_angle_to_degrees(192), 180);
+}
+
 struct SpriteOwnerMap {
     mapping: FxHashMap<*mut bw::Sprite, *mut bw::Unit>,
 }
@@ -351,6 +503,10 @@ impl SpriteOwnerMap {
             debug!("Built mapping to {} units", self.mapping.len());
             self.mapping.get(&sprite).and_then(|&x| Unit::from_ptr(x))
         }
+    }
+
+    pub fn get_bullet(&mut self, sprite: *mut bw::Sprite) -> Option<*mut bw::Bullet> {
+        None
     }
 }
 
@@ -432,8 +588,13 @@ pub unsafe fn load_iscript(retry_on_error: bool) -> Iscript {
 }
 
 pub unsafe fn set_as_bw_script(iscript: Iscript) {
-    //let _ = std::fs::write("iscript.bin", &iscript.bw_data);
-    //let _ = std::fs::write("aice.bin", &iscript.aice_data);
+    /*
+    let _ = std::fs::write("iscript.bin", &iscript.bw_data);
+    let _ = std::fs::write("aice.bin", &iscript.aice_data);
+    for (bw, aice) in &iscript.bw_aice_cmd_offsets {
+        debug!("Bw {:x} -> aice {:x}", bw, aice);
+    }
+    */
     let bw_bin = crate::samase::get_iscript_bin();
     std::ptr::copy_nonoverlapping(iscript.bw_data.as_ptr(), bw_bin, iscript.bw_data.len());
     *ISCRIPT.lock("set_as_bw_script") = Some(iscript);

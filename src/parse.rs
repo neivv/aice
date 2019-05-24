@@ -41,7 +41,7 @@ impl expr::CustomState for ExprState {
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub enum Int {
-    Variable(VariableId),
+    Variable(PlaceId),
 }
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -50,15 +50,19 @@ pub enum Bool {
 
 struct ExprParser<'a> {
     compiler: &'a Compiler<'a>,
+    parser: &'a Parser<'a>,
 }
 
 impl<'b> expr::CustomParser for ExprParser<'b> {
     type State = ExprState;
     fn parse_int<'a>(&mut self, input: &'a [u8]) -> Option<(Int, &'a [u8])> {
-        let word_end = input.iter().position(|&x| !x.is_ascii_alphanumeric() && x != b'_')
+        let word_end = input.iter().position(|&x| x == b' ')
             .unwrap_or(input.len());
         let word = &input[..word_end];
         if let Some(&var) = self.compiler.variables.get(&BStr::new(word)) {
+            return Some((Int::Variable(var), &input[word_end..]));
+        }
+        if let Some(&var) = self.parser.bw_places.get(word) {
             return Some((Int::Variable(var), &input[word_end..]));
         }
         None
@@ -94,7 +98,7 @@ quick_error! {
         }
         Expr(e: bw_dat::expr::Error) {
             from()
-            display("{}", e)
+            display("Couldn't parse expression: {}", e)
         }
     }
 }
@@ -226,6 +230,32 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
     ]
 };
 
+static BW_PLACES: &[(&[u8], PlaceId)] = {
+    use self::FlingyVar::*;
+    use self::BulletVar::*;
+    const fn flingy(x: FlingyVar) -> PlaceId {
+        PlaceId::new_flingy(x)
+    }
+    const fn bullet(x: BulletVar) -> PlaceId {
+        PlaceId::new_bullet(x)
+    }
+    &[
+        (b"flingy.move_target_x", flingy(MoveTargetX)),
+        (b"flingy.move_target_y", flingy(MoveTargetY)),
+        (b"flingy.facing_direction", flingy(FacingDirection)),
+        (b"flingy.movement_direction", flingy(MovementDirection)),
+        (b"flingy.target_direction", flingy(TargetDirection)),
+        (b"flingy.turn_speed", flingy(TurnSpeed)),
+        (b"flingy.acceleration", flingy(Acceleration)),
+        (b"flingy.top_speed", flingy(TopSpeed)),
+        (b"flingy.speed", flingy(Speed)),
+        (b"bullet.weapon_id", bullet(WeaponId)),
+        (b"bullet.death_timer", bullet(DeathTimer)),
+        (b"bullet.state", bullet(State)),
+        (b"bullet.bounces_remaining", bullet(BouncesRemaining)),
+    ]
+};
+
 #[derive(Copy, Clone)]
 enum CommandPrototype {
     BwCommand(u8, &'static [BwCommandParam], bool),
@@ -266,6 +296,7 @@ struct Parser<'a> {
     animation_name_to_index: FxHashMap<&'static [u8], u8>,
     command_map: FxHashMap<&'static [u8], CommandPrototype>,
     variable_types: FxHashMap<&'a BStr, VariableType>,
+    bw_places: FxHashMap<&'static [u8], PlaceId>,
 }
 
 impl<'a> Parser<'a> {
@@ -281,6 +312,7 @@ impl<'a> Parser<'a> {
                 .collect(),
             command_map: COMMANDS.iter().cloned().collect(),
             variable_types: FxHashMap::with_capacity_and_hasher(32, Default::default()),
+            bw_places: BW_PLACES.iter().cloned().collect(),
         }
     }
 
@@ -361,8 +393,10 @@ impl<'a> Parser<'a> {
                 self.is_continuing_commands = false;
             }
             Some(CommandPrototype::Set) => {
-                let (ty, var_name, _rest) = parse_set_place(rest)?;
-                self.add_set_decl(var_name, ty)?;
+                let (place, _rest) = self.parse_set_place(rest)?;
+                if let ParsedPlace::Variable(ty, var_name) = place {
+                    self.add_set_decl(var_name, ty)?;
+                }
                 compiler.flow_to_aice();
                 self.is_continuing_commands = true;
             }
@@ -394,6 +428,14 @@ impl<'a> Parser<'a> {
         }
         if let Some(label) = parse_label(line)? {
             compiler.add_label(label)?;
+        } else {
+            let command = line.fields().next().ok_or_else(|| Error::Msg("???"))?;
+            match self.command_map.get(command.as_ref()) {
+                Some(&CommandPrototype::BwCommand(..)) => {
+                    compiler.flow_to_bw()
+                }
+                _ => compiler.flow_to_aice(),
+            }
         }
         Ok(())
     }
@@ -433,7 +475,7 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             Some(CommandPrototype::If) => {
-                let (condition, rest) = parse_bool_expr(rest, &compiler)?;
+                let (condition, rest) = parse_bool_expr(rest, self, &compiler)?;
                 let mut tokens = rest.fields();
                 let next = tokens.next();
                 if next != Some(BStr::new("goto")) {
@@ -450,15 +492,40 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             Some(CommandPrototype::Set) => {
-                let (_ty, var_name, rest) = parse_set_place(rest)?;
-                let (expr, rest) = parse_int_expr(rest, &compiler)?;
+                let (place, rest) = self.parse_set_place(rest)?;
+                let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
                 if !rest.is_empty() {
                     return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
                 }
-                compiler.add_set(var_name, expr);
+                compiler.add_set(place, expr);
                 Ok(())
             }
             None => unreachable!(),
+        }
+    }
+
+    fn parse_set_place(&self, text: &'a BStr) -> Result<(ParsedPlace<'a>, &'a BStr), Error> {
+        let (place, rest) = split_first_token(text)
+            .ok_or_else(|| Error::Msg("Expected place"))?;
+        let ty = match place {
+            x if x == "global" => Some(VariableType::Global),
+            x if x == "spritelocal" => Some(VariableType::SpriteLocal),
+            _ => None,
+        };
+        if let Some(ty) = ty {
+            let (name, rest) = split_first_token(rest)
+                .ok_or_else(|| Error::Msg("Expected variable name"))?;
+            let (_, rest) = split_first_token(rest)
+                .filter(|x| x.0 == "=")
+                .ok_or_else(|| Error::Msg("Expected '='"))?;
+            return Ok((ParsedPlace::Variable(ty, name), rest));
+        }
+        let (_, rest) = split_first_token(rest)
+            .filter(|x| x.0 == "=")
+            .ok_or_else(|| Error::Msg("Expected '='"))?;
+        match self.bw_places.get(place.as_bytes()) {
+            Some(&s) => Ok((ParsedPlace::Bw(s), rest)),
+            None => Err(Error::Dynamic(format!("Unknown variable type '{}'", place))),
         }
     }
 }
@@ -473,28 +540,14 @@ fn split_first_token(text: &BStr) -> Option<(&BStr, &BStr)> {
     })
 }
 
-fn parse_set_place(text: &BStr) -> Result<(VariableType, &BStr, &BStr), Error> {
-    let (ty, rest) = split_first_token(text)
-        .ok_or_else(|| Error::Msg("Expected place"))?;
-    let (name, rest) = split_first_token(rest)
-        .ok_or_else(|| Error::Msg("Expected variable name"))?;
-    let (_, rest) = split_first_token(rest)
-        .filter(|x| x.0 == "=")
-        .ok_or_else(|| Error::Msg("Expected '='"))?;
-    let ty = match ty {
-        x if x == "global" => VariableType::Global,
-        x if x == "spritelocal" => VariableType::SpriteLocal,
-        x => return Err(Error::Dynamic(format!("Unknown variable type '{}'", x))),
-    };
-    Ok((ty, name, rest))
-}
-
 fn parse_bool_expr<'a>(
     text: &'a BStr,
+    parser: &Parser<'a>,
     compiler: &Compiler<'a>,
 ) -> Result<(BoolExpr, &'a BStr), Error> {
     let mut parser = ExprParser {
         compiler,
+        parser,
     };
     CustomBoolExpr::parse_part_custom(text.as_ref(), &mut parser)
         .map(|(a, b)| (a, BStr::new(b)))
@@ -503,10 +556,12 @@ fn parse_bool_expr<'a>(
 
 fn parse_int_expr<'a>(
     text: &'a BStr,
+    parser: &Parser<'a>,
     compiler: &Compiler<'a>,
 ) -> Result<(IntExpr, &'a BStr), Error> {
     let mut parser = ExprParser {
         compiler,
+        parser,
     };
     CustomIntExpr::parse_part_custom(text.as_ref(), &mut parser)
         .map(|(a, b)| (a, BStr::new(b)))
@@ -624,42 +679,88 @@ struct Compiler<'a> {
     existing_conditions: FxHashMap<Rc<BoolExpr>, u32>,
     int_expressions: Vec<Rc<IntExpr>>,
     existing_int_expressions: FxHashMap<Rc<IntExpr>, u32>,
-    variables: FxHashMap<&'a BStr, VariableId>,
+    variables: FxHashMap<&'a BStr, PlaceId>,
     variable_counts: [u32; 2],
     flow_in_bw: bool,
 }
 
 /// 0xc000_0000 == tag
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
-pub struct VariableId(pub u32);
+pub struct PlaceId(pub u32);
+
+enum ParsedPlace<'a> {
+    Variable(VariableType, &'a BStr),
+    Bw(PlaceId),
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum VariableType {
+    Global,
+    SpriteLocal,
+}
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum VariableType {
-    Global = 0x0,
-    SpriteLocal = 0x1,
+pub enum FlingyVar {
+    MoveTargetX,
+    MoveTargetY,
+    FacingDirection,
+    MovementDirection,
+    TargetDirection,
+    TurnSpeed,
+    Acceleration,
+    TopSpeed,
+    Speed,
 }
 
-impl VariableId {
-    fn new(id: u32, ty: VariableType) -> VariableId {
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BulletVar {
+    State,
+    DeathTimer,
+    WeaponId,
+    BouncesRemaining,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Place {
+    Global(u32),
+    SpriteLocal(u32),
+    Flingy(FlingyVar),
+    Bullet(BulletVar),
+}
+
+impl PlaceId {
+    fn new(place: Place) -> PlaceId {
+        let (tag, id) = match place {
+            Place::Global(id) => (0, id),
+            Place::SpriteLocal(id) => (1, id),
+            Place::Flingy(id) => (2, id as u32),
+            Place::Bullet(id) => (3, id as u32),
+        };
         assert!(id & 0xc000_0000 == 0);
-        VariableId(id | ((ty as u32) << 30))
+        PlaceId(id | ((tag as u32) << 30))
     }
 
-    pub fn index(self) -> u32 {
-        (self.0 & !0xc000_0000)
+    const fn new_flingy(x: FlingyVar) -> PlaceId {
+        PlaceId((x as u32) | (2 << 30))
+    }
+    const fn new_bullet(x: BulletVar) -> PlaceId {
+        PlaceId((x as u32) | (3 << 30))
     }
 
-    pub fn ty(self) -> Option<VariableType> {
-        Some(match self.0 >> 30 {
-            0 => VariableType::Global,
-            1 => VariableType::SpriteLocal,
-            _ => return None,
-        })
+    pub fn place(self) -> Place {
+        let id = self.0 & !0xc000_0000;
+        match self.0 >> 30 {
+            0 => Place::Global(id),
+            1 => Place::SpriteLocal(id),
+            2 => Place::Flingy(unsafe { std::mem::transmute(id as u8) }),
+            3 | _ => Place::Bullet(unsafe { std::mem::transmute(id as u8) }),
+        }
     }
 }
 
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone, Serialize, Deserialize, Debug)]
 pub struct CodePosition(pub u32);
 
 #[derive(Serialize, Deserialize)]
@@ -741,9 +842,12 @@ impl<'a> Compiler<'a> {
     fn add_variables(&mut self, variables: &FxHashMap<&'a BStr, VariableType>) {
         self.variables.reserve(variables.len());
         for (&name, &ty) in variables {
-            let id = self.variable_counts[ty as usize];
+            let id = self.variable_counts[ty as usize] as u32;
             self.variable_counts[ty as usize] += 1;
-            self.variables.insert(name, VariableId::new(id, ty));
+            self.variables.insert(name, match ty {
+                VariableType::Global => PlaceId::new(Place::Global(id)),
+                VariableType::SpriteLocal => PlaceId::new(Place::SpriteLocal(id)),
+            });
         }
     }
 
@@ -778,7 +882,6 @@ impl<'a> Compiler<'a> {
                 self.flow_in_bw = true;
             }
         }
-        debug!("Label {} -> {:04x}", label.0, self.code_position().0);
         *self.labels.get_mut(&label).expect("Label not added?") = self.code_position();
     }
 
@@ -820,7 +923,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn add_set(&mut self, var_name: &'a BStr, value: IntExpr) {
+    fn add_set(&mut self, place: ParsedPlace, value: IntExpr) {
         self.add_flow_to_aice();
         let index = match self.existing_int_expressions.get(&value).cloned() {
             Some(s) => s,
@@ -832,9 +935,9 @@ impl<'a> Compiler<'a> {
                 index
             }
         };
-        let var_id = match self.variables.get(var_name) {
-            Some(&s) => s,
-            None => unreachable!(),
+        let var_id = match place {
+            ParsedPlace::Variable(_ty, var_name) => *self.variables.get(var_name).unwrap(),
+            ParsedPlace::Bw(place) => place,
         };
         self.aice_bytecode.push(aice_op::SET);
         self.aice_bytecode.write_u32::<LE>(var_id.0).unwrap();
