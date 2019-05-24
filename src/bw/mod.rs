@@ -11,28 +11,8 @@ pub fn is_scr() -> bool {
     crate::IS_1161.load(Ordering::Relaxed) == false
 }
 
-pub fn pathing() -> *mut Pathing {
-    samase::pathing()
-}
-
 pub fn players() -> *mut Player {
     samase::players()
-}
-
-pub fn get_region(pos: Point) -> Option<u16> {
-    let Point {
-        x,
-        y,
-    } = pos;
-    unsafe {
-        let game = game();
-        let bounds = ((*game).map_width_tiles * 32, (*game).map_height_tiles * 32);
-        if bounds.0 as i16 <= x || bounds.1 as i16 <= y {
-            None
-        } else {
-            Some(samase::get_region(x as u32, y as u32) as u16)
-        }
-    }
 }
 
 pub fn game() -> *mut Game {

@@ -26,7 +26,48 @@ use fxhash::{FxHashMap, FxHashSet};
 use quick_error::quick_error;
 use serde_derive::{Serialize, Deserialize};
 
-use bw_dat::expr::{BoolExpr, IntExpr};
+use bw_dat::expr::{self, CustomBoolExpr, CustomIntExpr};
+
+pub type IntExpr = CustomIntExpr<ExprState>;
+pub type BoolExpr = CustomBoolExpr<ExprState>;
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub struct ExprState;
+
+impl expr::CustomState for ExprState {
+    type IntExt = Int;
+    type BoolExt = Bool;
+}
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub enum Int {
+    Variable(VariableId),
+}
+
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub enum Bool {
+}
+
+struct ExprParser<'a> {
+    compiler: &'a Compiler<'a>,
+}
+
+impl<'b> expr::CustomParser for ExprParser<'b> {
+    type State = ExprState;
+    fn parse_int<'a>(&mut self, input: &'a [u8]) -> Option<(Int, &'a [u8])> {
+        let word_end = input.iter().position(|&x| !x.is_ascii_alphanumeric() && x != b'_')
+            .unwrap_or(input.len());
+        let word = &input[..word_end];
+        if let Some(&var) = self.compiler.variables.get(&BStr::new(word)) {
+            return Some((Int::Variable(var), &input[word_end..]));
+        }
+        None
+    }
+
+    fn parse_bool<'a>(&mut self, _input: &'a [u8]) -> Option<(Bool, &'a [u8])> {
+        None
+    }
+}
 
 pub mod aice_op {
     pub const JUMP_TO_BW: u8 = 0x00;
@@ -200,6 +241,7 @@ pub struct Iscript {
     pub headers: Vec<ResolvedHeader>,
     pub conditions: Vec<Rc<BoolExpr>>,
     pub int_expressions: Vec<Rc<IntExpr>>,
+    pub global_count: u32,
 }
 
 pub struct ResolvedHeader {
@@ -223,6 +265,7 @@ struct Parser<'a> {
     is_continuing_commands: bool,
     animation_name_to_index: FxHashMap<&'static [u8], u8>,
     command_map: FxHashMap<&'static [u8], CommandPrototype>,
+    variable_types: FxHashMap<&'a BStr, VariableType>,
 }
 
 impl<'a> Parser<'a> {
@@ -237,6 +280,7 @@ impl<'a> Parser<'a> {
                 .map(|x| (x.0.as_bytes(), x.1))
                 .collect(),
             command_map: COMMANDS.iter().cloned().collect(),
+            variable_types: FxHashMap::with_capacity_and_hasher(32, Default::default()),
         }
     }
 
@@ -318,13 +362,26 @@ impl<'a> Parser<'a> {
             }
             Some(CommandPrototype::Set) => {
                 let (ty, var_name, _rest) = parse_set_place(rest)?;
-                //compiler.add_set_decl(var_name, ty)?;
+                self.add_set_decl(var_name, ty)?;
                 compiler.flow_to_aice();
                 self.is_continuing_commands = true;
             }
             None => return Err(Error::UnknownCommand(command.into())),
         }
         Ok(())
+    }
+
+    fn add_set_decl(&mut self, var_name: &'a BStr, ty: VariableType) -> Result<(), Error> {
+        let old = self.variable_types.entry(var_name)
+            .or_insert(ty);
+        if *old != ty {
+            Err(Error::Dynamic(format!(
+                "Conflicting variable type for '{}', was previously used with {:?}",
+                var_name, old,
+            )))
+        } else {
+            Ok(())
+        }
     }
 
     fn parse_line_add_label(
@@ -376,7 +433,7 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             Some(CommandPrototype::If) => {
-                let (condition, rest) = parse_bool_expr(rest)?;
+                let (condition, rest) = parse_bool_expr(rest, &compiler)?;
                 let mut tokens = rest.fields();
                 let next = tokens.next();
                 if next != Some(BStr::new("goto")) {
@@ -394,7 +451,7 @@ impl<'a> Parser<'a> {
             }
             Some(CommandPrototype::Set) => {
                 let (_ty, var_name, rest) = parse_set_place(rest)?;
-                let (expr, rest) = parse_int_expr(rest)?;
+                let (expr, rest) = parse_int_expr(rest, &compiler)?;
                 if !rest.is_empty() {
                     return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
                 }
@@ -408,7 +465,7 @@ impl<'a> Parser<'a> {
 
 fn split_first_token(text: &BStr) -> Option<(&BStr, &BStr)> {
     let start = text.bytes().position(|x| x != b' ' && x != b'\t')?;
-    let end = start + text.bytes().skip(start).position(|x| x == b' ' && x == b'\t')?;
+    let end = start + text.bytes().skip(start).position(|x| x == b' ' || x == b'\t')?;
     let first = &text[start..end];
     Some(match text.bytes().skip(end).position(|x| x != b' ' && x != b'\t') {
         Some(s) => (first, &text[end + s..]),
@@ -432,14 +489,26 @@ fn parse_set_place(text: &BStr) -> Result<(VariableType, &BStr, &BStr), Error> {
     Ok((ty, name, rest))
 }
 
-fn parse_bool_expr(text: &BStr) -> Result<(BoolExpr, &BStr), Error> {
-    BoolExpr::parse_part(text.as_ref())
+fn parse_bool_expr<'a>(
+    text: &'a BStr,
+    compiler: &Compiler<'a>,
+) -> Result<(BoolExpr, &'a BStr), Error> {
+    let mut parser = ExprParser {
+        compiler,
+    };
+    CustomBoolExpr::parse_part_custom(text.as_ref(), &mut parser)
         .map(|(a, b)| (a, BStr::new(b)))
         .map_err(|e| e.into())
 }
 
-fn parse_int_expr(text: &BStr) -> Result<(IntExpr, &BStr), Error> {
-    IntExpr::parse_part(text.as_ref())
+fn parse_int_expr<'a>(
+    text: &'a BStr,
+    compiler: &Compiler<'a>,
+) -> Result<(IntExpr, &'a BStr), Error> {
+    let mut parser = ExprParser {
+        compiler,
+    };
+    CustomIntExpr::parse_part_custom(text.as_ref(), &mut parser)
         .map(|(a, b)| (a, BStr::new(b)))
         .map_err(|e| e.into())
 }
@@ -556,15 +625,16 @@ struct Compiler<'a> {
     int_expressions: Vec<Rc<IntExpr>>,
     existing_int_expressions: FxHashMap<Rc<IntExpr>, u32>,
     variables: FxHashMap<&'a BStr, VariableId>,
-    variable_counts: Vec<u32>,
+    variable_counts: [u32; 2],
     flow_in_bw: bool,
 }
 
 /// 0xc000_0000 == tag
-#[derive(Copy, Clone, Serialize, Deserialize, Debug)]
+#[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
 pub struct VariableId(pub u32);
 
 #[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum VariableType {
     Global = 0x0,
     SpriteLocal = 0x1,
@@ -583,7 +653,7 @@ impl VariableId {
     pub fn ty(self) -> Option<VariableType> {
         Some(match self.0 >> 30 {
             0 => VariableType::Global,
-            1 => VariableType::Global,
+            1 => VariableType::SpriteLocal,
             _ => return None,
         })
     }
@@ -654,8 +724,8 @@ impl<'a> Compiler<'a> {
             existing_conditions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
             int_expressions: Vec::with_capacity(16),
             existing_int_expressions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
-            variables: FxHashMap::with_capacity_and_hasher(16, Default::default()),
-            variable_counts: vec![0; 4],
+            variables: FxHashMap::default(),
+            variable_counts: [0; 2],
             flow_in_bw: true,
         }
     }
@@ -665,6 +735,15 @@ impl<'a> Compiler<'a> {
             CodePosition(self.bw_bytecode.len() as u32)
         } else {
             CodePosition(self.aice_bytecode.len() as u32 | 0x8000_0000)
+        }
+    }
+
+    fn add_variables(&mut self, variables: &FxHashMap<&'a BStr, VariableType>) {
+        self.variables.reserve(variables.len());
+        for (&name, &ty) in variables {
+            let id = self.variable_counts[ty as usize];
+            self.variable_counts[ty as usize] += 1;
+            self.variables.insert(name, VariableId::new(id, ty));
         }
     }
 
@@ -972,6 +1051,7 @@ impl<'a> Compiler<'a> {
             int_expressions: self.int_expressions,
             bw_aice_cmd_offsets,
             headers,
+            global_count: self.variable_counts[VariableType::Global as usize],
         })
     }
 
@@ -1069,6 +1149,7 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     if !errors.is_empty() {
         return Err(errors);
     }
+    compiler.add_variables(&parser.variable_types);
     for (line_number, line) in lines(text) {
         if let Err(error) = parser.parse_line_add_label(line, &mut compiler) {
             errors.push(ErrorWithLine {
@@ -1163,5 +1244,11 @@ mod test {
         assert_eq!(iscript.bw_data[0x1b], AICE_COMMAND);
         assert_eq!(iscript.bw_data[0x4550], AICE_COMMAND);
         assert_eq!(iscript.bw_data[0x4353], AICE_COMMAND);
+    }
+
+    #[test]
+    fn vars() {
+        let iscript = compile_success("vars.txt");
+        assert_eq!(iscript.global_count, 1);
     }
 }

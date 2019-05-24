@@ -63,11 +63,6 @@ pub fn first_hidden_unit() -> *mut bw::Unit {
     unsafe { FIRST_HIDDEN_UNIT.0.map(|x| x()).unwrap_or(null_mut()) }
 }
 
-static mut PATHING: GlobalFunc<fn() -> *mut bw::Pathing> = GlobalFunc(None);
-pub fn pathing() -> *mut bw::Pathing {
-    unsafe { PATHING.0.map(|x| x()).unwrap_or(null_mut()) }
-}
-
 static mut UNITS_DAT: GlobalFunc<fn() -> *mut bw_dat::DatTable> = GlobalFunc(None);
 pub fn units_dat() -> *mut bw_dat::DatTable {
     unsafe { UNITS_DAT.get()() }
@@ -204,7 +199,6 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         ((*api).first_hidden_unit)().map(|x| mem::transmute(x)),
         "first hidden unit",
     );
-    PATHING.init(((*api).pathing)().map(|x| mem::transmute(x)), "pathing");
     PLAYERS.init(((*api).players)().map(|x| mem::transmute(x)), "players");
     let read_file = ((*api).read_file)();
     READ_FILE.0 = Some(mem::transmute(read_file));

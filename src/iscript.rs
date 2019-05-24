@@ -10,7 +10,7 @@ use bw_dat::{Game, Unit};
 
 use crate::bw;
 use crate::globals::{Globals, SerializableSprite};
-use crate::parse::{self, CodePosition, CodePos, Iscript, VariableType, VariableId};
+use crate::parse::{self, Int, Bool, CodePosition, CodePos, Iscript, VariableType, VariableId};
 use crate::recurse_checked_mutex::{Mutex};
 use crate::unit;
 use crate::windows;
@@ -33,9 +33,20 @@ struct SpriteLocal {
 }
 
 impl IscriptState {
-    fn get_sprite_locals(&mut self, sprite: *mut bw::Sprite) -> &mut Vec<SpriteLocal> {
+    fn get_sprite_locals(&self, sprite: *mut bw::Sprite) -> Option<&Vec<SpriteLocal>> {
+        self.sprite_locals.get(&SerializableSprite(sprite))
+    }
+
+    fn get_sprite_locals_mut(&mut self, sprite: *mut bw::Sprite) -> &mut Vec<SpriteLocal> {
         self.sprite_locals.entry(SerializableSprite(sprite))
             .or_insert_with(|| Vec::new())
+    }
+
+    pub fn from_script(iscript: &Iscript) -> IscriptState {
+        IscriptState {
+            sprite_locals: FxHashMap::default(),
+            globals: vec![0; iscript.global_count as usize],
+        }
     }
 }
 
@@ -81,6 +92,48 @@ pub unsafe extern fn run_aice_script(
     }
 }
 
+struct CustomCtx<'a> {
+    state: &'a IscriptState,
+    image: *mut bw::Image,
+}
+
+impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
+    type State = parse::ExprState;
+
+    fn eval_int(&mut self, val: &Int) -> i32 {
+        match val {
+            Int::Variable(id) => {
+                match id.ty().unwrap() {
+                    VariableType::Global => self.state.globals[id.index() as usize],
+                    VariableType::SpriteLocal => {
+                        let value = self.state.get_sprite_locals(unsafe { (*self.image).parent })
+                            .and_then(|locals| locals.iter().find(|x| x.id == id.index()));
+                        match value {
+                            Some(s) => s.value,
+                            None => unsafe {
+                                error!(
+                                    "Error: image {:04x} accessed uninitialized spritelocal",
+                                    (*self.image).image_id,
+                                );
+                                bw_print!(
+                                    "Error: image {:04x} accessed uninitialized spritelocal",
+                                    (*self.image).image_id,
+                                );
+                                i32::min_value()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn eval_bool(&mut self, val: &Bool) -> bool {
+        match *val {
+        }
+    }
+}
+
 struct IscriptRunner<'a> {
     iscript: &'a Iscript,
     state: &'a mut IscriptState,
@@ -88,9 +141,11 @@ struct IscriptRunner<'a> {
     bw_script: *mut bw::Iscript,
     image: *mut bw::Image,
     dry_run: bool,
-    game: Game,
     in_aice_code: bool,
     sprite_owner_map: &'a mut SpriteOwnerMap,
+    owner_read: bool,
+    game: Game,
+    unit: Option<Unit>,
 }
 
 impl<'a> IscriptRunner<'a> {
@@ -111,9 +166,28 @@ impl<'a> IscriptRunner<'a> {
             bw_script,
             image,
             dry_run,
-            game,
             sprite_owner_map,
+            game,
+            owner_read: false,
             in_aice_code: true,
+            unit: None,
+        }
+    }
+
+    fn eval_ctx<'s>(&'s mut self) -> bw_dat::expr::EvalCtx<CustomCtx<'s>> {
+        unsafe {
+            if !self.owner_read {
+                self.owner_read = true;
+                self.unit = self.sprite_owner_map.get_unit((*self.image).parent);
+            }
+        }
+        bw_dat::expr::EvalCtx {
+            game: Some(self.game),
+            unit: self.unit,
+            custom: CustomCtx {
+                state: self.state,
+                image: self.image,
+            },
         }
     }
 
@@ -143,18 +217,9 @@ impl<'a> IscriptRunner<'a> {
                 IF => {
                     let cond = self.read_u32()?;
                     let dest = CodePosition(self.read_u32()?);
-                    let unit = match self.unit() {
-                        Some(s) => s,
-                        None => {
-                            warn!(
-                                "No unit for if (Image {:04x}, anim {})",
-                                (*self.image).image_id,
-                                animation_name((*self.bw_script).animation),
-                            );
-                            continue;
-                        }
-                    };
-                    if self.iscript.conditions[cond as usize].eval_with_unit(unit, self.game) {
+                    let condition = &self.iscript.conditions[cond as usize];
+                    let mut eval_ctx = self.eval_ctx();
+                    if eval_ctx.eval_bool(&condition) {
                         self.jump_to(dest);
                     }
                 }
@@ -166,19 +231,10 @@ impl<'a> IscriptRunner<'a> {
                         // Maybe should stop here?
                         continue;
                     }
-                    let unit = match self.unit() {
-                        Some(s) => s,
-                        None => {
-                            warn!(
-                                "No unit for if (Image {:04x}, anim {})",
-                                (*self.image).image_id,
-                                animation_name((*self.bw_script).animation),
-                            );
-                            continue;
-                        }
-                    };
-                    let value = self.iscript.int_expressions[expr as usize]
-                        .eval_with_unit(unit, self.game);
+
+                    let expression = &self.iscript.int_expressions[expr as usize];
+                    let mut eval_ctx = self.eval_ctx();
+                    let value = eval_ctx.eval_int(&expression);
                     let id = place.index();
                     let ty = match place.ty() {
                         Some(s) => s,
@@ -190,7 +246,7 @@ impl<'a> IscriptRunner<'a> {
                     match ty {
                         VariableType::Global => self.state.globals[id as usize] = value,
                         VariableType::SpriteLocal => {
-                            let locals = self.state.get_sprite_locals((*self.image).parent);
+                            let locals = self.state.get_sprite_locals_mut((*self.image).parent);
                             match locals.iter().position(|x| x.id == id) {
                                 Some(s) => locals[s].value = value,
                                 None => locals.push(SpriteLocal {
@@ -223,12 +279,6 @@ impl<'a> IscriptRunner<'a> {
             }
         }
         Ok(())
-    }
-
-    fn unit(&mut self) -> Option<Unit> {
-        unsafe {
-            self.sprite_owner_map.get_unit((*self.image).parent)
-        }
     }
 
     fn jump_to(&mut self, dest: CodePosition) {

@@ -37,9 +37,11 @@ impl Globals {
 }
 
 pub unsafe extern fn init_game() {
+    let mut globals = Globals::new();
     let iscript = iscript::load_iscript(true);
+    globals.iscript_state = iscript::IscriptState::from_script(&iscript);
     iscript::set_as_bw_script(iscript);
-    *Globals::get("init") = Globals::new();
+    *Globals::get("init") = globals;
 }
 
 pub unsafe extern fn save(set_data: unsafe extern fn(*const u8, usize)) {
