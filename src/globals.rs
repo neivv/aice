@@ -105,7 +105,7 @@ impl<'de> serde::Deserialize<'de> for SerializableSprite {
     fn deserialize<S: Deserializer<'de>>(deserializer: S) -> Result<Self, S::Error> {
         use serde::de::Error;
         let offset = u32::deserialize(deserializer)?;
-        if offset == 0 {
+        if offset != 0 {
             let ptr = (SAVE_SPRITE_ARRAY.load(Ordering::Relaxed) as usize)
                 .wrapping_add(offset as usize) as *mut bw::Sprite;
             Ok(SerializableSprite(ptr))
