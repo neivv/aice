@@ -442,7 +442,10 @@ impl<'a> Parser<'a> {
         } else {
             let command = line.fields().next().ok_or_else(|| Error::Msg("???"))?;
             match self.command_map.get(command.as_ref()) {
-                Some(&CommandPrototype::BwCommand(..)) => {
+                Some(CommandPrototype::BwCommand(..)) => {
+                    compiler.flow_to_bw()
+                }
+                Some(CommandPrototype::End) => {
                     compiler.flow_to_bw()
                 }
                 _ => compiler.flow_to_aice(),
