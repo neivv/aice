@@ -79,6 +79,7 @@ pub mod aice_op {
     pub const IF: u8 = 0x02;
     pub const PRE_END: u8 = 0x03;
     pub const SET: u8 = 0x04;
+    pub const SET_ORDER_WEAPON: u8 = 0x05;
 }
 
 quick_error! {
@@ -227,6 +228,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"dogrddamage", bw_cmd(0x44, &[])),
         (b"if", If),
         (b"set", Set),
+        (b"fireweapon", FireWeapon),
     ]
 };
 
@@ -242,6 +244,8 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
     &[
         (b"flingy.move_target_x", flingy(MoveTargetX)),
         (b"flingy.move_target_y", flingy(MoveTargetY)),
+        (b"flingy.position_x", flingy(PositionX)),
+        (b"flingy.position_y", flingy(PositionY)),
         (b"flingy.facing_direction", flingy(FacingDirection)),
         (b"flingy.movement_direction", flingy(MovementDirection)),
         (b"flingy.target_direction", flingy(TargetDirection)),
@@ -253,6 +257,8 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"bullet.death_timer", bullet(DeathTimer)),
         (b"bullet.state", bullet(State)),
         (b"bullet.bounces_remaining", bullet(BouncesRemaining)),
+        (b"bullet.order_target_x", bullet(OrderTargetX)),
+        (b"bullet.order_target_y", bullet(OrderTargetY)),
     ]
 };
 
@@ -262,6 +268,7 @@ enum CommandPrototype {
     If,
     Set,
     End,
+    FireWeapon,
 }
 
 pub struct Iscript {
@@ -388,6 +395,10 @@ impl<'a> Parser<'a> {
                 compiler.flow_to_aice();
                 self.is_continuing_commands = true;
             }
+            Some(CommandPrototype::FireWeapon) => {
+                compiler.flow_to_aice();
+                self.is_continuing_commands = true;
+            }
             Some(CommandPrototype::End) => {
                 compiler.flow_to_bw();
                 self.is_continuing_commands = false;
@@ -485,6 +496,18 @@ impl<'a> Parser<'a> {
                     .and_then(|l| parse_label_ref(l))
                     .ok_or_else(|| Error::Msg("Expected label after goto"))?;
                 compiler.add_if(condition, label)
+            }
+            Some(CommandPrototype::FireWeapon) => {
+                let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
+                if !rest.is_empty() {
+                    return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
+                }
+                let id = compiler.int_expr_id(expr);
+                compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, id);
+                // castspell
+                compiler.add_bw_code(&[0x27]);
+                compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, !0);
+                Ok(())
             }
             Some(CommandPrototype::End) => {
                 compiler.add_aice_command(aice_op::PRE_END);
@@ -704,6 +727,8 @@ enum VariableType {
 pub enum FlingyVar {
     MoveTargetX,
     MoveTargetY,
+    PositionX,
+    PositionY,
     FacingDirection,
     MovementDirection,
     TargetDirection,
@@ -720,6 +745,8 @@ pub enum BulletVar {
     DeathTimer,
     WeaponId,
     BouncesRemaining,
+    OrderTargetX,
+    OrderTargetY,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -923,9 +950,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn add_set(&mut self, place: ParsedPlace, value: IntExpr) {
-        self.add_flow_to_aice();
-        let index = match self.existing_int_expressions.get(&value).cloned() {
+    fn int_expr_id(&mut self, value: IntExpr) -> u32 {
+        match self.existing_int_expressions.get(&value).cloned() {
             Some(s) => s,
             None => {
                 let index = self.int_expressions.len() as u32;
@@ -934,7 +960,12 @@ impl<'a> Compiler<'a> {
                 self.existing_int_expressions.insert(rc, index);
                 index
             }
-        };
+        }
+    }
+
+    fn add_set(&mut self, place: ParsedPlace, value: IntExpr) {
+        self.add_flow_to_aice();
+        let index = self.int_expr_id(value);
         let var_id = match place {
             ParsedPlace::Variable(_ty, var_name) => *self.variables.get(var_name).unwrap(),
             ParsedPlace::Bw(place) => place,
@@ -972,12 +1003,15 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn add_aice_command(
-        &mut self,
-        byte: u8,
-    ) {
+    fn add_aice_command(&mut self, byte: u8) {
         self.add_flow_to_aice();
         self.aice_bytecode.push(byte);
+    }
+
+    fn add_aice_command_u32(&mut self, byte: u8, param: u32) {
+        self.add_flow_to_aice();
+        self.aice_bytecode.push(byte);
+        self.aice_bytecode.write_u32::<LE>(param).unwrap();
     }
 
     fn add_bw_command(

@@ -11,6 +11,13 @@ pub fn is_scr() -> bool {
     crate::IS_1161.load(Ordering::Relaxed) == false
 }
 
+pub fn orders_dat() -> &'static [DatTable] {
+    unsafe {
+        let dat = samase::orders_dat() as *const DatTable;
+        std::slice::from_raw_parts(dat, 0x10)
+    }
+}
+
 pub fn players() -> *mut Player {
     samase::players()
 }

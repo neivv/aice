@@ -28,6 +28,8 @@ pub struct IscriptState {
     globals: Vec<i32>,
 }
 
+const TEMP_LOCAL_ID: u32 = !0;
+
 #[derive(Serialize, Deserialize)]
 struct SpriteLocal {
     id: u32,
@@ -37,6 +39,36 @@ struct SpriteLocal {
 impl IscriptState {
     fn get_sprite_locals(&self, sprite: *mut bw::Sprite) -> Option<&Vec<SpriteLocal>> {
         self.sprite_locals.get(&SerializableSprite(sprite))
+    }
+
+    fn get_sprite_local(&self, image: *mut bw::Image, id: u32) -> i32 {
+        let value = self.get_sprite_locals(unsafe { (*image).parent })
+            .and_then(|locals| locals.iter().find(|x| x.id == id));
+        match value {
+            Some(s) => s.value,
+            None => unsafe {
+                error!(
+                    "Error: image {:04x} accessed uninitialized spritelocal",
+                    (*image).image_id,
+                );
+                bw_print!(
+                    "Error: image {:04x} accessed uninitialized spritelocal",
+                    (*image).image_id,
+                );
+                i32::min_value()
+            }
+        }
+    }
+
+    fn set_sprite_local(&mut self, sprite: *mut bw::Sprite, id: u32, value: i32) {
+        let locals = self.get_sprite_locals_mut(sprite);
+        match locals.iter().position(|x| x.id == id) {
+            Some(s) => locals[s].value = value,
+            None => locals.push(SpriteLocal {
+                value,
+                id,
+            }),
+        }
     }
 
     fn get_sprite_locals_mut(&mut self, sprite: *mut bw::Sprite) -> &mut Vec<SpriteLocal> {
@@ -109,24 +141,7 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
             Int::Variable(id) => {
                 match id.place() {
                     Place::Global(id) => self.state.globals[id as usize],
-                    Place::SpriteLocal(id) => {
-                        let value = self.state.get_sprite_locals(unsafe { (*self.image).parent })
-                            .and_then(|locals| locals.iter().find(|x| x.id == id));
-                        match value {
-                            Some(s) => s.value,
-                            None => unsafe {
-                                error!(
-                                    "Error: image {:04x} accessed uninitialized spritelocal",
-                                    (*self.image).image_id,
-                                );
-                                bw_print!(
-                                    "Error: image {:04x} accessed uninitialized spritelocal",
-                                    (*self.image).image_id,
-                                );
-                                i32::min_value()
-                            }
-                        }
-                    }
+                    Place::SpriteLocal(id) => self.state.get_sprite_local(self.image, id),
                     Place::Flingy(ty) => unsafe {
                         let flingy = self.unit.map(|x| *x)
                             .or_else(|| self.bullet.map(|x| x as *mut bw::Unit));
@@ -160,6 +175,8 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                             FlingyVar::Acceleration => (*flingy).acceleration as i32,
                             FlingyVar::TopSpeed => (*flingy).flingy_top_speed as i32,
                             FlingyVar::Speed => (*flingy).current_speed as i32,
+                            FlingyVar::PositionX => (*flingy).position.x as i32,
+                            FlingyVar::PositionY => (*flingy).position.y as i32,
                         }
                     },
                     Place::Bullet(ty) => unsafe {
@@ -182,6 +199,8 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                             BulletVar::WeaponId => (*bullet).weapon_id as i32,
                             BulletVar::BouncesRemaining => (*bullet).bounces_remaining as i32,
                             BulletVar::DeathTimer => (*bullet).death_timer as i32,
+                            BulletVar::OrderTargetX => (*bullet).order_target_pos.x as i32,
+                            BulletVar::OrderTargetY => (*bullet).order_target_pos.y as i32,
                         }
                     },
                 }
@@ -237,7 +256,7 @@ impl<'a> IscriptRunner<'a> {
         }
     }
 
-    fn eval_ctx<'s>(&'s mut self) -> bw_dat::expr::EvalCtx<CustomCtx<'s>> {
+    fn init_sprite_owner(&mut self) {
         unsafe {
             if !self.owner_read {
                 self.owner_read = true;
@@ -245,6 +264,10 @@ impl<'a> IscriptRunner<'a> {
                 self.bullet = self.sprite_owner_map.get_bullet((*self.image).parent);
             }
         }
+    }
+
+    fn eval_ctx<'s>(&'s mut self) -> bw_dat::expr::EvalCtx<CustomCtx<'s>> {
+        self.init_sprite_owner();
         bw_dat::expr::EvalCtx {
             game: Some(self.game),
             unit: self.unit,
@@ -304,14 +327,7 @@ impl<'a> IscriptRunner<'a> {
                     match place.place() {
                         Place::Global(id) => self.state.globals[id as usize] = value,
                         Place::SpriteLocal(id) => {
-                            let locals = self.state.get_sprite_locals_mut((*self.image).parent);
-                            match locals.iter().position(|x| x.id == id) {
-                                Some(s) => locals[s].value = value,
-                                None => locals.push(SpriteLocal {
-                                    value,
-                                    id,
-                                }),
-                            }
+                            self.state.set_sprite_local((*self.image).parent, id, value);
                         }
                         Place::Flingy(ty) => {
                             let flingy = self.unit.map(|x| *x)
@@ -354,6 +370,12 @@ impl<'a> IscriptRunner<'a> {
                                     (*bullet).bounces_remaining = value as u8;
                                 }
                                 BulletVar::DeathTimer => (*bullet).death_timer = value as u8,
+                                BulletVar::OrderTargetX => {
+                                    (*bullet).order_target_pos.x = value as i16;
+                                }
+                                BulletVar::OrderTargetY => {
+                                    (*bullet).order_target_pos.y = value as i16;
+                                }
                             }
                         }
                     }
@@ -372,6 +394,41 @@ impl<'a> IscriptRunner<'a> {
                     }
                     (*self.bw_script).pos = 0x4;
                     self.in_aice_code = false;
+                }
+                SET_ORDER_WEAPON => {
+                    let expr = self.read_u32()?;
+                    if self.dry_run {
+                        continue;
+                    }
+                    self.init_sprite_owner();
+                    let unit = match self.unit {
+                        Some(s) => s,
+                        None => {
+                            error!(
+                                "Error: image {:04x} has no unit",
+                                (*self.image).image_id,
+                            );
+                            bw_print!(
+                                "Error: image {:04x} has no unit",
+                                (*self.image).image_id,
+                            );
+                            continue 'op_loop;
+                        }
+                    };
+                    let sprite = (*self.image).parent;
+                    let order_weapon =
+                        (bw::orders_dat()[0xd].data as *mut u8).add(unit.order().0 as usize);
+                    if expr != !0 {
+                        let expression = &self.iscript.int_expressions[expr as usize];
+                        let mut eval_ctx = self.eval_ctx();
+                        let value = eval_ctx.eval_int(&expression);
+                        let old = *order_weapon;
+                        self.state.set_sprite_local(sprite, TEMP_LOCAL_ID, old as i32);
+                        *order_weapon = value as u8;
+                    } else {
+                        *order_weapon =
+                            self.state.get_sprite_local(self.image, TEMP_LOCAL_ID) as u8;
+                    }
                 }
                 x => {
                     error!("Unknown opcode {:02x}", x);
@@ -455,6 +512,9 @@ unsafe fn set_flingy_var(flingy: *mut bw::Unit, ty: FlingyVar, value: i32) {
             (*flingy).current_speed = value;
             (*flingy).next_speed = value;
         }
+        // Todo
+        FlingyVar::PositionX => bw_print!("Cannot set flingy pos"),
+        FlingyVar::PositionY => bw_print!("Cannot set flingy pos"),
     }
 }
 
