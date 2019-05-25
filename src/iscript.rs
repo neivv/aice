@@ -479,34 +479,59 @@ fn test_angle_conversions() {
 }
 
 struct SpriteOwnerMap {
-    mapping: FxHashMap<*mut bw::Sprite, *mut bw::Unit>,
+    unit_mapping: FxHashMap<*mut bw::Sprite, *mut bw::Unit>,
+    bullet_mapping: FxHashMap<*mut bw::Sprite, *mut bw::Bullet>,
 }
 
 impl SpriteOwnerMap {
     pub fn new() -> SpriteOwnerMap {
         SpriteOwnerMap {
-            mapping: FxHashMap::with_capacity_and_hasher(1024, Default::default()),
+            unit_mapping: FxHashMap::with_capacity_and_hasher(1024, Default::default()),
+            bullet_mapping: FxHashMap::with_capacity_and_hasher(256, Default::default()),
         }
     }
 
     pub fn get_unit(&mut self, sprite: *mut bw::Sprite) -> Option<Unit> {
         unsafe {
-            // TODO bad if used without unit
-            if let Some(&unit) = self.mapping.get(&sprite) {
+            if let Some(&unit) = self.unit_mapping.get(&sprite) {
                 if (*unit).sprite == sprite {
                     return Unit::from_ptr(unit);
                 }
             }
-            self.mapping.clear();
-            self.mapping.extend(unit::active_units().map(|x| ((**x).sprite, *x)));
-            self.mapping.extend(unit::hidden_units().map(|x| ((**x).sprite, *x)));
-            debug!("Built mapping to {} units", self.mapping.len());
-            self.mapping.get(&sprite).and_then(|&x| Unit::from_ptr(x))
+            if let Some(&bullet) = self.bullet_mapping.get(&sprite) {
+                if (*bullet).sprite == sprite {
+                    return None;
+                }
+            }
+            self.unit_mapping.clear();
+            self.unit_mapping.extend(unit::active_units().map(|x| ((**x).sprite, *x)));
+            self.unit_mapping.extend(unit::hidden_units().map(|x| ((**x).sprite, *x)));
+            debug!("Built mapping to {} units", self.unit_mapping.len());
+            self.unit_mapping.get(&sprite).and_then(|&x| Unit::from_ptr(x))
         }
     }
 
     pub fn get_bullet(&mut self, sprite: *mut bw::Sprite) -> Option<*mut bw::Bullet> {
-        None
+        unsafe {
+            if let Some(&bullet) = self.bullet_mapping.get(&sprite) {
+                if (*bullet).sprite == sprite {
+                    return Some(bullet);
+                }
+            }
+            if let Some(&unit) = self.unit_mapping.get(&sprite) {
+                if (*unit).sprite == sprite {
+                    return None;
+                }
+            }
+            self.bullet_mapping.clear();
+            let mut bullet = bw::first_active_bullet();
+            while !bullet.is_null() {
+                self.bullet_mapping.insert((*bullet).sprite, bullet);
+                bullet = (*bullet).next;
+            }
+            debug!("Built mapping to {} bullets", self.bullet_mapping.len());
+            self.bullet_mapping.get(&sprite).cloned()
+        }
     }
 }
 

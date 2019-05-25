@@ -34,6 +34,10 @@ pub fn first_hidden_unit() -> *mut Unit {
     samase::first_hidden_unit()
 }
 
+pub fn first_active_bullet() -> *mut Bullet {
+    samase::first_active_bullet()
+}
+
 // BW algorithm
 pub fn distance(a: Point, b: Point) -> u32 {
     let x = (a.x as i32).wrapping_sub(b.x as i32).abs() as u32;

@@ -63,6 +63,11 @@ pub fn first_hidden_unit() -> *mut bw::Unit {
     unsafe { FIRST_HIDDEN_UNIT.0.map(|x| x()).unwrap_or(null_mut()) }
 }
 
+static mut FIRST_ACTIVE_BULLET: GlobalFunc<fn() -> *mut bw::Bullet> = GlobalFunc(None);
+pub fn first_active_bullet() -> *mut bw::Bullet {
+    unsafe { FIRST_ACTIVE_BULLET.0.map(|x| x()).unwrap_or(null_mut()) }
+}
+
 static mut UNITS_DAT: GlobalFunc<fn() -> *mut bw_dat::DatTable> = GlobalFunc(None);
 pub fn units_dat() -> *mut bw_dat::DatTable {
     unsafe { UNITS_DAT.get()() }
@@ -173,7 +178,7 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
 
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
-    let required_version = 15;
+    let required_version = 16;
     if (*api).version < required_version {
         fatal(&format!(
             "Newer samase is required. (Plugin API version {}, this plugin requires version {})",
@@ -194,6 +199,10 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     FIRST_ACTIVE_UNIT.init(
         ((*api).first_active_unit)().map(|x| mem::transmute(x)),
         "first active unit",
+    );
+    FIRST_ACTIVE_BULLET.init(
+        ((*api).first_active_bullet)().map(|x| mem::transmute(x)),
+        "first active bullet",
     );
     FIRST_HIDDEN_UNIT.init(
         ((*api).first_hidden_unit)().map(|x| mem::transmute(x)),
