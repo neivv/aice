@@ -93,6 +93,7 @@ pub unsafe extern fn run_aice_script(
 ) {
     let bw_pos = bw_pos as *const u8;
     let iscript = iscript as *mut bw::Iscript;
+    (*iscript).wait = 0;
     let image = image as *mut bw::Image;
     let this = ISCRIPT.lock("run_aice_script");
     let mut globals = Globals::get("run_aice_script");
@@ -564,8 +565,18 @@ impl SpriteOwnerMap {
                 }
             }
             self.unit_mapping.clear();
-            self.unit_mapping.extend(unit::active_units().map(|x| ((**x).sprite, *x)));
-            self.unit_mapping.extend(unit::hidden_units().map(|x| ((**x).sprite, *x)));
+            for unit in unit::active_units() {
+                if let Some(unit) = unit.subunit_linked() {
+                    self.unit_mapping.insert((**unit).sprite, *unit);
+                }
+                self.unit_mapping.insert((**unit).sprite, *unit);
+            }
+            for unit in unit::hidden_units() {
+                if let Some(unit) = unit.subunit_linked() {
+                    self.unit_mapping.insert((**unit).sprite, *unit);
+                }
+                self.unit_mapping.insert((**unit).sprite, *unit);
+            }
             debug!("Built mapping to {} units", self.unit_mapping.len());
             self.unit_mapping.get(&sprite).and_then(|&x| Unit::from_ptr(x))
         }
