@@ -431,6 +431,18 @@ impl<'a> IscriptRunner<'a> {
                             self.state.get_sprite_local(self.image, TEMP_LOCAL_ID) as u8;
                     }
                 }
+                CLEAR_ATTACKING_FLAG => {
+                    if self.dry_run {
+                        continue;
+                    }
+                    self.init_sprite_owner();
+                    let unit = match self.unit {
+                        Some(s) => s,
+                        None => continue 'op_loop,
+                    };
+                    (**unit).flingy_flags &= !0x8;
+                    (**unit).order_wait = 0;
+                }
                 x => {
                     error!("Unknown opcode {:02x}", x);
                     return Err(opcode_pos);

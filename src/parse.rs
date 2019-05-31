@@ -80,6 +80,7 @@ pub mod aice_op {
     pub const PRE_END: u8 = 0x03;
     pub const SET: u8 = 0x04;
     pub const SET_ORDER_WEAPON: u8 = 0x05;
+    pub const CLEAR_ATTACKING_FLAG: u8 = 0x06;
 }
 
 quick_error! {
@@ -200,7 +201,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"castspell", bw_cmd(0x27, &[])),
         (b"useweapon", bw_cmd(0x28, &[U8])),
         (b"move", bw_cmd(0x29, &[U8])),
-        (b"gotorepeatattk", bw_cmd(0x2a, &[])),
+        (b"gotorepeatattk", GotoRepeatAttk),
         (b"engframe", bw_cmd(0x2b, &[U8])),
         (b"engset", bw_cmd(0x2c, &[U8])),
         (b"__2d", bw_cmd(0x2d, &[])),
@@ -269,6 +270,7 @@ enum CommandPrototype {
     Set,
     End,
     FireWeapon,
+    GotoRepeatAttk,
 }
 
 pub struct Iscript {
@@ -395,7 +397,7 @@ impl<'a> Parser<'a> {
                 compiler.flow_to_aice();
                 self.is_continuing_commands = true;
             }
-            Some(CommandPrototype::FireWeapon) => {
+            Some(CommandPrototype::FireWeapon) | Some(CommandPrototype::GotoRepeatAttk) => {
                 compiler.flow_to_aice();
                 self.is_continuing_commands = true;
             }
@@ -510,6 +512,10 @@ impl<'a> Parser<'a> {
                 // castspell
                 compiler.add_bw_code(&[0x27]);
                 compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, !0);
+                Ok(())
+            }
+            Some(CommandPrototype::GotoRepeatAttk) => {
+                compiler.add_aice_command(aice_op::CLEAR_ATTACKING_FLAG);
                 Ok(())
             }
             Some(CommandPrototype::End) => {
