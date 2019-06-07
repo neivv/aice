@@ -301,7 +301,13 @@ impl<'a> IscriptRunner<'a> {
                         .and_then(|&x| x);
                     match start_pos {
                         Some(x) => self.jump_to(x),
-                        None => return Err(opcode_pos),
+                        None => {
+                            // Can be valid since this fakes everything to have many animations
+                            // and as such bw plays walking animation for every sprite not
+                            // using flingy movement
+                            (*self.bw_script).pos = 0x5;
+                            return Ok(());
+                        }
                     }
                 }
                 IF => {

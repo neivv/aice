@@ -1112,11 +1112,20 @@ impl<'a> Compiler<'a> {
         let mut bw_data = Vec::with_capacity(32768);
         bw_data.resize(0x1c, AICE_COMMAND);
         bw_data[0x4] = 0x16; // Global end command
+        // Global infloop. Wait 0x40 goto loop
+        bw_data[0x5] = 0x05;
+        bw_data[0x6] = 0x40;
+        bw_data[0x7] = 0x07;
+        bw_data[0x8] = 0x05;
+        bw_data[0x9] = 0x00;
         bw_data.extend((0..headers.len()).flat_map(|_| [
-            0x53, 0x43, 0x50, 0x45, 0x1b, 0x00, 0x00, 0x00,
+            0x53, 0x43, 0x50, 0x45, 0x1b, 0x00, 0x1b, 0x00,
         ].iter().cloned()));
         // Add animation offsets for the last script
-        bw_data.resize(bw_data.len() + 0x1c * 2, 0x00);
+        for _ in 0..0x1c * 2{
+            bw_data.push(0x1b);
+            bw_data.push(0x00);
+        }
         if bw_data.len() > 0x4353 {
             // FIXME
             return Err(Error::Msg("Too many iscript ids"));
