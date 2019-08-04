@@ -18,6 +18,7 @@
 use std::collections::hash_map::Entry;
 use std::convert::TryFrom;
 use std::fmt;
+use std::mem;
 use std::rc::Rc;
 
 use bstr::{BStr, BString};
@@ -298,10 +299,8 @@ struct Label<'a>(&'a BStr);
 
 struct Parser<'a> {
     parsing_header: Option<Header<'a>>,
-    parsing_header_pass2: bool,
     headers: Vec<Header<'a>>,
     // true if the previous command didn't force end execution
-    is_continuing_commands: bool,
     animation_name_to_index: FxHashMap<&'static [u8], u8>,
     command_map: FxHashMap<&'static [u8], CommandPrototype>,
     variable_types: FxHashMap<&'a BStr, VariableType>,
@@ -312,9 +311,7 @@ impl<'a> Parser<'a> {
     fn new() -> Parser<'a> {
         Parser {
             parsing_header: None,
-            parsing_header_pass2: false,
             headers: Vec::with_capacity(1024),
-            is_continuing_commands: false,
             animation_name_to_index: ANIMATION_NAMES
                 .iter()
                 .map(|x| (x.0.as_bytes(), x.1))
@@ -325,10 +322,94 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_line_pass1(
+    /// Separates blocks out of the text, parses headers.
+    fn parse_text(
+        &mut self,
+        text: &'a BStr,
+        compiler: &mut Compiler<'a>,
+    ) -> Result<Blocks<'a>, Vec<ErrorWithLine>> {
+        let mut errors = Vec::new();
+        let mut ctx = TextParseContext {
+            text,
+            block_stack: Vec::with_capacity(4),
+            line_number: 0,
+            current_block: (Block {
+                lines: Vec::with_capacity(32000),
+                parent: BlockId(!0),
+                children: Vec::new(),
+            }, BlockId(0), 1),
+            is_continuing_commands: false,
+        };
+        let mut blocks = Blocks {
+            blocks: vec![Block::dummy()],
+            root_blocks: vec![BlockId(0)],
+        };
+        while !ctx.text.is_empty() {
+            ctx.line_number += 1;
+            let line_end = ctx.text.find_byte(b'\n').unwrap_or_else(|| ctx.text.len());
+            let mut line = &ctx.text[..line_end];
+            ctx.text = ctx.text.get(line_end + 1..).unwrap_or_else(|| BStr::new(b""));
+            // Comment
+            if let Some(comment_start) = line.find_byte(b'#') {
+                line = &line[..comment_start];
+            };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if line == BStr::new(b"}") {
+                if let Some((block, index, start_line)) = ctx.block_stack.pop() {
+                    blocks.blocks[(ctx.current_block.1).0 as usize] =
+                        mem::replace(&mut ctx.current_block.0, block);
+                    ctx.current_block.1 = index;
+                    ctx.current_block.2 = start_line;
+                } else {
+                    errors.push(ErrorWithLine {
+                        error: Error::Msg("Unexpected '}'"),
+                        line: Some(ctx.line_number),
+                    });
+                }
+            } else {
+                if let Err(error) = self.parse_line(line, compiler, &mut blocks, &mut ctx) {
+                    errors.push(ErrorWithLine {
+                        error,
+                        line: Some(ctx.line_number),
+                    });
+                }
+            }
+        }
+        if !ctx.block_stack.is_empty() {
+            errors.push(ErrorWithLine {
+                error: Error::Msg("Unterminated '{'"),
+                line: Some(ctx.current_block.2),
+            });
+            for &(_, _, line) in ctx.block_stack.iter().skip(1).rev() {
+                errors.push(ErrorWithLine {
+                    error: Error::Msg("Unterminated '{'"),
+                    line: Some(line),
+                });
+            }
+        }
+        if ctx.is_continuing_commands {
+            errors.push(ErrorWithLine {
+                error: Error::Msg("Last command does not terminate script"),
+                line: Some(ctx.line_number),
+            });
+        }
+        blocks.blocks[(ctx.current_block.1).0 as usize] = ctx.current_block.0;
+        if errors.is_empty() {
+            Ok(blocks)
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn parse_line(
         &mut self,
         line: &'a BStr,
         compiler: &mut Compiler<'a>,
+        blocks: &mut Blocks<'a>,
+        ctx: &mut TextParseContext<'a>,
     ) -> Result<(), Error> {
         if line == ".headerend" {
             return if let Some(header) = self.parsing_header.take() {
@@ -364,7 +445,7 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
         if line == ".headerstart" {
-            if self.is_continuing_commands {
+            if ctx.is_continuing_commands {
                 return Err(Error::Msg("Previous script hasn't terminated"));
             }
             self.parsing_header = Some(Header {
@@ -373,45 +454,58 @@ impl<'a> Parser<'a> {
             });
             Ok(())
         } else {
-            self.parse_command_pass1(line, compiler)
+            self.parse_line_command(line, compiler, blocks, ctx)
         }
     }
 
-    fn parse_command_pass1(
+    fn parse_line_command(
         &mut self,
         line: &'a BStr,
         compiler: &mut Compiler<'a>,
+        blocks: &mut Blocks<'a>,
+        ctx: &mut TextParseContext<'a>,
     ) -> Result<(), Error> {
-        if let Some(_) = parse_label(line)? {
+        if let Some((label, block_start)) = parse_label(line)? {
+            ctx.current_block.0.lines.push(PartiallyParsedLine {
+                ty: BlockLine::Label(label),
+                line_number: ctx.line_number,
+            });
+            if block_start {
+                blocks.start_inline_block(ctx);
+            }
             return Ok(());
         }
-        let command = line.fields().next().ok_or_else(|| Error::Msg("???"))?;
+        if line == BStr::new(b"{") {
+            blocks.start_inline_block(ctx);
+            return Ok(());
+        }
+        let command = line.fields().next().ok_or_else(|| Error::Msg("Empty line???"))?;
         let rest = (&line[command.len()..]).trim_start();
         match self.command_map.get(command.as_ref()) {
-            Some(CommandPrototype::BwCommand(_, commands, ends_flow)) => {
-                mark_required_bw_labels(rest, commands, compiler)?;
-                compiler.flow_to_bw();
-                self.is_continuing_commands = !ends_flow;
-            }
-            Some(CommandPrototype::If) => {
-                compiler.flow_to_aice();
-                self.is_continuing_commands = true;
-            }
-            Some(CommandPrototype::FireWeapon) | Some(CommandPrototype::GotoRepeatAttk) => {
-                compiler.flow_to_aice();
-                self.is_continuing_commands = true;
-            }
-            Some(CommandPrototype::End) => {
-                compiler.flow_to_bw();
-                self.is_continuing_commands = false;
-            }
-            Some(CommandPrototype::Set) => {
-                let (place, _rest) = self.parse_set_place(rest)?;
-                if let ParsedPlace::Variable(ty, var_name) = place {
-                    self.add_set_decl(var_name, ty)?;
+            Some(&command) => {
+                match command {
+                    CommandPrototype::BwCommand(_, commands, ends_flow) => {
+                        mark_required_bw_labels(rest, commands, compiler, ctx)?;
+                        ctx.is_continuing_commands = !ends_flow;
+                    }
+                    CommandPrototype::End => {
+                        ctx.is_continuing_commands = false;
+                    }
+                    CommandPrototype::Set => {
+                        let (place, _rest) = self.parse_set_place(rest)?;
+                        if let ParsedPlace::Variable(ty, var_name) = place {
+                            self.add_set_decl(var_name, ty)?;
+                        }
+                        ctx.is_continuing_commands = true;
+                    }
+                    _ => {
+                        ctx.is_continuing_commands = true;
+                    }
                 }
-                compiler.flow_to_aice();
-                self.is_continuing_commands = true;
+                ctx.current_block.0.lines.push(PartiallyParsedLine {
+                    ty: BlockLine::Command(command, rest, None),
+                    line_number: ctx.line_number,
+                });
             }
             None => return Err(Error::UnknownCommand(command.into())),
         }
@@ -433,106 +527,87 @@ impl<'a> Parser<'a> {
 
     fn parse_line_add_label(
         &mut self,
-        line: &'a BStr,
+        line: &PartiallyParsedLine<'a>,
+        block_scope: &BlockScope<'a, '_>,
         compiler: &mut Compiler<'a>,
     ) -> Result<(), Error> {
-        if self.skip_header_line(line) {
-            return Ok(());
-        }
-        if let Some(label) = parse_label(line)? {
-            compiler.add_label(label)?;
-        } else {
-            let command = line.fields().next().ok_or_else(|| Error::Msg("???"))?;
-            match self.command_map.get(command.as_ref()) {
-                Some(CommandPrototype::BwCommand(..)) => {
-                    compiler.flow_to_bw()
-                }
-                Some(CommandPrototype::End) => {
-                    compiler.flow_to_bw()
-                }
-                _ => compiler.flow_to_aice(),
+        match line.ty {
+            BlockLine::Label(label) => {
+                compiler.add_label(label, block_scope)?;
             }
+            BlockLine::Command(command, _, _) => {
+                match command {
+                    CommandPrototype::BwCommand(..) => compiler.flow_to_bw(),
+                    CommandPrototype::End => compiler.flow_to_bw(),
+                    _ => compiler.flow_to_aice(),
+                }
+            }
+            _ => (),
         }
         Ok(())
     }
 
-    fn skip_header_line(&mut self, line: &'a BStr) -> bool {
-        if self.parsing_header_pass2 {
-            if line == ".headerend" {
-                self.parsing_header_pass2 = false;
-            }
-            true
-        } else if line == ".headerstart" {
-            self.parsing_header_pass2 = true;
-            true
-        } else {
-            false
-        }
-    }
-
+    /// Adds code for the line.
     fn parse_line_pass3(
         &mut self,
-        line: &'a BStr,
+        line: &PartiallyParsedLine<'a>,
+        block_scope: &BlockScope<'a, '_>,
         compiler: &mut Compiler<'a>,
     ) -> Result<(), Error> {
-        if self.skip_header_line(line) {
-            return Ok(());
-        }
-
-        if let Some(label) = parse_label(line)? {
-            compiler.set_label_position_to_current(label);
-            return Ok(());
-        }
-        let command = line.fields().next().ok_or_else(|| Error::Msg("???"))?;
-        let rest = (&line[command.len()..]).trim_start();
-        match self.command_map.get(command.as_ref()) {
-            Some(&CommandPrototype::BwCommand(op, params, ends_flow)) => {
-                compiler.add_bw_command(op, rest, params, ends_flow)?;
+        match line.ty {
+            BlockLine::Label(label) => {
+                compiler.set_label_position_to_current(label, block_scope);
                 Ok(())
             }
-            Some(CommandPrototype::If) => {
-                let (condition, rest) = parse_bool_expr(rest, self, &compiler)?;
-                let mut tokens = rest.fields();
-                let next = tokens.next();
-                if next != Some(BStr::new("goto")) {
-                    return Err(Error::Dynamic(format!("Expected 'goto', got {:?}", next)));
+            BlockLine::Command(command, rest, _) => match command {
+                CommandPrototype::BwCommand(op, params, ends_flow) => {
+                    compiler.add_bw_command(op, rest, params, ends_flow, block_scope)?;
+                    Ok(())
                 }
-                let label = tokens.next()
-                    .and_then(|l| parse_label_ref(l))
-                    .ok_or_else(|| Error::Msg("Expected label after goto"))?;
-                compiler.add_if(condition, label)
-            }
-            Some(CommandPrototype::FireWeapon) => {
-                let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
-                if !rest.is_empty() {
-                    return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
+                CommandPrototype::If => {
+                    let (condition, rest) = parse_bool_expr(rest, self, &compiler)?;
+                    let mut tokens = rest.fields();
+                    let next = tokens.next();
+                    if next != Some(BStr::new("goto")) {
+                        return Err(Error::Dynamic(format!("Expected 'goto', got {:?}", next)));
+                    }
+                    let label = tokens.next()
+                        .and_then(|l| parse_label_ref(l))
+                        .ok_or_else(|| Error::Msg("Expected label after goto"))?;
+                    compiler.add_if(condition, label, block_scope)
                 }
-                let id = compiler.int_expr_id(expr);
-                compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, id);
-                // castspell
-                compiler.add_bw_code(&[0x27]);
-                compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, !0);
-                Ok(())
-            }
-            Some(CommandPrototype::GotoRepeatAttk) => {
-                compiler.add_aice_command(aice_op::CLEAR_ATTACKING_FLAG);
-                Ok(())
-            }
-            Some(CommandPrototype::End) => {
-                compiler.add_aice_command(aice_op::PRE_END);
-                compiler.flow_to_bw();
-                Ok(())
-            }
-            Some(CommandPrototype::Set) => {
-                let (place, rest) = self.parse_set_place(rest)?;
-                let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
-                if !rest.is_empty() {
-                    return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
+                CommandPrototype::FireWeapon => {
+                    let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
+                    if !rest.is_empty() {
+                        return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
+                    }
+                    let id = compiler.int_expr_id(expr);
+                    compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, id);
+                    // castspell
+                    compiler.add_bw_code(&[0x27]);
+                    compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, !0);
+                    Ok(())
                 }
-                compiler.add_set(place, expr);
-                Ok(())
+                CommandPrototype::GotoRepeatAttk => {
+                    compiler.add_aice_command(aice_op::CLEAR_ATTACKING_FLAG);
+                    Ok(())
+                }
+                CommandPrototype::End => {
+                    compiler.add_aice_command(aice_op::PRE_END);
+                    compiler.flow_to_bw();
+                    Ok(())
+                }
+                CommandPrototype::Set => {
+                    let (place, rest) = self.parse_set_place(rest)?;
+                    let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
+                    if !rest.is_empty() {
+                        return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
+                    }
+                    compiler.add_set(place, expr);
+                    Ok(())
+                }
             }
-            None => unreachable!(),
+            _ => Ok(())
         }
     }
 
@@ -560,6 +635,15 @@ impl<'a> Parser<'a> {
             None => Err(Error::Dynamic(format!("Unknown variable type '{}'", place))),
         }
     }
+}
+
+struct TextParseContext<'a> {
+    // Block, index, block start line
+    block_stack: Vec<(Block<'a>, BlockId, usize)>,
+    current_block: (Block<'a>, BlockId, usize),
+    text: &'a BStr,
+    line_number: usize,
+    is_continuing_commands: bool,
 }
 
 fn split_first_token(text: &BStr) -> Option<(&BStr, &BStr)> {
@@ -604,6 +688,7 @@ fn mark_required_bw_labels<'a>(
     text: &'a BStr,
     params: &[BwCommandParam],
     compiler: &mut Compiler<'a>,
+    ctx: &mut TextParseContext<'a>,
 ) -> Result<(),  Error> {
     let mut tokens = text.fields();
     for param in params {
@@ -611,7 +696,7 @@ fn mark_required_bw_labels<'a>(
             .ok_or_else(|| Error::Dynamic(format!("Expected {} arguments", params.len())))?;
         if let BwCommandParam::Label = param {
             let label = parse_label_ref(arg).ok_or_else(|| Error::Msg("Expected label"))?;
-            compiler.require_bw_label(label);
+            compiler.require_bw_label(label, ctx);
         }
     }
     Ok(())
@@ -644,16 +729,25 @@ fn parse_header_opcode<'a>(
 }
 
 /// Parses line in form "Label:", or returns None for other command
-fn parse_label<'a>(line: &'a BStr) -> Result<Option<Label<'a>>, Error> {
+/// Bool is true if the label is followed by '{'
+fn parse_label<'a>(line: &'a BStr) -> Result<Option<(Label<'a>, bool)>, Error> {
     let mut tokens = line.fields();
     let first = tokens.next().ok_or_else(|| Error::Msg("???"))?;
     if first.ends_with(b":") {
         let label = &first[..first.len() - 1];
         if let Some(label) = parse_label_ref(label) {
             if let Some(next) = tokens.next() {
-                Err(Error::Trailing(next.into()))
+                if next == BStr::new(b"{") {
+                    if let Some(next) = tokens.next() {
+                        Err(Error::Trailing(next.into()))
+                    } else {
+                        Ok(Some((label, true)))
+                    }
+                } else {
+                    Err(Error::Trailing(next.into()))
+                }
             } else {
-                Ok(Some(label))
+                Ok(Some((label, false)))
             }
         } else {
             Err(Error::Msg("Invalid characters in label name"))
@@ -703,9 +797,9 @@ struct Compiler<'a> {
     /// Collects where bw_bytecode has been finally placed when compiled.
     /// (start_offset_in_final_bin, length)
     bw_code_parts: Vec<(u16, u16)>,
-    labels: FxHashMap<Label<'a>, CodePosition>,
-    needed_label_positions: Vec<(CodePosition, Label<'a>)>,
-    bw_required_labels: FxHashSet<Label<'a>>,
+    labels: FxHashMap<(Label<'a>, BlockId), CodePosition>,
+    needed_label_positions: Vec<(CodePosition, Label<'a>, BlockId)>,
+    bw_required_labels: BwRequiredLabels<'a>,
     bw_aice_cmd_offsets: Vec<(u16, u32)>,
     conditions: Vec<Rc<BoolExpr>>,
     existing_conditions: FxHashMap<Rc<BoolExpr>, u32>,
@@ -714,6 +808,20 @@ struct Compiler<'a> {
     variables: FxHashMap<&'a BStr, PlaceId>,
     variable_counts: [u32; 2],
     flow_in_bw: bool,
+}
+
+struct BwRequiredLabels<'a> {
+    set: FxHashSet<(Label<'a>, BlockId)>,
+}
+
+impl<'a> BwRequiredLabels<'a> {
+    fn insert(&mut self, label: Label<'a>, block_id: BlockId) {
+        self.set.insert((label, block_id));
+    }
+
+    fn contains(&self, label: Label<'a>, scope: &BlockScope<'a, '_>) -> bool {
+        self.set.contains(&(label, scope.block_id()))
+    }
 }
 
 /// 0xc000_0000 == tag
@@ -856,7 +964,9 @@ impl<'a> Compiler<'a> {
             bw_code_parts: Vec::with_capacity(4),
             labels: FxHashMap::with_capacity_and_hasher(1024, Default::default()),
             needed_label_positions: Vec::with_capacity(128),
-            bw_required_labels: FxHashSet::with_capacity_and_hasher(1024, Default::default()),
+            bw_required_labels: BwRequiredLabels {
+                set: FxHashSet::with_capacity_and_hasher(1024, Default::default()),
+            },
             conditions: Vec::with_capacity(16),
             existing_conditions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
             int_expressions: Vec::with_capacity(16),
@@ -888,11 +998,13 @@ impl<'a> Compiler<'a> {
     }
 
     /// Makes `label` located at current position.
-    fn add_label(&mut self, label: Label<'a>) -> Result<(), Error> {
-        if self.bw_required_labels.contains(&label) {
+    fn add_label(&mut self, label: Label<'a>, scope: &BlockScope<'a, '_>) -> Result<(), Error> {
+        let bw_required = self.bw_required_labels.contains(label, scope);
+
+        if bw_required {
             self.flow_to_bw();
         }
-        match self.labels.entry(label) {
+        match self.labels.entry((label, scope.block_id())) {
             Entry::Vacant(e) => {
                 if self.flow_in_bw {
                     e.insert(CodePosition(0xffff));
@@ -907,22 +1019,34 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn require_bw_label(&mut self, label: Label<'a>) {
-        self.bw_required_labels.insert(label);
+    fn require_bw_label(&mut self, label: Label<'a>, ctx: &mut TextParseContext<'a>) {
+        self.bw_required_labels.insert(label, ctx.current_block.1);
+        for &(_, parent_id, _) in &ctx.block_stack {
+            self.bw_required_labels.insert(label, parent_id);
+        }
     }
 
-    fn set_label_position_to_current(&mut self, label: Label<'a>) {
-        if self.bw_required_labels.contains(&label) {
+    fn set_label_position_to_current<'s>(&'s mut self, label: Label<'a>, scope: &BlockScope<'a, '_>) {
+        if self.bw_required_labels.contains(label, scope) {
             if !self.flow_in_bw {
                 self.emit_aice_jump_to_bw(self.bw_bytecode.len() as u16);
                 self.flow_in_bw = true;
             }
         }
-        *self.labels.get_mut(&label).expect("Label not added?") = self.code_position();
+        let code_position = self.code_position();
+        for block_id in scope.this_and_ancestor_ids() {
+            if let Some(label) = self.labels.get_mut(&(label, block_id)) {
+                *label = code_position;
+                break;
+            }
+        }
     }
 
-    fn label_location(&self, label: Label<'a>) -> Option<CodePosition> {
-        self.labels.get(&label).cloned()
+    fn label_location(&self, label: Label<'a>, scope: &BlockScope<'a, '_>) -> Option<CodePosition> {
+        scope.this_and_ancestor_ids()
+            .filter_map(|block_id| self.labels.get(&(label, block_id)))
+            .cloned()
+            .next()
     }
 
     fn add_bw_code(&mut self, code: &[u8]) {
@@ -984,7 +1108,12 @@ impl<'a> Compiler<'a> {
         self.aice_bytecode.write_u32::<LE>(index as u32).unwrap();
     }
 
-    fn add_if(&mut self, condition: BoolExpr, dest: Label<'a>) -> Result<(), Error> {
+    fn add_if(
+        &mut self,
+        condition: BoolExpr,
+        dest: Label<'a>,
+        block_scope: &BlockScope<'a, '_>
+    ) -> Result<(), Error> {
         self.add_flow_to_aice();
         let index = match self.existing_conditions.get(&condition).cloned() {
             Some(s) => s,
@@ -996,7 +1125,7 @@ impl<'a> Compiler<'a> {
                 index
             }
         };
-        let pos = self.label_location(dest)
+        let pos = self.label_location(dest, block_scope)
             .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
 
         self.aice_bytecode.push(aice_op::IF);
@@ -1004,7 +1133,8 @@ impl<'a> Compiler<'a> {
         self.aice_bytecode.write_u32::<LE>(pos.0).unwrap();
         let offset = self.aice_bytecode.len() as u32 - 4;
         if pos.is_unknown() {
-            self.needed_label_positions.push((CodePosition::aice(offset), dest));
+            let block_id = block_scope.block_id();
+            self.needed_label_positions.push((CodePosition::aice(offset), dest, block_id));
         }
         if pos.if_bw_pos().is_some() {
             self.bw_offsets_in_aice.push(offset);
@@ -1029,6 +1159,7 @@ impl<'a> Compiler<'a> {
         param_text: &'a BStr,
         params: &[BwCommandParam],
         ends_flow: bool,
+        block_scope: &BlockScope<'a, '_>,
     ) -> Result<(), Error> {
         let code = &mut [0u8; 16];
         let code_len = code.len();
@@ -1058,7 +1189,7 @@ impl<'a> Compiler<'a> {
                 }
                 BwCommandParam::Label => {
                     let label = parse_label_ref(arg).ok_or_else(|| Error::Msg("Expected label"))?;
-                    let pos = self.label_location(label)
+                    let pos = self.label_location(label, block_scope)
                         .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", label.0)))?;
                     if let Some(pos) = pos.if_bw_pos() {
                         let offset_in_command = code_len - out.len();
@@ -1067,7 +1198,8 @@ impl<'a> Compiler<'a> {
                         (&mut out).write_u16::<LE>(pos).unwrap();
                         if pos == 0xffff {
                             let pos = CodePosition::bw(offset);
-                            self.needed_label_positions.push((pos, label));
+                            let block_id = block_scope.block_id();
+                            self.needed_label_positions.push((pos, label, block_id));
                         }
                     } else {
                         panic!("BW jumped label was not in BW?");
@@ -1086,9 +1218,9 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn fixup_missing_label_positions(&mut self) {
-        for &(pos, label) in &self.needed_label_positions {
-            let label_pos = self.label_location(label)
+    fn fixup_missing_label_positions(&mut self, blocks: &Blocks<'a>) {
+        for &(pos, label, block_id) in &self.needed_label_positions {
+            let label_pos = self.label_location(label, &blocks.scope(block_id))
                 .unwrap_or_else(|| panic!("Label {} disappeared?", label.0));
             let mut arr = match pos.to_enum() {
                 CodePos::Bw(offset) => &mut self.bw_bytecode[offset as usize..],
@@ -1101,8 +1233,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn compile(mut self, headers: &[Header<'a>]) -> Result<Iscript, Error> {
-        self.fixup_missing_label_positions();
+    fn compile(mut self, blocks: &Blocks<'a>, headers: &[Header<'a>]) -> Result<Iscript, Error> {
+        self.fixup_missing_label_positions(blocks);
 
         if self.bw_bytecode.len() >= 0x10000 {
             return Err(Error::Msg("Iscript too large"));
@@ -1175,6 +1307,7 @@ impl<'a> Compiler<'a> {
         bw_aice_cmd_offsets.insert(0x4353, anim_start_cmd_offset);
         bw_aice_cmd_offsets.insert(0x4550, anim_start_cmd_offset);
 
+        let root_scope = blocks.scope(BlockId(0));
         let headers = headers.iter().map(|header| {
             let animations = header.animations.iter().map(|&label| match label {
                 None => Ok(None),
@@ -1182,7 +1315,7 @@ impl<'a> Compiler<'a> {
                     if *label.0 == &b"[NONE]"[..] {
                         Ok(None)
                     } else {
-                        self.label_location(label).ok_or_else(|| {
+                        self.label_location(label, &root_scope).ok_or_else(|| {
                             Error::Dynamic(format!("Header label '{}' not found", label.0))
                         }).map(|pos| Some(match pos.to_enum() {
                             CodePos::Bw(pos) => CodePosition::bw(
@@ -1268,66 +1401,176 @@ fn bw_code_offset_to_data_offset(code_parts: &[(u16, u16)], offset: u16) -> u16 
 }
 
 
-fn remove_comment(line: &BStr) -> &BStr {
-    match line.find_byte(b'#') {
-        Some(s) => &line[..s],
-        None => line,
-    }
-}
-
 #[derive(Debug)]
 pub struct ErrorWithLine {
     pub error: Error,
     pub line: Option<usize>,
 }
 
+struct Blocks<'a> {
+    blocks: Vec<Block<'a>>,
+    /// Indices of blocks that aren't inlined
+    root_blocks: Vec<BlockId>,
+}
+
+/// Borrow of all blocks with specific block selected.
+struct BlockScope<'a, 'b> {
+    blocks: &'b Blocks<'a>,
+    block: BlockId,
+}
+
+impl<'a: 'b, 'b> BlockScope<'a, 'b> {
+    fn block_id(&self) -> BlockId {
+        self.block
+    }
+
+    fn this_and_ancestor_ids(&self) -> ThisAndAncestorIds<'a, 'b> {
+        ThisAndAncestorIds {
+            blocks: self.blocks,
+            next: self.block,
+        }
+    }
+}
+
+struct ThisAndAncestorIds<'a, 'b> {
+    blocks: &'b Blocks<'a>,
+    next: BlockId,
+}
+
+impl<'a, 'b> Iterator for ThisAndAncestorIds<'a, 'b> {
+    type Item = BlockId;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next.0 == u32::max_value() {
+            None
+        } else {
+            let next = self.next;
+            self.next = self.blocks.blocks[next.0 as usize].parent;
+            Some(next)
+        }
+    }
+}
+
+struct Block<'a> {
+    lines: Vec<PartiallyParsedLine<'a>>,
+    /// Used for label scopes.
+    parent: BlockId,
+    children: Vec<BlockId>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct BlockId(u32);
+
+enum BlockLine<'a> {
+    /// Normal line (Command, rest, linked_block if @{})
+    Command(CommandPrototype, &'a BStr, Option<BlockId>),
+    /// Execution switches to another block (e.g. not @{} block)
+    InlineBlock(BlockId),
+    Label(Label<'a>),
+}
+
+struct PartiallyParsedLine<'a> {
+    ty: BlockLine<'a>,
+    // For error reporting
+    line_number: usize,
+}
+
+impl<'a> Block<'a> {
+    fn dummy() -> Block<'a> {
+        Block {
+            lines: Vec::new(),
+            parent: BlockId(0),
+            children: Vec::new(),
+        }
+    }
+}
+
+impl<'a> Blocks<'a> {
+    fn scope<'b>(&'b self, id: BlockId) -> BlockScope<'a, 'b> {
+        BlockScope {
+            blocks: self,
+            block: id,
+        }
+    }
+
+    fn iter_block_lines<'b, F>(&'b self, id: BlockId, mut callback: F)
+    where F: FnMut(&BlockScope<'a, 'b>, &PartiallyParsedLine<'a>),
+    {
+        let mut stack = vec![(id, 0)];
+        while let Some((id, start)) = stack.pop() {
+            let block = &self.blocks[id.0 as usize];
+            let mut pos = start;
+            let scope = self.scope(id);
+            'current_block_loop: while pos < block.lines.len() {
+                let line = &block.lines[pos];
+                pos += 1;
+                if let BlockLine::InlineBlock(child_id) = line.ty {
+                    stack.push((id, pos));
+                    stack.push((child_id, 0));
+                    break 'current_block_loop;
+                }
+                callback(&scope, line);
+            }
+        }
+    }
+
+    fn start_inline_block(&mut self, ctx: &mut TextParseContext<'a>) {
+        let block_id = BlockId(self.blocks.len() as u32);
+        self.blocks.push(Block::dummy());
+        assert!(self.blocks.len() < u32::max_value() as usize);
+        ctx.current_block.0.children.push(block_id);
+        let new_block = Block {
+            lines: Vec::with_capacity(64),
+            parent: ctx.current_block.1,
+            children: Vec::new(),
+        };
+        ctx.current_block.0.lines.push(PartiallyParsedLine {
+            ty: BlockLine::InlineBlock(block_id),
+            line_number: ctx.line_number,
+        });
+        ctx.block_stack.push((
+            mem::replace(&mut ctx.current_block.0, new_block),
+            mem::replace(&mut ctx.current_block.1, block_id),
+            mem::replace(&mut ctx.current_block.2, ctx.line_number),
+        ));
+    }
+}
+
 pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     let text = BStr::new(text);
-    fn lines<'a>(text: &'a BStr) -> impl Iterator<Item = (usize, &'a BStr)> {
-        text.lines()
-            .enumerate()
-            .map(|(i, line)| (1 + i, remove_comment(line).trim()))
-            .filter(|(_, line)| !line.is_empty())
-    }
 
     let mut compiler = Compiler::new();
     let mut parser = Parser::new();
     let mut errors = Vec::new();
-    for (line_number, line) in lines(text) {
-        if let Err(error) = parser.parse_line_pass1(line, &mut compiler) {
-            errors.push(ErrorWithLine {
-                error,
-                line: Some(line_number),
-            });
-        }
-    }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+
+    let blocks = parser.parse_text(text, &mut compiler)?;
     compiler.add_variables(&parser.variable_types);
-    for (line_number, line) in lines(text) {
-        if let Err(error) = parser.parse_line_add_label(line, &mut compiler) {
-            errors.push(ErrorWithLine {
-                error,
-                line: Some(line_number),
-            });
-        }
+    for &block_id in &blocks.root_blocks {
+        blocks.iter_block_lines(block_id, |block, line| {
+            if let Err(error) = parser.parse_line_add_label(line, &block, &mut compiler) {
+                errors.push(ErrorWithLine {
+                    error,
+                    line: Some(line.line_number),
+                });
+            }
+        });
     }
     if !errors.is_empty() {
         return Err(errors);
     }
-    for (line_number, line) in lines(text) {
-        if let Err(error) = parser.parse_line_pass3(line, &mut compiler) {
-            errors.push(ErrorWithLine {
-                error,
-                line: Some(line_number),
-            });
-        }
+    for &block_id in &blocks.root_blocks {
+        blocks.iter_block_lines(block_id, |block, line| {
+            if let Err(error) = parser.parse_line_pass3(line, &block, &mut compiler) {
+                errors.push(ErrorWithLine {
+                    error,
+                    line: Some(line.line_number),
+                });
+            }
+        });
     }
     if !errors.is_empty() {
         return Err(errors);
     }
-    let script = match compiler.compile(&parser.headers) {
+    let script = match compiler.compile(&blocks, &parser.headers) {
         Ok(o) => o,
         Err(error) => {
             errors.push(ErrorWithLine {
@@ -1363,6 +1606,40 @@ mod test {
                     }
                 }
                 panic!("{} errors", errors.len());
+            }
+        }
+    }
+
+    fn compile_err(filename: &str) -> Vec<ErrorWithLine> {
+        let text = read(filename);
+        match compile_iscript_txt(&text) {
+            Ok(_) => panic!("Compilation succeeded"),
+            Err(errors) => errors,
+        }
+    }
+
+    fn find_error(errors: &mut Vec<ErrorWithLine>, substring: &str, line: usize) {
+        let index = errors.iter()
+            .position(|x| {
+                if line != !0 {
+                    if x.line != Some(line) {
+                        return false;
+                    }
+                } else {
+                    if x.line != None {
+                        return false;
+                    }
+                }
+                let text = format!("{}", x.error);
+                text.contains(substring)
+            });
+        match index {
+            Some(s) => {
+                errors.remove(s);
+            }
+            None => {
+                println!("Errors: {:#?}", errors);
+                panic!("Couldn't find error '{}' @ line {}", substring, line);
             }
         }
     }
@@ -1405,5 +1682,17 @@ mod test {
     fn vars() {
         let iscript = compile_success("vars.txt");
         assert_eq!(iscript.global_count, 1);
+    }
+
+    #[test]
+    fn blocks_ok() {
+        compile_success("blocks_ok.txt");
+    }
+
+    #[test]
+    fn blocks_err() {
+        let mut errors = compile_err("blocks_err.txt");
+        find_error(&mut errors, "'ScourgeDeath' not found", !0);
+        assert!(errors.is_empty());
     }
 }
