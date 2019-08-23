@@ -21,7 +21,7 @@ use std::fmt;
 use std::mem;
 use std::rc::Rc;
 
-use bstr::{BStr, BString};
+use bstr::{ByteSlice, BString, BStr};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use fxhash::{FxHashMap, FxHashSet};
 use quick_error::quick_error;
@@ -60,7 +60,7 @@ impl<'b> expr::CustomParser for ExprParser<'b> {
         let word_end = input.iter().position(|&x| x == b' ')
             .unwrap_or(input.len());
         let word = &input[..word_end];
-        if let Some(&var) = self.compiler.variables.get(&BStr::new(word)) {
+        if let Some(&var) = self.compiler.variables.get(word) {
             return Some((Int::Variable(var), &input[word_end..]));
         }
         if let Some(&var) = self.parser.bw_places.get(word) {
@@ -303,7 +303,7 @@ struct Parser<'a> {
     // true if the previous command didn't force end execution
     animation_name_to_index: FxHashMap<&'static [u8], u8>,
     command_map: FxHashMap<&'static [u8], CommandPrototype>,
-    variable_types: FxHashMap<&'a BStr, VariableType>,
+    variable_types: FxHashMap<&'a [u8], VariableType>,
     bw_places: FxHashMap<&'static [u8], PlaceId>,
 }
 
@@ -325,7 +325,7 @@ impl<'a> Parser<'a> {
     /// Separates blocks out of the text, parses headers.
     fn parse_text(
         &mut self,
-        text: &'a BStr,
+        text: &'a [u8],
         compiler: &mut Compiler<'a>,
     ) -> Result<Blocks<'a>, Vec<ErrorWithLine>> {
         let mut errors = Vec::new();
@@ -348,7 +348,7 @@ impl<'a> Parser<'a> {
             ctx.line_number += 1;
             let line_end = ctx.text.find_byte(b'\n').unwrap_or_else(|| ctx.text.len());
             let mut line = &ctx.text[..line_end];
-            ctx.text = ctx.text.get(line_end + 1..).unwrap_or_else(|| BStr::new(b""));
+            ctx.text = ctx.text.get(line_end + 1..).unwrap_or_else(|| b"");
             // Comment
             if let Some(comment_start) = line.find_byte(b'#') {
                 line = &line[..comment_start];
@@ -357,7 +357,7 @@ impl<'a> Parser<'a> {
             if line.is_empty() {
                 continue;
             }
-            if line == BStr::new(b"}") {
+            if line == b"}" {
                 if let Some((block, index, start_line)) = ctx.block_stack.pop() {
                     blocks.blocks[(ctx.current_block.1).0 as usize] =
                         mem::replace(&mut ctx.current_block.0, block);
@@ -406,12 +406,12 @@ impl<'a> Parser<'a> {
 
     fn parse_line(
         &mut self,
-        line: &'a BStr,
+        line: &'a [u8],
         compiler: &mut Compiler<'a>,
         blocks: &mut Blocks<'a>,
         ctx: &mut TextParseContext<'a>,
     ) -> Result<(), Error> {
-        if line == ".headerend" {
+        if line == b".headerend" {
             return if let Some(header) = self.parsing_header.take() {
                 if header.iscript_id == !0 {
                     return Err(Error::Msg("Header missing iscript ID"));
@@ -444,7 +444,7 @@ impl<'a> Parser<'a> {
             }
             return Ok(());
         }
-        if line == ".headerstart" {
+        if line == b".headerstart" {
             if ctx.is_continuing_commands {
                 return Err(Error::Msg("Previous script hasn't terminated"));
             }
@@ -460,7 +460,7 @@ impl<'a> Parser<'a> {
 
     fn parse_line_command(
         &mut self,
-        line: &'a BStr,
+        line: &'a [u8],
         compiler: &mut Compiler<'a>,
         blocks: &mut Blocks<'a>,
         ctx: &mut TextParseContext<'a>,
@@ -475,13 +475,13 @@ impl<'a> Parser<'a> {
             }
             return Ok(());
         }
-        if line == BStr::new(b"{") {
+        if line == b"{" {
             blocks.start_inline_block(ctx);
             return Ok(());
         }
         let command = line.fields().next().ok_or_else(|| Error::Msg("Empty line???"))?;
         let rest = (&line[command.len()..]).trim_start();
-        match self.command_map.get(command.as_ref()) {
+        match self.command_map.get(&command) {
             Some(&command) => {
                 match command {
                     CommandPrototype::BwCommand(_, commands, ends_flow) => {
@@ -512,13 +512,13 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn add_set_decl(&mut self, var_name: &'a BStr, ty: VariableType) -> Result<(), Error> {
+    fn add_set_decl(&mut self, var_name: &'a [u8], ty: VariableType) -> Result<(), Error> {
         let old = self.variable_types.entry(var_name)
             .or_insert(ty);
         if *old != ty {
             Err(Error::Dynamic(format!(
                 "Conflicting variable type for '{}', was previously used with {:?}",
-                var_name, old,
+                var_name.as_bstr(), old,
             )))
         } else {
             Ok(())
@@ -568,7 +568,7 @@ impl<'a> Parser<'a> {
                     let (condition, rest) = parse_bool_expr(rest, self, &compiler)?;
                     let mut tokens = rest.fields();
                     let next = tokens.next();
-                    if next != Some(BStr::new("goto")) {
+                    if next != Some(b"goto") {
                         return Err(Error::Dynamic(format!("Expected 'goto', got {:?}", next)));
                     }
                     let label = tokens.next()
@@ -579,7 +579,9 @@ impl<'a> Parser<'a> {
                 CommandPrototype::FireWeapon => {
                     let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
                     if !rest.is_empty() {
-                        return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
+                        return Err(
+                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
+                        );
                     }
                     let id = compiler.int_expr_id(expr);
                     compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, id);
@@ -601,7 +603,9 @@ impl<'a> Parser<'a> {
                     let (place, rest) = self.parse_set_place(rest)?;
                     let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
                     if !rest.is_empty() {
-                        return Err(Error::Dynamic(format!("Trailing characters '{}'", rest)));
+                        return Err(
+                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
+                        );
                     }
                     compiler.add_set(place, expr);
                     Ok(())
@@ -611,28 +615,28 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_set_place(&self, text: &'a BStr) -> Result<(ParsedPlace<'a>, &'a BStr), Error> {
+    fn parse_set_place(&self, text: &'a [u8]) -> Result<(ParsedPlace<'a>, &'a [u8]), Error> {
         let (place, rest) = split_first_token(text)
             .ok_or_else(|| Error::Msg("Expected place"))?;
         let ty = match place {
-            x if x == "global" => Some(VariableType::Global),
-            x if x == "spritelocal" => Some(VariableType::SpriteLocal),
+            x if x == b"global" => Some(VariableType::Global),
+            x if x == b"spritelocal" => Some(VariableType::SpriteLocal),
             _ => None,
         };
         if let Some(ty) = ty {
             let (name, rest) = split_first_token(rest)
                 .ok_or_else(|| Error::Msg("Expected variable name"))?;
             let (_, rest) = split_first_token(rest)
-                .filter(|x| x.0 == "=")
+                .filter(|x| x.0 == b"=")
                 .ok_or_else(|| Error::Msg("Expected '='"))?;
             return Ok((ParsedPlace::Variable(ty, name), rest));
         }
         let (_, rest) = split_first_token(rest)
-            .filter(|x| x.0 == "=")
+            .filter(|x| x.0 == b"=")
             .ok_or_else(|| Error::Msg("Expected '='"))?;
         match self.bw_places.get(place.as_bytes()) {
             Some(&s) => Ok((ParsedPlace::Bw(s), rest)),
-            None => Err(Error::Dynamic(format!("Unknown variable type '{}'", place))),
+            None => Err(Error::Dynamic(format!("Unknown variable type '{}'", place.as_bstr()))),
         }
     }
 }
@@ -641,51 +645,51 @@ struct TextParseContext<'a> {
     // Block, index, block start line
     block_stack: Vec<(Block<'a>, BlockId, usize)>,
     current_block: (Block<'a>, BlockId, usize),
-    text: &'a BStr,
+    text: &'a [u8],
     line_number: usize,
     is_continuing_commands: bool,
 }
 
-fn split_first_token(text: &BStr) -> Option<(&BStr, &BStr)> {
+fn split_first_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
     let start = text.bytes().position(|x| x != b' ' && x != b'\t')?;
     let end = start + text.bytes().skip(start).position(|x| x == b' ' || x == b'\t')?;
     let first = &text[start..end];
     Some(match text.bytes().skip(end).position(|x| x != b' ' && x != b'\t') {
         Some(s) => (first, &text[end + s..]),
-        None => (first, BStr::new(&[])),
+        None => (first, b""),
     })
 }
 
 fn parse_bool_expr<'a>(
-    text: &'a BStr,
+    text: &'a [u8],
     parser: &Parser<'a>,
     compiler: &Compiler<'a>,
-) -> Result<(BoolExpr, &'a BStr), Error> {
+) -> Result<(BoolExpr, &'a [u8]), Error> {
     let mut parser = ExprParser {
         compiler,
         parser,
     };
     CustomBoolExpr::parse_part_custom(text.as_ref(), &mut parser)
-        .map(|(a, b)| (a, BStr::new(b)))
+        .map(|(a, b)| (a, b))
         .map_err(|e| e.into())
 }
 
 fn parse_int_expr<'a>(
-    text: &'a BStr,
+    text: &'a [u8],
     parser: &Parser<'a>,
     compiler: &Compiler<'a>,
-) -> Result<(IntExpr, &'a BStr), Error> {
+) -> Result<(IntExpr, &'a [u8]), Error> {
     let mut parser = ExprParser {
         compiler,
         parser,
     };
     CustomIntExpr::parse_part_custom(text.as_ref(), &mut parser)
-        .map(|(a, b)| (a, BStr::new(b)))
+        .map(|(a, b)| (a, b))
         .map_err(|e| e.into())
 }
 
 fn mark_required_bw_labels<'a>(
-    text: &'a BStr,
+    text: &'a [u8],
     params: &[BwCommandParam],
     compiler: &mut Compiler<'a>,
     ctx: &mut TextParseContext<'a>,
@@ -703,14 +707,14 @@ fn mark_required_bw_labels<'a>(
 }
 
 fn parse_header_opcode<'a>(
-    line: &'a BStr,
+    line: &'a [u8],
     animation_name_to_index: &FxHashMap<&'static [u8], u8>,
 ) -> Result<HeaderOpcode<'a>, Error> {
     let mut tokens = line.fields();
     let first = tokens.next().ok_or_else(|| Error::Msg("???"))?;
-    if first == "Type" {
+    if first == b"Type" {
         Ok(HeaderOpcode::Type)
-    } else if first == "IsId" {
+    } else if first == b"IsId" {
         let id = tokens.next()
             .and_then(|x| parse_u16(x))
             .ok_or_else(|| Error::Msg("Expected iscript ID"))?;
@@ -720,24 +724,26 @@ fn parse_header_opcode<'a>(
         if let Some(next) = tokens.next() {
             return Err(Error::Trailing(next.into()));
         }
-        let animation = match animation_name_to_index.get(first.as_ref()) {
+        let animation = match animation_name_to_index.get(first) {
             Some(&x) => x,
-            None => return Err(Error::Dynamic(format!("Unknown animation '{}'", first))),
+            None => {
+                return Err(Error::Dynamic(format!("Unknown animation '{}'", first.as_bstr())))
+            }
         };
-        Ok(HeaderOpcode::Animation(animation, Label(label)))
+        Ok(HeaderOpcode::Animation(animation, Label(label.into())))
     }
 }
 
 /// Parses line in form "Label:", or returns None for other command
 /// Bool is true if the label is followed by '{'
-fn parse_label<'a>(line: &'a BStr) -> Result<Option<(Label<'a>, bool)>, Error> {
+fn parse_label<'a>(line: &'a [u8]) -> Result<Option<(Label<'a>, bool)>, Error> {
     let mut tokens = line.fields();
     let first = tokens.next().ok_or_else(|| Error::Msg("???"))?;
     if first.ends_with(b":") {
         let label = &first[..first.len() - 1];
         if let Some(label) = parse_label_ref(label) {
             if let Some(next) = tokens.next() {
-                if next == BStr::new(b"{") {
+                if next == b"{" {
                     if let Some(next) = tokens.next() {
                         Err(Error::Trailing(next.into()))
                     } else {
@@ -758,24 +764,24 @@ fn parse_label<'a>(line: &'a BStr) -> Result<Option<(Label<'a>, bool)>, Error> {
 }
 
 /// Parses label name (as in argument)
-fn parse_label_ref<'a>(label: &'a BStr) -> Option<Label<'a>> {
+fn parse_label_ref<'a>(label: &'a [u8]) -> Option<Label<'a>> {
     if label.bytes().all(|x| x.is_ascii_alphanumeric() || x == b'_') {
-        Some(Label(label))
+        Some(Label(label.into()))
     } else {
         None
     }
 }
 
-fn parse_u16(text: &BStr) -> Option<u16> {
-    let (base, text) = match text.starts_with("0x") {
+fn parse_u16(text: &[u8]) -> Option<u16> {
+    let (base, text) = match text.starts_with(b"0x") {
         true => (16, &text[2..]),
         false => (10, text),
     };
     u16::from_str_radix(text.to_str().ok()?, base).ok()
 }
 
-fn parse_u8(text: &BStr) -> Option<u8> {
-    let (base, text) = match text.starts_with("0x") {
+fn parse_u8(text: &[u8]) -> Option<u8> {
+    let (base, text) = match text.starts_with(b"0x") {
         true => (16, &text[2..]),
         false => (10, text),
     };
@@ -805,7 +811,7 @@ struct Compiler<'a> {
     existing_conditions: FxHashMap<Rc<BoolExpr>, u32>,
     int_expressions: Vec<Rc<IntExpr>>,
     existing_int_expressions: FxHashMap<Rc<IntExpr>, u32>,
-    variables: FxHashMap<&'a BStr, PlaceId>,
+    variables: FxHashMap<&'a [u8], PlaceId>,
     variable_counts: [u32; 2],
     flow_in_bw: bool,
 }
@@ -829,7 +835,7 @@ impl<'a> BwRequiredLabels<'a> {
 pub struct PlaceId(pub u32);
 
 enum ParsedPlace<'a> {
-    Variable(VariableType, &'a BStr),
+    Variable(VariableType, &'a [u8]),
     Bw(PlaceId),
 }
 
@@ -985,7 +991,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn add_variables(&mut self, variables: &FxHashMap<&'a BStr, VariableType>) {
+    fn add_variables(&mut self, variables: &FxHashMap<&'a [u8], VariableType>) {
         self.variables.reserve(variables.len());
         for (&name, &ty) in variables {
             let id = self.variable_counts[ty as usize] as u32;
@@ -1156,7 +1162,7 @@ impl<'a> Compiler<'a> {
     fn add_bw_command(
         &mut self,
         byte: u8,
-        param_text: &'a BStr,
+        param_text: &'a [u8],
         params: &[BwCommandParam],
         ends_flow: bool,
         block_scope: &BlockScope<'a, '_>,
@@ -1312,7 +1318,7 @@ impl<'a> Compiler<'a> {
             let animations = header.animations.iter().map(|&label| match label {
                 None => Ok(None),
                 Some(label) => {
-                    if *label.0 == &b"[NONE]"[..] {
+                    if label.0 == &b"[NONE]"[..] {
                         Ok(None)
                     } else {
                         self.label_location(label, &root_scope).ok_or_else(|| {
@@ -1462,7 +1468,7 @@ struct BlockId(u32);
 
 enum BlockLine<'a> {
     /// Normal line (Command, rest, linked_block if @{})
-    Command(CommandPrototype, &'a BStr, Option<BlockId>),
+    Command(CommandPrototype, &'a [u8], Option<BlockId>),
     /// Execution switches to another block (e.g. not @{} block)
     InlineBlock(BlockId),
     Label(Label<'a>),
@@ -1536,8 +1542,6 @@ impl<'a> Blocks<'a> {
 }
 
 pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
-    let text = BStr::new(text);
-
     let mut compiler = Compiler::new();
     let mut parser = Parser::new();
     let mut errors = Vec::new();
