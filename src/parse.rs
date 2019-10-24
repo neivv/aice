@@ -145,6 +145,7 @@ pub fn animation_name(anim: u8) -> Option<&'static str> {
 
 enum BwCommandParam {
     U8,
+    I8,
     U16,
     U16VarLen,
     Label,
@@ -164,23 +165,23 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
     &[
         (b"playfram", bw_cmd(0x00, &[U16])),
         (b"playframtile", bw_cmd(0x01, &[U16])),
-        (b"sethorpos", bw_cmd(0x02, &[U8])),
-        (b"setvertpos", bw_cmd(0x03, &[U8])),
-        (b"setpos", bw_cmd(0x04, &[U8, U8])),
+        (b"sethorpos", bw_cmd(0x02, &[I8])),
+        (b"setvertpos", bw_cmd(0x03, &[I8])),
+        (b"setpos", bw_cmd(0x04, &[I8, I8])),
         (b"wait", bw_cmd(0x05, &[U8])),
         (b"waitrand", bw_cmd(0x06, &[U8, U8])),
         (b"goto", bw_cmd_final(0x07, &[Label])),
-        (b"imgol", bw_cmd(0x08, &[U16, U8, U8])),
-        (b"imgul", bw_cmd(0x09, &[U16, U8, U8])),
+        (b"imgol", bw_cmd(0x08, &[U16, I8, I8])),
+        (b"imgul", bw_cmd(0x09, &[U16, I8, I8])),
         (b"imgolorig", bw_cmd(0x0a, &[U16])),
         (b"switchul", bw_cmd(0x0b, &[U16])),
-        (b"imgoluselo", bw_cmd(0x0d, &[U16, U8, U8])),
-        (b"imguluselo", bw_cmd(0x0e, &[U16, U8, U8])),
-        (b"sprol", bw_cmd(0x0f, &[U16, U8, U8])),
-        (b"highsprol", bw_cmd(0x10, &[U16, U8, U8])),
-        (b"lowsprul", bw_cmd(0x11, &[U16, U8, U8])),
-        (b"spruluselo", bw_cmd(0x13, &[U16, U8, U8])),
-        (b"sprul", bw_cmd(0x14, &[U16, U8, U8])),
+        (b"imgoluselo", bw_cmd(0x0d, &[U16, I8, I8])),
+        (b"imguluselo", bw_cmd(0x0e, &[U16, I8, I8])),
+        (b"sprol", bw_cmd(0x0f, &[U16, I8, I8])),
+        (b"highsprol", bw_cmd(0x10, &[U16, I8, I8])),
+        (b"lowsprul", bw_cmd(0x11, &[U16, I8, I8])),
+        (b"spruluselo", bw_cmd(0x13, &[U16, I8, I8])),
+        (b"sprul", bw_cmd(0x14, &[U16, I8, I8])),
         (b"sproluselo", bw_cmd(0x15, &[U16, U8])),
         (b"end", End),
         (b"setflipstate", bw_cmd(0x17, &[U8])),
@@ -221,11 +222,11 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"trgtrangecondjmp", bw_cmd(0x3a, &[U16, Label])),
         (b"trgtarccondjmp", bw_cmd(0x3b, &[U16, U16, Label])),
         (b"curdirectcondjmp", bw_cmd(0x3c, &[U16, U16, Label])),
-        (b"imgulnextid", bw_cmd(0x3d, &[U8, U8])),
+        (b"imgulnextid", bw_cmd(0x3d, &[I8, I8])),
         (b"liftoffcondjmp", bw_cmd(0x3f, &[Label])),
         (b"warpoverlay", bw_cmd(0x40, &[U16])),
         (b"orderdone", bw_cmd(0x41, &[U8])),
-        (b"grdsprol", bw_cmd(0x42, &[U16, U8, U8])),
+        (b"grdsprol", bw_cmd(0x42, &[U16, I8, I8])),
         (b"__43", bw_cmd(0x43, &[])),
         (b"dogrddamage", bw_cmd(0x44, &[])),
         (b"if", If),
@@ -788,6 +789,22 @@ fn parse_u8(text: &[u8]) -> Option<u8> {
     u8::from_str_radix(text.to_str().ok()?, base).ok()
 }
 
+/// Supports both u8 and i8 forms, so returns as u8
+fn parse_i8(text: &[u8]) -> Option<u8> {
+    let (negative, text) = match text.starts_with(b"-") {
+        true => (true, &text[1..]),
+        false => (false, text),
+    };
+    let as_u8 = parse_u8(text)?;
+    if negative && as_u8 <= 128 {
+        Some(0u8.wrapping_sub(as_u8))
+    } else if !negative {
+        Some(as_u8)
+    } else {
+        None
+    }
+}
+
 enum HeaderOpcode<'a> {
     Type,
     IscriptId(u16),
@@ -1176,6 +1193,10 @@ impl<'a> Compiler<'a> {
             let arg = tokens.next()
                 .ok_or_else(|| Error::Dynamic(format!("Expected {} arguments", params.len())))?;
             match param {
+                BwCommandParam::I8 => {
+                    let val = parse_i8(arg).ok_or_else(|| Error::Msg("Expected I8"))?;
+                    (&mut out).write_u8(val).unwrap();
+                }
                 BwCommandParam::U8 => {
                     let val = parse_u8(arg).ok_or_else(|| Error::Msg("Expected U8"))?;
                     (&mut out).write_u8(val).unwrap();
@@ -1698,5 +1719,20 @@ mod test {
         let mut errors = compile_err("blocks_err.txt");
         find_error(&mut errors, "'ScourgeDeath' not found", !0);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_i8() {
+        assert_eq!(parse_i8(b"3"), Some(3));
+        assert_eq!(parse_i8(b"127"), Some(127));
+        assert_eq!(parse_i8(b"128"), Some(128));
+        assert_eq!(parse_i8(b"-128"), Some(128));
+        assert_eq!(parse_i8(b"-1"), Some(255));
+        assert_eq!(parse_i8(b"255"), Some(255));
+        assert_eq!(parse_i8(b"-129"), None);
+        assert_eq!(parse_i8(b"256"), None);
+        assert_eq!(parse_i8(b"255"), Some(255));
+        assert_eq!(parse_i8(b"-0x10"), Some(240));
+        assert_eq!(parse_i8(b"-16"), Some(240));
     }
 }
