@@ -710,6 +710,7 @@ pub unsafe fn set_as_bw_script(iscript: Iscript) {
     }
     */
     let bw_bin = crate::samase::get_iscript_bin();
+    assert!(iscript.bw_data.len() < 0x10000);
     std::ptr::copy_nonoverlapping(iscript.bw_data.as_ptr(), bw_bin, iscript.bw_data.len());
     *ISCRIPT.lock("set_as_bw_script") = Some(iscript);
 }
@@ -719,5 +720,9 @@ pub unsafe extern fn iscript_read_hook(_filename: *const u8, out_size: *mut u32)
     debug!("Iscript read hook");
     let data = HeapAlloc(GetProcessHeap(), 0, 0x10000) as *mut u8;
     *out_size = 0x10000;
+    let iscript = crate::globals::init_for_lobby_map_preview();
+    assert!(iscript.bw_data.len() < 0x10000);
+    std::ptr::copy_nonoverlapping(iscript.bw_data.as_ptr(), data, iscript.bw_data.len());
+    *ISCRIPT.lock("set_as_bw_script") = Some(iscript);
     data
 }

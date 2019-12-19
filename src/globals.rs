@@ -36,6 +36,16 @@ impl Globals {
     }
 }
 
+/// Since lobby map preview uses CreateUnit which runs a frame of iscript ._.
+/// TODO make lobby preview jsut use a dummy script?
+pub unsafe extern fn init_for_lobby_map_preview() -> crate::parse::Iscript {
+    let mut globals = Globals::new();
+    let iscript = iscript::load_iscript(true);
+    globals.iscript_state = iscript::IscriptState::from_script(&iscript);
+    *Globals::get("init") = globals;
+    iscript
+}
+
 pub unsafe extern fn init_game() {
     let mut globals = Globals::new();
     let iscript = iscript::load_iscript(true);
