@@ -19,11 +19,12 @@ mod windows;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use lazy_static::lazy_static;
+use parking_lot::Mutex;
 
 use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
 
 lazy_static! {
-    static ref PATCHER: whack::Patcher = whack::Patcher::new();
+    static ref PATCHER: Mutex<whack::Patcher> = Mutex::new(whack::Patcher::new());
 }
 
 fn init() {
@@ -132,7 +133,7 @@ pub extern fn Initialize() {
             let ctx = samase_shim::init_1161();
             samase::samase_plugin_init(ctx.api());
 
-            let mut active_patcher = PATCHER.lock().unwrap();
+            let mut active_patcher = PATCHER.lock();
 
             let mut exe = active_patcher.patch_exe(0x00400000);
             bw::init_funcs(&mut exe);
