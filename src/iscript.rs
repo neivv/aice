@@ -178,6 +178,7 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                             FlingyVar::Speed => (*flingy).current_speed as i32,
                             FlingyVar::PositionX => (*flingy).position.x as i32,
                             FlingyVar::PositionY => (*flingy).position.y as i32,
+                            FlingyVar::Player => (*flingy).player as i32,
                         }
                     },
                     Place::Bullet(ty) => unsafe {
@@ -534,6 +535,7 @@ unsafe fn set_flingy_var(flingy: *mut bw::Unit, ty: FlingyVar, value: i32) {
         // Todo
         FlingyVar::PositionX => bw_print!("Cannot set flingy pos"),
         FlingyVar::PositionY => bw_print!("Cannot set flingy pos"),
+        FlingyVar::Player => bw_print!("Cannot set player"),
     }
 }
 

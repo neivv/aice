@@ -262,6 +262,8 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"bullet.bounces_remaining", bullet(BouncesRemaining)),
         (b"bullet.order_target_x", bullet(OrderTargetX)),
         (b"bullet.order_target_y", bullet(OrderTargetY)),
+        (b"speed", flingy(Speed)),
+        (b"player", flingy(Player)),
     ]
 };
 
@@ -876,6 +878,8 @@ pub enum FlingyVar {
     Acceleration,
     TopSpeed,
     Speed,
+    // Not really a flingy var but too lazy to implement entity just for this
+    Player,
 }
 
 #[repr(u8)]
