@@ -436,6 +436,24 @@ impl<'a> IscriptRunner<'a> {
                         // This is the last image being deleted, the sprite
                         // will be cleaned up as well
                         self.state.sprite_locals.remove(&SerializableSprite(sprite));
+                        self.init_sprite_owner();
+                        if let Some(bullet) = self.bullet {
+                            if (*bullet).state != 5 {
+                                bw_print!(
+                                    "ERROR: Bullet 0x{:x} ended its iscript \
+                                    without bullet being in death state (bullet.state = 5)",
+                                    (*bullet).weapon_id,
+                                );
+                            }
+                        } else if let Some(unit) = self.unit {
+                            if unit.order() != bw_dat::order::DIE {
+                                bw_print!(
+                                    "ERROR: Unit 0x{:x} ended its iscript \
+                                    while the unit is still alive",
+                                    unit.id().0,
+                                );
+                            }
+                        }
                     }
                     (*self.bw_script).pos = 0x4;
                     self.in_aice_code = false;
