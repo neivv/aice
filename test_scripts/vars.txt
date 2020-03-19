@@ -163,11 +163,15 @@ CarrierDeath:
 
 CarrierWalking:
     set flingy.turn_speed = 2
-    set spritelocal tmp = flingy.acceleration
+# Test for allowing numbers in var names
+    set spritelocal tmp2 = flingy.acceleration
     set flingy.acceleration = 7000
     randcondjmp 128 CarrierSlowTurn
     set flingy.turn_speed = 23
-    set flingy.acceleration = tmp
+    set flingy.acceleration = tmp2
+    set spritelocal p = player
+# Test for var in a function
+    if upgrade(p, 2) == 0 goto long00
 CarrierSlowTurn:
     imgol           114 0 0 # CarrierGlow (thingy\pcaGlow.grp)
     goto            long00

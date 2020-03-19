@@ -57,8 +57,10 @@ struct ExprParser<'a> {
 impl<'b> expr::CustomParser for ExprParser<'b> {
     type State = ExprState;
     fn parse_int<'a>(&mut self, input: &'a [u8]) -> Option<(Int, &'a [u8])> {
-        let word_end = input.iter().position(|&x| x == b' ')
-            .unwrap_or(input.len());
+        let word_end = input.iter().position(|&x| match x {
+            b'a' ..= b'z' | b'A' ..= b'Z' | b'_' | b'.' | b'0' ..= b'9' => false,
+            _ => true,
+        }).unwrap_or(input.len());
         let word = &input[..word_end];
         if let Some(&var) = self.compiler.variables.get(word) {
             return Some((Int::Variable(var), &input[word_end..]));
