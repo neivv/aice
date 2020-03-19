@@ -156,6 +156,7 @@ struct CustomCtx<'a> {
     image: *mut bw::Image,
     unit: Option<Unit>,
     bullet: Option<*mut bw::Bullet>,
+    dry_run: bool,
 }
 
 impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
@@ -173,16 +174,22 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                         let flingy = match flingy {
                             Some(s) => s,
                             None => {
-                                error!(
-                                    "Error: image {:04x} has no flingy",
-                                    (*self.image).image_id,
-                                );
-                                bw_print!(
-                                    "Error: image {:04x} has no flingy",
-                                    (*self.image).image_id,
-                                );
-                                show_unit_frame0_help();
-                                show_bullet_frame0_help();
+                                // Don't error on dry run as bw runs movement
+                                // animation for a bit until before the unit
+                                // is even fully created.
+                                // Alternatively could get unit ptr from first_free_unit.
+                                if !self.dry_run {
+                                    error!(
+                                        "Error: image {:04x} has no flingy",
+                                        (*self.image).image_id,
+                                    );
+                                    bw_print!(
+                                        "Error: image {:04x} has no flingy",
+                                        (*self.image).image_id,
+                                    );
+                                    show_unit_frame0_help();
+                                    show_bullet_frame0_help();
+                                }
                                 return i32::min_value();
                             }
                         };
@@ -309,6 +316,7 @@ impl<'a> IscriptRunner<'a> {
                 image: self.image,
                 bullet: self.bullet,
                 unit: self.unit,
+                dry_run: self.dry_run,
             },
         }
     }
