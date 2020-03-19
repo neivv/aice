@@ -43,7 +43,7 @@ impl<T> Mutex<T> {
             self_thread_id = GetCurrentThreadId();
             if self.locking_thread.load(Ordering::Relaxed) as u32 == self_thread_id {
                 panic!(
-                    "Thread {} to lock a mutex recursively from '{}', it was already locked by '{}'",
+                    "Thread {} tried to lock a mutex recursively from '{}', it was already locked by '{}'",
                     self_thread_id, locking_call, *self.locking_call.get(),
                 );
             }

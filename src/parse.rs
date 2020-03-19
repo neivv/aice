@@ -84,6 +84,7 @@ pub mod aice_op {
     pub const SET: u8 = 0x04;
     pub const SET_ORDER_WEAPON: u8 = 0x05;
     pub const CLEAR_ATTACKING_FLAG: u8 = 0x06;
+    pub const CREATE_UNIT: u8 = 0x07;
 }
 
 quick_error! {
@@ -234,6 +235,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"if", If),
         (b"set", Set),
         (b"fireweapon", FireWeapon),
+        (b"create_unit", CreateUnit),
     ]
 };
 
@@ -277,6 +279,7 @@ enum CommandPrototype {
     End,
     FireWeapon,
     GotoRepeatAttk,
+    CreateUnit,
 }
 
 pub struct Iscript {
@@ -597,6 +600,27 @@ impl<'a> Parser<'a> {
                 }
                 CommandPrototype::GotoRepeatAttk => {
                     compiler.add_aice_command(aice_op::CLEAR_ATTACKING_FLAG);
+                    Ok(())
+                }
+                CommandPrototype::CreateUnit => {
+                    let (unit_id, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let (x, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let (y, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let (player, rest) = parse_int_expr(rest, self, &compiler)?;
+                    if !rest.is_empty() {
+                        return Err(
+                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
+                        );
+                    }
+                    let unit_id = compiler.int_expr_id(unit_id);
+                    let x = compiler.int_expr_id(x);
+                    let y = compiler.int_expr_id(y);
+                    let player = compiler.int_expr_id(player);
+                    compiler.add_aice_command(aice_op::CREATE_UNIT);
+                    compiler.aice_bytecode.write_u32::<LE>(unit_id).unwrap();
+                    compiler.aice_bytecode.write_u32::<LE>(x).unwrap();
+                    compiler.aice_bytecode.write_u32::<LE>(y).unwrap();
+                    compiler.aice_bytecode.write_u32::<LE>(player).unwrap();
                     Ok(())
                 }
                 CommandPrototype::End => {

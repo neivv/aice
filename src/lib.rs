@@ -13,7 +13,6 @@ mod globals;
 mod iscript;
 mod parse;
 mod recurse_checked_mutex;
-mod unit;
 mod windows;
 
 use std::sync::atomic::{AtomicBool, Ordering};

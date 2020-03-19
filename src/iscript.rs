@@ -1,4 +1,6 @@
 use std::convert::TryFrom;
+use std::ptr::null_mut;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use byteorder::{ReadBytesExt, LE};
 use fxhash::FxHashMap;
@@ -6,7 +8,7 @@ use lazy_static::lazy_static;
 use libc::c_void;
 use serde_derive::{Serialize, Deserialize};
 
-use bw_dat::{Game, Unit};
+use bw_dat::{Game, Unit, UnitId};
 
 use crate::bw;
 use crate::globals::{Globals, SerializableSprite};
@@ -14,7 +16,6 @@ use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
 };
 use crate::recurse_checked_mutex::{Mutex};
-use crate::unit;
 use crate::windows;
 
 lazy_static! {
@@ -29,6 +30,11 @@ pub struct IscriptState {
 }
 
 const TEMP_LOCAL_ID: u32 = !0;
+
+/// Unit id of a unit which is being created, !0 for none.
+/// Used as a stack as a unit creation iscript can cause another unit to be created.
+static CREATING_UNIT: AtomicUsize = AtomicUsize::new(!0);
+static CREATING_BULLET: AtomicUsize = AtomicUsize::new(!0);
 
 #[derive(Serialize, Deserialize)]
 struct SpriteLocal {
@@ -95,35 +101,53 @@ pub unsafe extern fn run_aice_script(
     let iscript = iscript as *mut bw::Iscript;
     (*iscript).wait = 0;
     let image = image as *mut bw::Image;
-    let this = ISCRIPT.lock("run_aice_script");
-    let mut globals = Globals::get("run_aice_script");
-    let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("run_aice_script");
-    let this = this.as_ref().expect("No iscript");
+    let mut this_guard = ISCRIPT.lock("run_aice_script");
+    let mut this = this_guard.as_ref().expect("No iscript");
     let bw_bin = crate::samase::get_iscript_bin();
     let bw_offset = (bw_pos as usize - 1).checked_sub(bw_bin as usize)
         .and_then(|x| u16::try_from(x).ok())
         .expect("Bad iscript.bin ptr");
-    let aice_offset = match this.bw_aice_cmd_offsets.get(&bw_offset) {
-        Some(&s) => s,
+    let mut aice_offset = match this.bw_aice_cmd_offsets.get(&bw_offset) {
+        Some(&s) => s as usize,
         None => {
             invalid_aice_command(iscript, image, CodePos::Bw(bw_offset));
             return;
         }
     };
     let game = Game::from_ptr(bw::game());
-    let mut runner = IscriptRunner::new(
-        this,
-        &mut globals.iscript_state,
-        aice_offset as usize,
-        iscript,
-        image,
-        dry_run != 0,
-        game,
-        &mut sprite_owner_map,
-    );
-    let result = runner.run_script();
-    if let Err(pos) = result {
-        invalid_aice_command(iscript, image, CodePos::Aice(pos));
+    loop {
+        let mut globals = Globals::get("run_aice_script");
+        let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("run_aice_script");
+        let mut runner = IscriptRunner::new(
+            this,
+            &mut globals.iscript_state,
+            aice_offset,
+            iscript,
+            image,
+            dry_run != 0,
+            game,
+            &mut sprite_owner_map,
+        );
+        let result = runner.run_script();
+        aice_offset = runner.pos;
+        match result {
+            Ok(ScriptRunResult::Done) => return,
+            Ok(ScriptRunResult::CreateUnit(unit_id, pos, player)) => {
+                drop(globals);
+                drop(sprite_owner_map);
+                drop(this_guard);
+                if let Some(unit) = bw::create_unit(unit_id, &pos, player) {
+                    bw::finish_unit_pre(unit);
+                    bw::finish_unit_post(unit);
+                }
+            }
+            Err(pos) => {
+                invalid_aice_command(iscript, image, CodePos::Aice(pos));
+                return;
+            }
+        }
+        this_guard = ISCRIPT.lock("run_aice_script");
+        this = this_guard.as_ref().unwrap();
     }
 }
 
@@ -157,6 +181,8 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                                     "Error: image {:04x} has no flingy",
                                     (*self.image).image_id,
                                 );
+                                show_unit_frame0_help();
+                                show_bullet_frame0_help();
                                 return i32::min_value();
                             }
                         };
@@ -231,6 +257,11 @@ struct IscriptRunner<'a> {
     bullet: Option<*mut bw::Bullet>,
 }
 
+enum ScriptRunResult {
+    Done,
+    CreateUnit(UnitId, bw::Point, u8),
+}
+
 impl<'a> IscriptRunner<'a> {
     fn new(
         iscript: &'a Iscript,
@@ -282,8 +313,11 @@ impl<'a> IscriptRunner<'a> {
         }
     }
 
-    /// Return error pos on error
-    unsafe fn run_script(&mut self) -> Result<(), u32> {
+    /// Return error pos on error.
+    ///
+    /// Some commands which may recurse to iscript running (create_unit)
+    /// return a result to execute that outside of global locks.
+    unsafe fn run_script(&mut self) -> Result<ScriptRunResult, u32> {
         use crate::parse::aice_op::*;
         'op_loop: while self.in_aice_code {
             let opcode_pos = self.pos as u32;
@@ -292,7 +326,7 @@ impl<'a> IscriptRunner<'a> {
                 JUMP_TO_BW => {
                     let dest = self.read_u16()?;
                     (*self.bw_script).pos = dest;
-                    return Ok(());
+                    return Ok(ScriptRunResult::Done);
                 }
                 ANIMATION_START => {
                     let header_index = ((*self.bw_script).header - 0x1c) / 8;
@@ -307,7 +341,7 @@ impl<'a> IscriptRunner<'a> {
                             // and as such bw plays walking animation for every sprite not
                             // using flingy movement
                             (*self.bw_script).pos = 0x5;
-                            return Ok(());
+                            return Ok(ScriptRunResult::Done);
                         }
                     }
                 }
@@ -351,6 +385,8 @@ impl<'a> IscriptRunner<'a> {
                                         "Error: image {:04x} has no flingy",
                                         (*self.image).image_id,
                                     );
+                                    show_unit_frame0_help();
+                                    show_bullet_frame0_help();
                                     continue 'op_loop;
                                 }
                             };
@@ -368,6 +404,7 @@ impl<'a> IscriptRunner<'a> {
                                         "Error: image {:04x} has no bullet",
                                         (*self.image).image_id,
                                     );
+                                    show_bullet_frame0_help();
                                     continue 'op_loop;
                                 }
                             };
@@ -420,6 +457,7 @@ impl<'a> IscriptRunner<'a> {
                                 "Error: image {:04x} has no unit",
                                 (*self.image).image_id,
                             );
+                            show_unit_frame0_help();
                             continue 'op_loop;
                         }
                     };
@@ -450,13 +488,35 @@ impl<'a> IscriptRunner<'a> {
                     (**unit).flingy_flags &= !0x8;
                     (**unit).order_wait = 0;
                 }
+                CREATE_UNIT => {
+                    let unit_id_expr = self.read_u32()? as usize;
+                    let x_expr = self.read_u32()? as usize;
+                    let y_expr = self.read_u32()? as usize;
+                    let player_expr = self.read_u32()? as usize;
+                    let unit_id = &self.iscript.int_expressions[unit_id_expr];
+                    let x = &self.iscript.int_expressions[x_expr];
+                    let y = &self.iscript.int_expressions[y_expr];
+                    let player = &self.iscript.int_expressions[player_expr];
+                    let mut eval_ctx = self.eval_ctx();
+                    let unit_id = eval_ctx.eval_int(&unit_id);
+                    let x = eval_ctx.eval_int(&x);
+                    let y = eval_ctx.eval_int(&y);
+                    let player = eval_ctx.eval_int(&player);
+                    let unit_id = UnitId(unit_id as u16);
+                    let pos = bw::Point {
+                        x: x as i16,
+                        y: y as i16,
+                    };
+                    let player = player as u8;
+                    return Ok(ScriptRunResult::CreateUnit(unit_id, pos, player));
+                }
                 x => {
                     error!("Unknown opcode {:02x}", x);
                     return Err(opcode_pos);
                 }
             }
         }
-        Ok(())
+        Ok(ScriptRunResult::Done)
     }
 
     fn jump_to(&mut self, dest: CodePosition) {
@@ -501,6 +561,24 @@ impl<'a> IscriptRunner<'a> {
             }
             None => Err(self.pos as u32),
         }
+    }
+}
+
+/// Shows a message explaining that first frame of unit's iscript
+/// cannot access the unit.
+fn show_unit_frame0_help() {
+    let unit_being_created = CREATING_UNIT.load(Ordering::Relaxed);
+    if unit_being_created != !0 {
+        bw_print!("Note: Unit id 0x{:x} is being created, but it does not exist while the \
+            first frame of its iscript is being run", unit_being_created);
+    }
+}
+
+fn show_bullet_frame0_help() {
+    let bullet_being_created = CREATING_BULLET.load(Ordering::Relaxed);
+    if bullet_being_created != !0 {
+        bw_print!("Note: Bullet id 0x{:x} is being created, but it does not exist while the \
+            first frame of its iscript is being run", bullet_being_created);
     }
 }
 
@@ -560,6 +638,8 @@ fn test_angle_conversions() {
 }
 
 struct SpriteOwnerMap {
+    // These maps may point to deleted units/bullets, all results must be verified
+    // by checking unit.sprite == key
     unit_mapping: FxHashMap<*mut bw::Sprite, *mut bw::Unit>,
     bullet_mapping: FxHashMap<*mut bw::Sprite, *mut bw::Bullet>,
 }
@@ -572,6 +652,14 @@ impl SpriteOwnerMap {
         }
     }
 
+    pub fn add_unit(&mut self, unit: Unit, sprite: *mut bw::Sprite) {
+        self.unit_mapping.insert(sprite, *unit);
+    }
+
+    pub fn add_bullet(&mut self, bullet: *mut bw::Bullet, sprite: *mut bw::Sprite) {
+        self.bullet_mapping.insert(sprite, bullet);
+    }
+
     pub fn get_unit(&mut self, sprite: *mut bw::Sprite) -> Option<Unit> {
         unsafe {
             if let Some(&unit) = self.unit_mapping.get(&sprite) {
@@ -579,26 +667,7 @@ impl SpriteOwnerMap {
                     return Unit::from_ptr(unit);
                 }
             }
-            if let Some(&bullet) = self.bullet_mapping.get(&sprite) {
-                if (*bullet).sprite == sprite {
-                    return None;
-                }
-            }
-            self.unit_mapping.clear();
-            for unit in unit::active_units() {
-                if let Some(unit) = unit.subunit_linked() {
-                    self.unit_mapping.insert((**unit).sprite, *unit);
-                }
-                self.unit_mapping.insert((**unit).sprite, *unit);
-            }
-            for unit in unit::hidden_units() {
-                if let Some(unit) = unit.subunit_linked() {
-                    self.unit_mapping.insert((**unit).sprite, *unit);
-                }
-                self.unit_mapping.insert((**unit).sprite, *unit);
-            }
-            debug!("Built mapping to {} units", self.unit_mapping.len());
-            self.unit_mapping.get(&sprite).and_then(|&x| Unit::from_ptr(x))
+            None
         }
     }
 
@@ -609,19 +678,7 @@ impl SpriteOwnerMap {
                     return Some(bullet);
                 }
             }
-            if let Some(&unit) = self.unit_mapping.get(&sprite) {
-                if (*unit).sprite == sprite {
-                    return None;
-                }
-            }
-            self.bullet_mapping.clear();
-            let mut bullet = bw::first_active_bullet();
-            while !bullet.is_null() {
-                self.bullet_mapping.insert((*bullet).sprite, bullet);
-                bullet = (*bullet).next;
-            }
-            debug!("Built mapping to {} bullets", self.bullet_mapping.len());
-            self.bullet_mapping.get(&sprite).cloned()
+            None
         }
     }
 }
@@ -727,4 +784,56 @@ pub unsafe extern fn iscript_read_hook(_filename: *const u8, out_size: *mut u32)
     std::ptr::copy_nonoverlapping(iscript.bw_data.as_ptr(), data, iscript.bw_data.len());
     *ISCRIPT.lock("set_as_bw_script") = Some(iscript);
     data
+}
+
+pub unsafe extern fn create_unit_hook(
+    id: u32,
+    x: i32,
+    y: i32,
+    player: u32,
+    skins: *const u8,
+    orig: unsafe extern fn(u32, i32, i32, u32, *const u8) -> *mut c_void,
+) -> *mut c_void {
+    let prev_creating = CREATING_UNIT.load(Ordering::Relaxed);
+    CREATING_UNIT.store(id as usize, Ordering::Relaxed);
+    let result = orig(id, x, y, player, skins);
+    CREATING_UNIT.store(prev_creating, Ordering::Relaxed);
+    if let Some(unit) = Unit::from_ptr(result as *mut bw::Unit) {
+        let sprite = (**unit).sprite;
+        if sprite.is_null() {
+            bw_print!("ERROR: Unit {:x} was created without a sprite", id);
+            return null_mut();
+        } else {
+            let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("create_unit_hook");
+            sprite_owner_map.add_unit(unit, sprite);
+        }
+    }
+    result
+}
+
+pub unsafe extern fn create_bullet_hook(
+    id: u32,
+    x: i32,
+    y: i32,
+    player: u32,
+    direction: u32,
+    parent: *mut c_void,
+    orig: unsafe extern fn(u32, i32, i32, u32, u32, *mut c_void) -> *mut c_void,
+) -> *mut c_void {
+    let prev_creating = CREATING_BULLET.load(Ordering::Relaxed);
+    CREATING_BULLET.store(id as usize, Ordering::Relaxed);
+    let result = orig(id, x, y, player, direction, parent);
+    CREATING_BULLET.store(prev_creating, Ordering::Relaxed);
+    if result.is_null() == false {
+        let bullet = result as *mut bw::Bullet;
+        let sprite = (*bullet).sprite;
+        if sprite.is_null() {
+            bw_print!("ERROR: Bullet {:x} was created without a sprite", id);
+            return null_mut();
+        } else {
+            let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("create_bullet_hook");
+            sprite_owner_map.add_bullet(bullet, sprite);
+        }
+    }
+    result
 }

@@ -49,7 +49,7 @@ rev = "e8e847864c2938735040ca3c68ef1cf9e03b692f"
 
 [dependencies.samase_shim]
 git = "https://github.com/neivv/samase_plugin"
-rev = "ffb7305433e7232c1bdc71b909795bff224750c2"
+rev = "4f12714719283f3cbdcdf24d8acf373324ce4aab"
 
 [dependencies.bw_dat]
 git = "https://github.com/neivv/aise"

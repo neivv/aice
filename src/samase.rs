@@ -141,6 +141,27 @@ pub fn rng_seed() -> Option<u32> {
     }
 }
 
+static mut CREATE_UNIT: GlobalFunc<fn(u32, i32, i32, u32, *const u8) -> *mut bw::Unit> = GlobalFunc(None);
+pub fn create_unit(id: u32, x: i32, y: i32, player: u32, skins: *const u8) -> *mut bw::Unit {
+    unsafe {
+        if let Some(create) = CREATE_UNIT.0 {
+            create(id, x, y, player, skins)
+        } else {
+            null_mut()
+        }
+    }
+}
+
+static mut FINISH_UNIT_PRE: GlobalFunc<fn(*mut bw::Unit)> = GlobalFunc(None);
+pub unsafe fn finish_unit_pre(unit: *mut bw::Unit) {
+    (FINISH_UNIT_PRE.0.unwrap())(unit)
+}
+
+static mut FINISH_UNIT_POST: GlobalFunc<fn(*mut bw::Unit)> = GlobalFunc(None);
+pub unsafe fn finish_unit_post(unit: *mut bw::Unit) {
+    (FINISH_UNIT_POST.0.unwrap())(unit)
+}
+
 pub struct SamaseBox {
     data: NonNull<u8>,
     len: usize,
@@ -178,7 +199,7 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
 
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
-    let required_version = 16;
+    let required_version = 22;
     if (*api).version < required_version {
         fatal(&format!(
             "Newer samase is required. (Plugin API version {}, this plugin requires version {})",
@@ -230,6 +251,9 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
 
     PRINT_TEXT.0 = Some(mem::transmute(((*api).print_text)()));
     RNG_SEED.0 = Some(mem::transmute(((*api).rng_seed)()));
+    CREATE_UNIT.0 = Some(mem::transmute(((*api).create_unit)()));
+    FINISH_UNIT_PRE.0 = Some(mem::transmute(((*api).finish_unit_pre)()));
+    FINISH_UNIT_POST.0 = Some(mem::transmute(((*api).finish_unit_post)()));
     let result = ((*api).extend_save)(
         "aice\0".as_ptr(),
         Some(crate::globals::save),
@@ -246,5 +270,16 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         fatal("Can't hook iscript");
     }
     ((*api).hook_file_read)(b"scripts\\iscript.bin\0".as_ptr(), iscript::iscript_read_hook);
+
+    let ok = ((*api).hook_create_bullet)(crate::iscript::create_bullet_hook);
+    if ok == 0 {
+        fatal("Can't hook create_bullet");
+    }
+
+    let ok = ((*api).hook_create_unit)(crate::iscript::create_unit_hook);
+    if ok == 0 {
+        fatal("Can't hook create_unit");
+    }
+
     crate::init();
 }
