@@ -832,6 +832,9 @@ pub unsafe extern fn create_unit_hook(
         } else {
             let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("create_unit_hook");
             sprite_owner_map.add_unit(unit, sprite);
+            if let Some(subunit) = unit.subunit_linked() {
+                sprite_owner_map.add_unit(subunit, (**subunit).sprite);
+            }
         }
     }
     result
