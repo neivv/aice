@@ -136,6 +136,8 @@ don't rely on this), dividing by a constant zero is a compile-time error.
 Comparision operators are `==` `!=` `<` `<=` `>` and `>=`, a result of a integer comparision will
 be a boolean.
 
+Booleans can be chained with `&&` and and `||` or, mixing them always requires parentheses.
+
 There are also several builtin expressions referring to current unit or bullet of the iscript.
 If an expressions refers to an object that the image doesn't have, an error will be printed and
 it evaluates to something - exact behaviour is not specified.
@@ -190,7 +192,6 @@ with its air weapon
 - `spell_cooldown` How many frames of cooldown are remaining before the unit can cast another
 spell
 - `speed` The unit's current speed, in flingy.dat units but also applicable to units using iscript
-
 movement
 - `sigorder` Iscript sigorder value for the current unit (Not too useful, can use spritelocal
 variables instead)
@@ -204,8 +205,19 @@ variables instead)
 - `unit_count_completed(int player, int unit_id)` Unit count of only completed units of `unit_id`
 for `player`
 - `sin(int angle_degrees`) and `cos(int angle_degrees)` Calculates sin/cos for an angle of degrees,
-returning a value between -256 and 256. Not that the angle is a mathematical angle,
+returning a value between -256 and 256. Note that the angle is a mathematical angle,
 e.g angle 0 is towards right and angle 180 is towards left.
+
+The following integer expressions work, but are (currently) incompatible with the Mtl plugin's
+timer customization functionality.
+- `stim_timer` frames of stim remaining, or 0 if the unit is not stimmed
+- `ensnare_timer` frames of ensnare remaining, or 0 if the unit is not ensnared
+- `maelstrom_timer` frames of maelstrom remaining, or 0 if the unit is not maelstromed
+- `lockdown_timer` frames of lockdown remaining, or 0 if the unit is not lockdowned
+- `stasis_timer` frames of stasis remaining, or 0 if the unit is not stasised
+- `irradiate_timer` frames of irradiate remaining, or 0 if the unit is not irradiated
+- `matrix_timer` frames of defensive matrix remaining, or 0 if the unit is not matrixed
+- `death_timer` frames until the unit dies. Set for broodlings and hallucinations. 0 otherwise.
 
 Additonally any variable name is an integer expression (Variables need to be have been used with
 `set` at least once), and any [bw variable assignable with `set`][bw-place] is also an integer
