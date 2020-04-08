@@ -8,7 +8,7 @@ use lazy_static::lazy_static;
 use libc::c_void;
 use serde_derive::{Serialize, Deserialize};
 
-use bw_dat::{Game, Unit, UnitId};
+use bw_dat::{Game, Unit, UnitId, Sprite};
 
 use crate::bw;
 use crate::globals::{Globals, SerializableSprite};
@@ -439,11 +439,12 @@ impl<'a> IscriptRunner<'a> {
                         (*self.bw_script).wait = 1;
                         break;
                     }
-                    let sprite = (*self.image).parent;
-                    if (*sprite).first_image == (*sprite).last_image {
+                    let sprite = Sprite::from_ptr((*self.image).parent)
+                        .expect("Image had no parent??");
+                    if sprite.images().count() == 1 {
                         // This is the last image being deleted, the sprite
                         // will be cleaned up as well
-                        self.state.sprite_locals.remove(&SerializableSprite(sprite));
+                        self.state.sprite_locals.remove(&SerializableSprite(*sprite));
                         self.init_sprite_owner();
                         if let Some(bullet) = self.bullet {
                             if (*bullet).state != 5 {
@@ -710,9 +711,9 @@ impl SpriteOwnerMap {
 }
 
 unsafe fn invalid_aice_command(iscript: *mut bw::Iscript, image: *mut bw::Image, offset: CodePos) {
-    let sprite_id = match (*image).parent.is_null() {
-        true => !0,
-        false => (*(*image).parent).sprite_id,
+    let sprite_id = match Sprite::from_ptr((*image).parent) {
+        Some(sprite) => sprite.id().0,
+        None => !0,
     };
     let msg = format!(
         "Invalid aice command at {}, sprite {:04x} image {:04x}, animation {}",
