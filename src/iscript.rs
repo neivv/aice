@@ -35,6 +35,10 @@ const TEMP_LOCAL_ID: u32 = !0;
 /// Used as a stack as a unit creation iscript can cause another unit to be created.
 static CREATING_UNIT: AtomicUsize = AtomicUsize::new(!0);
 static CREATING_BULLET: AtomicUsize = AtomicUsize::new(!0);
+/// Track corner case of sprite changing during order, and then an animation
+/// being played with the new sprite which is now attached to CURRENT_ORDER_UNIT.
+static CURRENT_ORDER_UNIT: AtomicUsize = AtomicUsize::new(0);
+static CURRENT_ORDER_SPRITE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Serialize, Deserialize)]
 struct SpriteLocal {
@@ -115,6 +119,20 @@ pub unsafe extern fn run_aice_script(
         }
     };
     let game = Game::from_ptr(bw::game());
+
+    let step_order_unit = CURRENT_ORDER_UNIT.load(Ordering::Relaxed);
+    if step_order_unit != 0 {
+        let unit = Unit::from_ptr(step_order_unit as *mut bw::Unit).unwrap();
+        if let Some(sprite) = unit.sprite() {
+            let expected_sprite = CURRENT_ORDER_SPRITE.load(Ordering::Relaxed);
+            if *sprite != expected_sprite as *mut bw::Sprite {
+                let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("run_aice_script");
+                sprite_owner_map.add_unit(unit, *sprite);
+                CURRENT_ORDER_SPRITE.store(*sprite as usize, Ordering::Relaxed);
+            }
+        }
+    }
+
     loop {
         let mut globals = Globals::get("run_aice_script");
         let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("run_aice_script");
@@ -866,4 +884,23 @@ pub unsafe extern fn create_bullet_hook(
         }
     }
     result
+}
+
+// Account for unit's sprite having changed due to transforming
+// by readding it to sprite_owner_map
+// (Probably a bit inefficient but unit can transform due to order (could be caught here),
+// but also player-sent command or even ai reacting to a hit)
+pub unsafe extern fn order_hook(u: *mut c_void, orig: unsafe extern fn(*mut c_void)) {
+    use bw_dat::order::*;
+
+    let unit = Unit::from_ptr(u as *mut bw::Unit).unwrap();
+    if let Some(sprite) = unit.sprite() {
+        let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("order_hook");
+        sprite_owner_map.add_unit(unit, *sprite);
+        CURRENT_ORDER_SPRITE.store(*sprite as usize, Ordering::Relaxed);
+    }
+    CURRENT_ORDER_UNIT.store(u as usize, Ordering::Relaxed);
+    orig(u);
+    CURRENT_ORDER_UNIT.store(0, Ordering::Relaxed);
+    CURRENT_ORDER_SPRITE.store(0, Ordering::Relaxed);
 }

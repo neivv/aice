@@ -281,6 +281,10 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     if ok == 0 {
         fatal("Can't hook create_unit");
     }
+    let result = ((*api).hook_step_order)(crate::iscript::order_hook);
+    if result == 0 {
+        fatal("Couldn't hook step_order");
+    }
 
     crate::init();
 }
