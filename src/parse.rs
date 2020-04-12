@@ -47,6 +47,9 @@ pub enum Int {
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub enum Bool {
+    HasFlingy,
+    HasUnit,
+    HasBullet,
 }
 
 struct ExprParser<'a> {
@@ -71,7 +74,19 @@ impl<'b> expr::CustomParser for ExprParser<'b> {
         None
     }
 
-    fn parse_bool<'a>(&mut self, _input: &'a [u8]) -> Option<(Bool, &'a [u8])> {
+    fn parse_bool<'a>(&mut self, input: &'a [u8]) -> Option<(Bool, &'a [u8])> {
+        let word_end = input.iter().position(|&x| match x {
+            b'a' ..= b'z' | b'A' ..= b'Z' | b'_' | b'.' | b'0' ..= b'9' => false,
+            _ => true,
+        }).unwrap_or(input.len());
+        let word = &input[..word_end];
+        if word == b"sprite.has_flingy" {
+            return Some((Bool::HasFlingy, &input[word_end..]));
+        } else if word == b"sprite.has_unit" {
+            return Some((Bool::HasUnit, &input[word_end..]));
+        } else if word == b"sprite.has_bullet" {
+            return Some((Bool::HasBullet, &input[word_end..]));
+        }
         None
     }
 }

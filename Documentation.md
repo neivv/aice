@@ -168,6 +168,12 @@ in units.dat
 - `hallucination` true if the unit is an hallucination
 - `tech(int player, int tech_id)` true if `player` has reseached `tech_id`
 
+The following are Aice-specific boolean expressions:
+- `sprite.has_flingy` true if the current image's parent sprite is linked to an unit or a
+bullet.
+- `sprite.has_bullet` true if the current image's parent sprite is linked to a bullet.
+- `sprite.has_unit` true if the current image's parent sprite is linked to an unit.
+
 The following are builtin integer expressions (Available also in Mtl):
 - `matrix_hitpoints` Current hitpoints for defensive matrix (256 times displayed value), or 0
 if the unit is not matrixed

@@ -263,6 +263,9 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
 
     fn eval_bool(&mut self, val: &Bool) -> bool {
         match *val {
+            Bool::HasFlingy => self.bullet.is_some() || self.unit.is_some(),
+            Bool::HasBullet => self.bullet.is_some(),
+            Bool::HasUnit => self.unit.is_some(),
         }
     }
 }
