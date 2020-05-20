@@ -257,11 +257,15 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
 static BW_PLACES: &[(&[u8], PlaceId)] = {
     use self::FlingyVar::*;
     use self::BulletVar::*;
+    use self::UnitVar::*;
     const fn flingy(x: FlingyVar) -> PlaceId {
         PlaceId::new_flingy(x)
     }
     const fn bullet(x: BulletVar) -> PlaceId {
         PlaceId::new_bullet(x)
+    }
+    const fn unit(x: UnitVar) -> PlaceId {
+        PlaceId::new_unit(x)
     }
     &[
         (b"flingy.move_target_x", flingy(MoveTargetX)),
@@ -276,11 +280,22 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"flingy.top_speed", flingy(TopSpeed)),
         (b"flingy.speed", flingy(Speed)),
         (b"bullet.weapon_id", bullet(WeaponId)),
-        (b"bullet.death_timer", bullet(DeathTimer)),
+        (b"bullet.death_timer", bullet(BulletVar::DeathTimer)),
         (b"bullet.state", bullet(State)),
         (b"bullet.bounces_remaining", bullet(BouncesRemaining)),
         (b"bullet.order_target_x", bullet(OrderTargetX)),
         (b"bullet.order_target_y", bullet(OrderTargetY)),
+        (b"unit.death_timer", unit(UnitVar::DeathTimer)),
+        (b"unit.matrix_timer", unit(MatrixTimer)),
+        (b"unit.matrix_hitpoints", unit(MatrixHp)),
+        (b"unit.stim_timer", unit(StimTimer)),
+        (b"unit.ensnare_timer", unit(EnsnareTimer)),
+        (b"unit.lockdown_timer", unit(LockdownTimer)),
+        (b"unit.irradiate_timer", unit(IrradiateTimer)),
+        (b"unit.stasis_timer", unit(StasisTimer)),
+        (b"unit.plague_timer", unit(PlagueTimer)),
+        (b"unit.maelstrom_timer", unit(MaelstormTimer)),
+        (b"unit.is_blind", unit(IsBlind)),
         (b"speed", flingy(Speed)),
         (b"player", flingy(Player)),
     ]
@@ -934,31 +949,53 @@ pub enum BulletVar {
     OrderTargetY,
 }
 
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UnitVar {
+    DeathTimer,
+    MatrixTimer,
+    MatrixHp,
+    StimTimer,
+    EnsnareTimer,
+    LockdownTimer,
+    IrradiateTimer,
+    StasisTimer,
+    PlagueTimer,
+    MaelstormTimer,
+    IsBlind,
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Place {
     Global(u32),
     SpriteLocal(u32),
     Flingy(FlingyVar),
     Bullet(BulletVar),
+    Unit(UnitVar),
 }
 
 impl PlaceId {
     fn new(place: Place) -> PlaceId {
         let (tag, id) = match place {
-            Place::Global(id) => (0, id),
-            Place::SpriteLocal(id) => (1, id),
-            Place::Flingy(id) => (2, id as u32),
-            Place::Bullet(id) => (3, id as u32),
+            Place::Global(id) => (0 << 3, id),
+            Place::SpriteLocal(id) => (1 << 3, id),
+            Place::Flingy(id) => ((2 << 3), id as u32),
+            Place::Bullet(id) => ((2 << 3) + 1, id as u32),
+            Place::Unit(id) => ((2 << 3) + 2, id as u32),
         };
-        assert!(id & 0xc000_0000 == 0);
-        PlaceId(id | ((tag as u32) << 30))
+        let tag_shifted = (tag as u32) << 27;
+        assert!(id & tag_shifted == 0);
+        PlaceId(id | tag_shifted)
     }
 
     const fn new_flingy(x: FlingyVar) -> PlaceId {
-        PlaceId((x as u32) | (2 << 30))
+        PlaceId((x as u32) | ((2 << 3) << 27))
     }
     const fn new_bullet(x: BulletVar) -> PlaceId {
-        PlaceId((x as u32) | (3 << 30))
+        PlaceId((x as u32) | (((2 << 3) + 1) << 27))
+    }
+    const fn new_unit(x: UnitVar) -> PlaceId {
+        PlaceId((x as u32) | (((2 << 3) + 2) << 27))
     }
 
     pub fn place(self) -> Place {
@@ -966,8 +1003,11 @@ impl PlaceId {
         match self.0 >> 30 {
             0 => Place::Global(id),
             1 => Place::SpriteLocal(id),
-            2 => Place::Flingy(unsafe { std::mem::transmute(id as u8) }),
-            3 | _ => Place::Bullet(unsafe { std::mem::transmute(id as u8) }),
+            2 | _ => match (self.0 >> 27) & 0x7 {
+                0 => Place::Flingy(unsafe { std::mem::transmute(id as u8) }),
+                1 => Place::Bullet(unsafe { std::mem::transmute(id as u8) }),
+                2 | _ => Place::Unit(unsafe { std::mem::transmute(id as u8) }),
+            },
         }
     }
 }

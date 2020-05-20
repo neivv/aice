@@ -14,6 +14,7 @@ use crate::bw;
 use crate::globals::{Globals, SerializableSprite};
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
+    UnitVar,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
@@ -256,6 +257,35 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                             BulletVar::OrderTargetY => (*bullet).order_target_pos.y as i32,
                         }
                     },
+                    Place::Unit(ty) => unsafe {
+                        let unit = match self.unit {
+                            Some(s) => s,
+                            None => {
+                                error!(
+                                    "Error: image {:04x} has no unit",
+                                    (*self.image).image_id,
+                                );
+                                bw_print!(
+                                    "Error: image {:04x} has no unit",
+                                    (*self.image).image_id,
+                                );
+                                return i32::min_value();
+                            }
+                        };
+                        match ty {
+                            UnitVar::DeathTimer => (**unit).death_timer as i32,
+                            UnitVar::MatrixTimer => (**unit).matrix_timer as i32,
+                            UnitVar::MatrixHp => (**unit).defensive_matrix_dmg as i32,
+                            UnitVar::StimTimer => (**unit).stim_timer as i32,
+                            UnitVar::EnsnareTimer => (**unit).ensnare_timer as i32,
+                            UnitVar::LockdownTimer => (**unit).lockdown_timer as i32,
+                            UnitVar::IrradiateTimer => (**unit).irradiate_timer as i32,
+                            UnitVar::StasisTimer => (**unit).stasis_timer as i32,
+                            UnitVar::PlagueTimer => (**unit).plague_timer as i32,
+                            UnitVar::MaelstormTimer => (**unit).maelstrom_timer as i32,
+                            UnitVar::IsBlind => (**unit).is_blind as i32,
+                        }
+                    },
                 }
             }
         }
@@ -452,6 +482,36 @@ impl<'a> IscriptRunner<'a> {
                                 }
                             }
                         }
+                        Place::Unit(ty) => {
+                            let unit = match self.unit {
+                                Some(s) => s,
+                                None => {
+                                    error!(
+                                        "Error: image {:04x} has no unit",
+                                        (*self.image).image_id,
+                                    );
+                                    bw_print!(
+                                        "Error: image {:04x} has no unit",
+                                        (*self.image).image_id,
+                                    );
+                                    show_unit_frame0_help();
+                                    continue 'op_loop;
+                                }
+                            };
+                            match ty {
+                                UnitVar::DeathTimer => (**unit).death_timer = value as u16,
+                                UnitVar::MatrixTimer => (**unit).matrix_timer = value as u8,
+                                UnitVar::MatrixHp => (**unit).defensive_matrix_dmg = value as u16,
+                                UnitVar::StimTimer => (**unit).stim_timer = value as u8,
+                                UnitVar::EnsnareTimer => (**unit).ensnare_timer = value as u8,
+                                UnitVar::LockdownTimer => (**unit).lockdown_timer = value as u8,
+                                UnitVar::IrradiateTimer => (**unit).irradiate_timer = value as u8,
+                                UnitVar::StasisTimer => (**unit).stasis_timer = value as u8,
+                                UnitVar::PlagueTimer => (**unit).plague_timer = value as u8,
+                                UnitVar::MaelstormTimer => (**unit).maelstrom_timer = value as u8,
+                                UnitVar::IsBlind => (**unit).is_blind = value as u8,
+                            }
+                        },
                     }
                 }
                 PRE_END => {
@@ -894,8 +954,6 @@ pub unsafe extern fn create_bullet_hook(
 // (Probably a bit inefficient but unit can transform due to order (could be caught here),
 // but also player-sent command or even ai reacting to a hit)
 pub unsafe extern fn order_hook(u: *mut c_void, orig: unsafe extern fn(*mut c_void)) {
-    use bw_dat::order::*;
-
     let unit = Unit::from_ptr(u as *mut bw::Unit).unwrap();
     if let Some(sprite) = unit.sprite() {
         let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("order_hook");

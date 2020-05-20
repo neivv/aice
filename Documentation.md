@@ -266,5 +266,23 @@ looking at BW's code to understand the details is recommended.
 - `bullet.bounces_remaining` Amount of bounces remaining. Only used if `bullet.state` is 3
 - `bullet.order_target_x` and `bullet.order_target_y` The point which bullet is targeting
 
+Setting the following unit variables can be used to manipulate time a buff lasts for.
+The time unit for these variables is 8 frames (Maybe 9? Needs confirming)
+It is recommended to set the timer to 1 if you want to disable the buff, as that lets
+BW run its cleanup code to remove debuff overlays.
+Similarly enabling the buff by setting the value to will not cause the debuff overlays to appear.
+(You can imgol them manually though)
+The effects are expected to behave normally even if enabled with iscript,
+but nothing has been confirmed.
+- `unit.stim_timer` frames of stim remaining.
+- `unit.ensnare_timer` frames of ensnare remaining.
+- `unit.maelstrom_timer` frames of maelstrom remaining.
+- `unit.lockdown_timer` frames of lockdown remaining.
+- `unit.stasis_timer` frames of stasis remaining.
+- `unit.irradiate_timer` frames of irradiate remaining.
+- `unit.matrix_timer` frames of defensive matrix remaining.
+- `unit.death_timer` frames until the unit dies. 0 to not make unit die.
+- `unit.matrix_hitpoints` Current hitpoints for defensive matrix (256 times displayed value)
+
 [expr]: #expressions
 [bw-place]: #bw-visible-variables
