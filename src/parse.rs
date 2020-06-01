@@ -22,7 +22,7 @@ use std::mem;
 use std::rc::Rc;
 
 use bstr::{ByteSlice, BString, BStr};
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt, LittleEndian, LE};
 use fxhash::{FxHashMap, FxHashSet};
 use quick_error::quick_error;
 use serde_derive::{Serialize, Deserialize};
@@ -320,6 +320,175 @@ pub struct Iscript {
     pub conditions: Vec<Rc<BoolExpr>>,
     pub int_expressions: Vec<Rc<IntExpr>>,
     pub global_count: u32,
+    pub line_info: LineInfo,
+}
+
+pub struct LineInfo {
+    bw: LineInfoLookup,
+    aice: LineInfoLookup,
+}
+
+const LOOKUP_LINEAR_BLOCK_SIZE: usize = 64;
+
+// Assuming that this struct is only used if the user's script has errors.
+// If the pos is found in `sorted`, then that's the result.
+// Otherwise will have to search linearly from N * 64 .. (N + 1) * 64
+// Note that relative[N * 64] is already the next one from sorted.
+// (1 sorted + 64 relative entries = 65 total)
+struct LineInfoLookup {
+    // Sorted by `pos`
+    sorted: Vec<SortedLookupEntry>,
+    relative: Vec<RelativeLookupEntry>,
+}
+
+#[derive(Debug)]
+struct SortedLookupEntry {
+    pos: u32,
+    line: u32,
+}
+
+#[derive(Debug)]
+struct RelativeLookupEntry {
+    // These are relative to previous MainLookupEntry.
+    pos: u8,
+    line: i8,
+}
+
+struct LineInfoBuilder {
+    bw: LineInfoLookupBuilder,
+    aice: LineInfoLookupBuilder,
+}
+
+struct LineInfoLookupBuilder {
+    sorted: Vec<SortedLookupEntry>,
+    relative: Vec<RelativeLookupEntry>,
+    previous_pos: u32,
+    previous_line: u32,
+}
+
+impl LineInfo {
+    pub fn pos_to_line(&self, pos: CodePosition) -> u32 {
+        match pos.to_enum() {
+            CodePos::Bw(pos) => self.bw.pos_to_line(pos as u32),
+            CodePos::Aice(pos) => self.aice.pos_to_line(pos),
+        }
+    }
+}
+
+impl LineInfoLookup {
+    pub fn pos_to_line(&self, pos: u32) -> u32 {
+        let index = match self.sorted.binary_search_by_key(&pos, |x| x.pos) {
+            Ok(o) => return self.sorted[o].line,
+            Err(e) => if e == 0 {
+                return 0;
+            } else {
+                e - 1
+            },
+        };
+        if let Some(sorted) = self.sorted.get(index) {
+            let mut current_line = sorted.line as i32;
+            let mut current_pos = sorted.pos;
+            let start = index.wrapping_mul(LOOKUP_LINEAR_BLOCK_SIZE);
+            let end = start.wrapping_add(LOOKUP_LINEAR_BLOCK_SIZE).min(self.relative.len());
+            if let Some(relative) = self.relative.get(start..end) {
+                for rel in relative {
+                    current_line = current_line.wrapping_add(rel.line as i32);
+                    current_pos = current_pos.wrapping_add(rel.pos as u32);
+                    if current_pos >= pos {
+                        return current_line as u32;
+                    }
+                }
+            }
+        }
+        0
+    }
+}
+
+impl LineInfoBuilder {
+    pub fn new() -> LineInfoBuilder {
+        LineInfoBuilder {
+            bw: LineInfoLookupBuilder {
+                sorted: Vec::with_capacity(30_000 / LOOKUP_LINEAR_BLOCK_SIZE),
+                relative: Vec::with_capacity(30_000),
+                previous_pos: 0,
+                previous_line: 0,
+            },
+            aice: LineInfoLookupBuilder {
+                sorted: Vec::with_capacity(10_000 / LOOKUP_LINEAR_BLOCK_SIZE),
+                relative: Vec::with_capacity(10_000),
+                previous_pos: 0,
+                previous_line: 0,
+            },
+        }
+    }
+
+    pub fn finish(self) -> LineInfo {
+        LineInfo {
+            bw: self.bw.finish(),
+            aice: self.aice.finish(),
+        }
+    }
+}
+
+impl LineInfoLookupBuilder {
+    /// Implicit assertion is that `pos` always increases
+    pub fn push(&mut self, pos: u32, line: u32) {
+        let relative_len = self.relative.len();
+        let sorted_len = self.sorted.len();
+        let previous_pos = self.previous_pos;
+        let previous_line = self.previous_line;
+        self.previous_pos = pos;
+        self.previous_line = line;
+        if relative_len == sorted_len * LOOKUP_LINEAR_BLOCK_SIZE {
+            self.sorted.push(SortedLookupEntry {
+                pos,
+                line,
+            });
+        } else {
+            let mut relative_pos = pos - previous_pos;
+            let mut relative_line = line.wrapping_sub(previous_line) as i32;
+            let end = sorted_len * LOOKUP_LINEAR_BLOCK_SIZE;
+            // If relative doesn't fit in 8bit, add dummy entries.
+            // If the dummy entries end up filling the linear block then
+            // stop and add sorted entry.
+            while self.relative.len() != end {
+                let large_line = relative_line < -128 || relative_line > 127;
+                let large_pos = relative_pos > 255;
+                let (next_line, next_pos) = match (large_line, large_pos) {
+                    (false, false) => break,
+                    (true, true) if relative_line < 0 => (-128, 255),
+                    (true, true) => (127, 255),
+                    (false, true) => (0, 255),
+                    (true, false) if relative_line < 0 => (-128, 0),
+                    (true, false) => (127, 0),
+                };
+                self.relative.push(RelativeLookupEntry {
+                    line: next_line,
+                    pos: next_pos,
+                });
+                relative_line -= next_line as i32;
+                relative_pos -= next_pos as u32;
+            }
+            if self.relative.len() == end {
+                self.sorted.push(SortedLookupEntry {
+                    pos,
+                    line,
+                });
+            } else {
+                self.relative.push(RelativeLookupEntry {
+                    line: relative_line as i8,
+                    pos: relative_pos as u8,
+                });
+            }
+        }
+    }
+
+    pub fn finish(self) -> LineInfoLookup {
+        LineInfoLookup {
+            sorted: self.sorted,
+            relative: self.relative,
+        }
+    }
 }
 
 pub struct ResolvedHeader {
@@ -592,6 +761,7 @@ impl<'a> Parser<'a> {
         block_scope: &BlockScope<'a, '_>,
         compiler: &mut Compiler<'a>,
     ) -> Result<(), Error> {
+        compiler.set_current_line(line.line_number as u32);
         match line.ty {
             BlockLine::Label(label) => {
                 compiler.set_label_position_to_current(label, block_scope);
@@ -889,6 +1059,8 @@ struct Compiler<'a> {
     variables: FxHashMap<&'a [u8], PlaceId>,
     variable_counts: [u32; 2],
     flow_in_bw: bool,
+    current_line: u32,
+    line_info: LineInfoBuilder,
 }
 
 struct BwRequiredLabels<'a> {
@@ -1082,7 +1254,13 @@ impl<'a> Compiler<'a> {
             variables: FxHashMap::default(),
             variable_counts: [0; 2],
             flow_in_bw: true,
+            current_line: 0,
+            line_info: LineInfoBuilder::new(),
         }
+    }
+
+    fn set_current_line(&mut self, line: u32) {
+        self.current_line = line;
     }
 
     fn code_position(&self) -> CodePosition {
@@ -1162,13 +1340,18 @@ impl<'a> Compiler<'a> {
             self.emit_aice_jump_to_bw(self.bw_bytecode.len() as u16);
             self.flow_in_bw = true;
         }
+        self.line_info.bw.push(self.bw_bytecode.len() as u32, self.current_line);
         self.bw_bytecode.extend_from_slice(code);
+    }
+
+    fn add_aice_code(&mut self, code: &[u8]) {
+        self.line_info.aice.push(self.aice_bytecode.len() as u32, self.current_line);
+        self.aice_bytecode.extend_from_slice(code);
     }
 
     fn emit_aice_jump_to_bw(&mut self, to: u16) {
         self.bw_offsets_in_aice.push(self.aice_bytecode.len() as u32 + 1);
-        self.aice_bytecode
-            .extend_from_slice(&[aice_op::JUMP_TO_BW, to as u8, (to >> 8) as u8]);
+        self.add_aice_code(&[aice_op::JUMP_TO_BW, to as u8, (to >> 8) as u8]);
     }
 
     fn emit_bw_jump_to_aice(&mut self, to: u32) {
@@ -1211,9 +1394,11 @@ impl<'a> Compiler<'a> {
             ParsedPlace::Variable(_ty, var_name) => *self.variables.get(var_name).unwrap(),
             ParsedPlace::Bw(place) => place,
         };
-        self.aice_bytecode.push(aice_op::SET);
-        self.aice_bytecode.write_u32::<LE>(var_id.0).unwrap();
-        self.aice_bytecode.write_u32::<LE>(index as u32).unwrap();
+        let mut buffer = [0u8; 9];
+        buffer[0] = aice_op::SET;
+        LittleEndian::write_u32(&mut buffer[1..], var_id.0);
+        LittleEndian::write_u32(&mut buffer[5..], index as u32);
+        self.add_aice_code(&buffer);
     }
 
     fn add_if(
@@ -1236,10 +1421,11 @@ impl<'a> Compiler<'a> {
         let pos = self.label_location(dest, block_scope)
             .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
 
-        self.aice_bytecode.push(aice_op::IF);
-        self.aice_bytecode.write_u32::<LE>(index as u32).unwrap();
-        self.aice_bytecode.write_u32::<LE>(pos.0).unwrap();
-        let offset = self.aice_bytecode.len() as u32 - 4;
+        let mut buffer = [0u8; 9];
+        buffer[0] = aice_op::IF;
+        LittleEndian::write_u32(&mut buffer[1..], index as u32);
+        LittleEndian::write_u32(&mut buffer[5..], pos.0);
+        let offset = self.aice_bytecode.len() as u32 + 5;
         if pos.is_unknown() {
             let block_id = block_scope.block_id();
             self.needed_label_positions.push((CodePosition::aice(offset), dest, block_id));
@@ -1247,18 +1433,21 @@ impl<'a> Compiler<'a> {
         if pos.if_bw_pos().is_some() {
             self.bw_offsets_in_aice.push(offset);
         }
+        self.add_aice_code(&buffer);
         Ok(())
     }
 
     fn add_aice_command(&mut self, byte: u8) {
         self.add_flow_to_aice();
-        self.aice_bytecode.push(byte);
+        self.add_aice_code(&[byte]);
     }
 
     fn add_aice_command_u32(&mut self, byte: u8, param: u32) {
         self.add_flow_to_aice();
-        self.aice_bytecode.push(byte);
-        self.aice_bytecode.write_u32::<LE>(param).unwrap();
+        let mut buffer = [0u8; 5];
+        buffer[0] = byte;
+        LittleEndian::write_u32(&mut buffer[1..], param);
+        self.add_aice_code(&buffer);
     }
 
     fn add_bw_command(
@@ -1452,6 +1641,7 @@ impl<'a> Compiler<'a> {
             bw_aice_cmd_offsets,
             headers,
             global_count: self.variable_counts[VariableType::Global as usize],
+            line_info: self.line_info.finish(),
         })
     }
 
@@ -1819,5 +2009,15 @@ mod test {
         assert_eq!(parse_i8(b"255"), Some(255));
         assert_eq!(parse_i8(b"-0x10"), Some(240));
         assert_eq!(parse_i8(b"-16"), Some(240));
+    }
+
+    #[test]
+    fn line_lookup() {
+        let iscript = compile_success("if1.txt");
+        // This test needs to be updated if `if` is no longer 9 byte command
+        // or jump_to_bw no longer 3 bytes
+        assert_eq!(iscript.line_info.pos_to_line(CodePosition::aice(0)), 42);
+        assert_eq!(iscript.line_info.pos_to_line(CodePosition::aice(12)), 51);
+        assert_eq!(iscript.line_info.pos_to_line(CodePosition::aice(6 * 12)), 229);
     }
 }

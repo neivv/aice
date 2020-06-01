@@ -52,23 +52,10 @@ impl IscriptState {
         self.sprite_locals.get(&SerializableSprite(sprite))
     }
 
-    fn get_sprite_local(&self, image: *mut bw::Image, id: u32) -> i32 {
-        let value = self.get_sprite_locals(unsafe { (*image).parent })
-            .and_then(|locals| locals.iter().find(|x| x.id == id));
-        match value {
-            Some(s) => s.value,
-            None => unsafe {
-                error!(
-                    "Error: image {:04x} accessed uninitialized spritelocal",
-                    (*image).image_id,
-                );
-                bw_print!(
-                    "Error: image {:04x} accessed uninitialized spritelocal",
-                    (*image).image_id,
-                );
-                i32::min_value()
-            }
-        }
+    fn get_sprite_local(&self, image: *mut bw::Image, id: u32) -> Option<i32> {
+        self.get_sprite_locals(unsafe { (*image).parent })
+            .and_then(|locals| locals.iter().find(|x| x.id == id))
+            .map(|x| x.value)
     }
 
     fn set_sprite_local(&mut self, sprite: *mut bw::Sprite, id: u32, value: i32) {
@@ -170,23 +157,29 @@ pub unsafe extern fn run_aice_script(
     }
 }
 
-struct CustomCtx<'a> {
-    state: &'a IscriptState,
+struct CustomCtx<'a, 'b> {
+    parent: &'a mut IscriptRunner<'b>,
     image: *mut bw::Image,
     unit: Option<Unit>,
     bullet: Option<*mut bw::Bullet>,
     dry_run: bool,
 }
 
-impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
+impl<'a, 'b> CustomCtx<'a, 'b> {
+    fn current_line(&self) -> String {
+        self.parent.current_line()
+    }
+}
+
+impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
     type State = parse::ExprState;
 
     fn eval_int(&mut self, val: &Int) -> i32 {
         match val {
             Int::Variable(id) => {
                 match id.place() {
-                    Place::Global(id) => self.state.globals[id as usize],
-                    Place::SpriteLocal(id) => self.state.get_sprite_local(self.image, id),
+                    Place::Global(id) => self.parent.state.globals[id as usize],
+                    Place::SpriteLocal(id) => self.parent.get_sprite_local(self.image, id),
                     Place::Flingy(ty) => unsafe {
                         let flingy = self.unit.map(|x| *x)
                             .or_else(|| self.bullet.map(|x| x as *mut bw::Unit));
@@ -199,12 +192,12 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                                 // Alternatively could get unit ptr from first_free_unit.
                                 if !self.dry_run {
                                     error!(
-                                        "Error: image {:04x} has no flingy",
-                                        (*self.image).image_id,
+                                        "Error {}: image {:04x} has no flingy",
+                                        self.current_line(), (*self.image).image_id,
                                     );
                                     bw_print!(
-                                        "Error: image {:04x} has no flingy",
-                                        (*self.image).image_id,
+                                        "Error {}: image {:04x} has no flingy",
+                                        self.current_line(), (*self.image).image_id,
                                     );
                                     show_unit_frame0_help();
                                     show_bullet_frame0_help();
@@ -238,12 +231,12 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                             Some(s) => s,
                             None => {
                                 error!(
-                                    "Error: image {:04x} has no bullet",
-                                    (*self.image).image_id,
+                                    "Error {}: image {:04x} has no bullet",
+                                    self.current_line(), (*self.image).image_id,
                                 );
                                 bw_print!(
-                                    "Error: image {:04x} has no bullet",
-                                    (*self.image).image_id,
+                                    "Error {}: image {:04x} has no bullet",
+                                    self.current_line(), (*self.image).image_id,
                                 );
                                 return i32::min_value();
                             }
@@ -262,12 +255,12 @@ impl<'a> bw_dat::expr::CustomEval for CustomCtx<'a> {
                             Some(s) => s,
                             None => {
                                 error!(
-                                    "Error: image {:04x} has no unit",
-                                    (*self.image).image_id,
+                                    "Error {}: image {:04x} has no unit",
+                                    self.current_line(), (*self.image).image_id,
                                 );
                                 bw_print!(
-                                    "Error: image {:04x} has no unit",
-                                    (*self.image).image_id,
+                                    "Error {}: image {:04x} has no unit",
+                                    self.current_line(), (*self.image).image_id,
                                 );
                                 return i32::min_value();
                             }
@@ -304,6 +297,9 @@ struct IscriptRunner<'a> {
     iscript: &'a Iscript,
     state: &'a mut IscriptState,
     pos: usize,
+    /// `pos` gets incremented by each read_u32 etc,
+    /// This one points to start of current opcode.
+    opcode_pos: u32,
     bw_script: *mut bw::Iscript,
     image: *mut bw::Image,
     dry_run: bool,
@@ -335,6 +331,7 @@ impl<'a> IscriptRunner<'a> {
             iscript,
             state,
             pos,
+            opcode_pos: pos as u32,
             bw_script,
             image,
             dry_run,
@@ -357,18 +354,43 @@ impl<'a> IscriptRunner<'a> {
         }
     }
 
-    fn eval_ctx<'s>(&'s mut self) -> bw_dat::expr::EvalCtx<CustomCtx<'s>> {
+    fn eval_ctx<'s>(&'s mut self) -> bw_dat::expr::EvalCtx<CustomCtx<'s, 'a>> {
         self.init_sprite_owner();
         bw_dat::expr::EvalCtx {
             game: Some(self.game),
             unit: self.unit,
             custom: CustomCtx {
-                state: self.state,
                 image: self.image,
                 bullet: self.bullet,
                 unit: self.unit,
                 dry_run: self.dry_run,
+                parent: self,
             },
+        }
+    }
+
+    #[cold]
+    fn current_line(&self) -> String {
+        format!(
+            "scripts/iscript.txt:{}",
+            self.iscript.line_info.pos_to_line(CodePosition::aice(self.opcode_pos)),
+        )
+    }
+
+    fn get_sprite_local(&mut self, image: *mut bw::Image, id: u32) -> i32 {
+        match self.state.get_sprite_local(image, id) {
+            Some(s) => s,
+            None => unsafe {
+                error!(
+                    "Error {}: image {:04x} accessed uninitialized spritelocal",
+                    self.current_line(), (*image).image_id,
+                );
+                bw_print!(
+                    "Error {}: image {:04x} accessed uninitialized spritelocal",
+                    self.current_line(), (*image).image_id,
+                );
+                i32::min_value()
+            }
         }
     }
 
@@ -380,6 +402,7 @@ impl<'a> IscriptRunner<'a> {
         use crate::parse::aice_op::*;
         'op_loop: while self.in_aice_code {
             let opcode_pos = self.pos as u32;
+            self.opcode_pos = opcode_pos;
             let opcode = self.read_u8()?;
             match opcode {
                 JUMP_TO_BW => {
@@ -437,12 +460,12 @@ impl<'a> IscriptRunner<'a> {
                                 Some(s) => s,
                                 None => {
                                     error!(
-                                        "Error: image {:04x} has no flingy",
-                                        (*self.image).image_id,
+                                        "Error {}: image {:04x} has no flingy",
+                                        self.current_line(), (*self.image).image_id,
                                     );
                                     bw_print!(
-                                        "Error: image {:04x} has no flingy",
-                                        (*self.image).image_id,
+                                        "Error {}: image {:04x} has no flingy",
+                                        self.current_line(), (*self.image).image_id,
                                     );
                                     show_unit_frame0_help();
                                     show_bullet_frame0_help();
@@ -456,12 +479,12 @@ impl<'a> IscriptRunner<'a> {
                                 Some(s) => s,
                                 None => {
                                     error!(
-                                        "Error: image {:04x} has no bullet",
-                                        (*self.image).image_id,
+                                        "Error {}: image {:04x} has no bullet",
+                                        self.current_line(), (*self.image).image_id,
                                     );
                                     bw_print!(
-                                        "Error: image {:04x} has no bullet",
-                                        (*self.image).image_id,
+                                        "Error {}: image {:04x} has no bullet",
+                                        self.current_line(), (*self.image).image_id,
                                     );
                                     show_bullet_frame0_help();
                                     continue 'op_loop;
@@ -487,12 +510,12 @@ impl<'a> IscriptRunner<'a> {
                                 Some(s) => s,
                                 None => {
                                     error!(
-                                        "Error: image {:04x} has no unit",
-                                        (*self.image).image_id,
+                                        "Error {}: image {:04x} has no unit",
+                                        self.current_line(), (*self.image).image_id,
                                     );
                                     bw_print!(
-                                        "Error: image {:04x} has no unit",
-                                        (*self.image).image_id,
+                                        "Error {}: image {:04x} has no unit",
+                                        self.current_line(), (*self.image).image_id,
                                     );
                                     show_unit_frame0_help();
                                     continue 'op_loop;
@@ -530,17 +553,17 @@ impl<'a> IscriptRunner<'a> {
                         if let Some(bullet) = self.bullet {
                             if (*bullet).state != 5 {
                                 bw_print!(
-                                    "ERROR: Bullet 0x{:x} ended its iscript \
+                                    "ERROR {}: Bullet 0x{:x} ended its iscript \
                                     without bullet being in death state (bullet.state = 5)",
-                                    (*bullet).weapon_id,
+                                    self.current_line(), (*bullet).weapon_id,
                                 );
                             }
                         } else if let Some(unit) = self.unit {
                             if unit.order() != bw_dat::order::DIE {
                                 bw_print!(
-                                    "ERROR: Unit 0x{:x} ended its iscript \
+                                    "ERROR {}: Unit 0x{:x} ended its iscript \
                                     while the unit is still alive",
-                                    unit.id().0,
+                                    self.current_line(), unit.id().0,
                                 );
                             }
                         }
@@ -558,12 +581,12 @@ impl<'a> IscriptRunner<'a> {
                         Some(s) => s,
                         None => {
                             error!(
-                                "Error: image {:04x} has no unit",
-                                (*self.image).image_id,
+                                "Error {}: image {:04x} has no unit",
+                                self.current_line(), (*self.image).image_id,
                             );
                             bw_print!(
-                                "Error: image {:04x} has no unit",
-                                (*self.image).image_id,
+                                "Error {}: image {:04x} has no unit",
+                                self.current_line(), (*self.image).image_id,
                             );
                             show_unit_frame0_help();
                             continue 'op_loop;
@@ -580,8 +603,7 @@ impl<'a> IscriptRunner<'a> {
                         self.state.set_sprite_local(sprite, TEMP_LOCAL_ID, old as i32);
                         *order_weapon = value as u8;
                     } else {
-                        *order_weapon =
-                            self.state.get_sprite_local(self.image, TEMP_LOCAL_ID) as u8;
+                        *order_weapon = self.get_sprite_local(self.image, TEMP_LOCAL_ID) as u8;
                     }
                 }
                 CLEAR_ATTACKING_FLAG => {
