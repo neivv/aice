@@ -165,12 +165,6 @@ struct CustomCtx<'a, 'b> {
     dry_run: bool,
 }
 
-impl<'a, 'b> CustomCtx<'a, 'b> {
-    fn current_line(&self) -> String {
-        self.parent.current_line()
-    }
-}
-
 impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
     type State = parse::ExprState;
 
@@ -191,14 +185,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 // is even fully created.
                                 // Alternatively could get unit ptr from first_free_unit.
                                 if !self.dry_run {
-                                    error!(
-                                        "Error {}: image {:04x} has no flingy",
-                                        self.current_line(), (*self.image).image_id,
-                                    );
-                                    bw_print!(
-                                        "Error {}: image {:04x} has no flingy",
-                                        self.current_line(), (*self.image).image_id,
-                                    );
+                                    self.parent.report_missing_parent("flingy");
                                     show_unit_frame0_help();
                                     show_bullet_frame0_help();
                                 }
@@ -230,14 +217,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                         let bullet = match self.bullet {
                             Some(s) => s,
                             None => {
-                                error!(
-                                    "Error {}: image {:04x} has no bullet",
-                                    self.current_line(), (*self.image).image_id,
-                                );
-                                bw_print!(
-                                    "Error {}: image {:04x} has no bullet",
-                                    self.current_line(), (*self.image).image_id,
-                                );
+                                self.parent.report_missing_parent("bullet");
                                 return i32::min_value();
                             }
                         };
@@ -254,14 +234,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                         let unit = match self.unit {
                             Some(s) => s,
                             None => {
-                                error!(
-                                    "Error {}: image {:04x} has no unit",
-                                    self.current_line(), (*self.image).image_id,
-                                );
-                                bw_print!(
-                                    "Error {}: image {:04x} has no unit",
-                                    self.current_line(), (*self.image).image_id,
-                                );
+                                self.parent.report_missing_parent("unit");
                                 return i32::min_value();
                             }
                         };
@@ -459,14 +432,7 @@ impl<'a> IscriptRunner<'a> {
                             let flingy = match flingy {
                                 Some(s) => s,
                                 None => {
-                                    error!(
-                                        "Error {}: image {:04x} has no flingy",
-                                        self.current_line(), (*self.image).image_id,
-                                    );
-                                    bw_print!(
-                                        "Error {}: image {:04x} has no flingy",
-                                        self.current_line(), (*self.image).image_id,
-                                    );
+                                    self.report_missing_parent("flingy");
                                     show_unit_frame0_help();
                                     show_bullet_frame0_help();
                                     continue 'op_loop;
@@ -478,14 +444,7 @@ impl<'a> IscriptRunner<'a> {
                             let bullet = match self.bullet {
                                 Some(s) => s,
                                 None => {
-                                    error!(
-                                        "Error {}: image {:04x} has no bullet",
-                                        self.current_line(), (*self.image).image_id,
-                                    );
-                                    bw_print!(
-                                        "Error {}: image {:04x} has no bullet",
-                                        self.current_line(), (*self.image).image_id,
-                                    );
+                                    self.report_missing_parent("bullet");
                                     show_bullet_frame0_help();
                                     continue 'op_loop;
                                 }
@@ -509,14 +468,7 @@ impl<'a> IscriptRunner<'a> {
                             let unit = match self.unit {
                                 Some(s) => s,
                                 None => {
-                                    error!(
-                                        "Error {}: image {:04x} has no unit",
-                                        self.current_line(), (*self.image).image_id,
-                                    );
-                                    bw_print!(
-                                        "Error {}: image {:04x} has no unit",
-                                        self.current_line(), (*self.image).image_id,
-                                    );
+                                    self.report_missing_parent("unit");
                                     show_unit_frame0_help();
                                     continue 'op_loop;
                                 }
@@ -580,14 +532,7 @@ impl<'a> IscriptRunner<'a> {
                     let unit = match self.unit {
                         Some(s) => s,
                         None => {
-                            error!(
-                                "Error {}: image {:04x} has no unit",
-                                self.current_line(), (*self.image).image_id,
-                            );
-                            bw_print!(
-                                "Error {}: image {:04x} has no unit",
-                                self.current_line(), (*self.image).image_id,
-                            );
+                            self.report_missing_parent("unit");
                             show_unit_frame0_help();
                             continue 'op_loop;
                         }
@@ -647,6 +592,51 @@ impl<'a> IscriptRunner<'a> {
             }
         }
         Ok(ScriptRunResult::Done)
+    }
+
+    fn report_missing_parent(&self, parent: &str) {
+        unsafe {
+            let image_id = (*self.image).image_id;
+            let sprite = bw_dat::Sprite::from_ptr((*self.image).parent)
+                .unwrap_or_else(|| panic!("Fatal: image {:04x} has no parent sprite", image_id));
+            let msg = format!(
+                "Error {}: image {:04x} / sprite {:04x} has no {}",
+                self.current_line(), image_id, sprite.id().0, parent
+            );
+            error!("{}", msg);
+            bw_print!("{}", msg);
+            let mut any_found = false;
+            if let Some(unit) = self.sprite_owner_map.get_unit(*sprite) {
+                bw_print!("Note: The sprite is owned by unit {:04x}", unit.id().0);
+                any_found = true;
+            }
+            if let Some(bullet) = self.sprite_owner_map.get_bullet(*sprite) {
+                bw_print!("Note: The sprite is owned by bullet {:04x}", (*bullet).weapon_id);
+                any_found = true;
+            }
+            let mut lone = bw::first_lone_sprite();
+            while !lone.is_null() {
+                if (*lone).sprite == *sprite {
+                    bw_print!("Note: The sprite is a parentless sprite (e.g. iscript sprol)");
+                    any_found = true;
+                    break;
+                }
+                lone = (*lone).next;
+            }
+            let mut fow = bw::first_fow_sprite();
+            while !fow.is_null() {
+                if (*fow).sprite == *sprite {
+                    let unit_id = (*fow).hitpoints;
+                    bw_print!("Note: The sprite is a fog sprite of unit {:04x}", unit_id);
+                    any_found = true;
+                    break;
+                }
+                fow = (*fow).next;
+            }
+            if !any_found {
+                bw_print!("Note: One possibility is that the sprite is owned by a dying unit");
+            }
+        }
     }
 
     fn jump_to(&mut self, dest: CodePosition) {
@@ -790,7 +780,7 @@ impl SpriteOwnerMap {
         self.bullet_mapping.insert(sprite, bullet);
     }
 
-    pub fn get_unit(&mut self, sprite: *mut bw::Sprite) -> Option<Unit> {
+    pub fn get_unit(&self, sprite: *mut bw::Sprite) -> Option<Unit> {
         unsafe {
             if let Some(&unit) = self.unit_mapping.get(&sprite) {
                 if (*unit).sprite == sprite {
@@ -801,7 +791,7 @@ impl SpriteOwnerMap {
         }
     }
 
-    pub fn get_bullet(&mut self, sprite: *mut bw::Sprite) -> Option<*mut bw::Bullet> {
+    pub fn get_bullet(&self, sprite: *mut bw::Sprite) -> Option<*mut bw::Bullet> {
         unsafe {
             if let Some(&bullet) = self.bullet_mapping.get(&sprite) {
                 if (*bullet).sprite == sprite {

@@ -47,6 +47,14 @@ pub fn first_active_bullet() -> *mut Bullet {
     samase::first_active_bullet()
 }
 
+pub fn first_lone_sprite() -> *mut LoneSprite {
+    samase::first_lone_sprite()
+}
+
+pub fn first_fow_sprite() -> *mut LoneSprite {
+    samase::first_fow_sprite()
+}
+
 pub fn create_unit(id: UnitId, pos: &Point, player: u8) -> Option<bw_dat::Unit> {
     unsafe {
         let skins = [player, player];

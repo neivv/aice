@@ -74,6 +74,16 @@ pub fn first_active_bullet() -> *mut bw::Bullet {
     unsafe { FIRST_ACTIVE_BULLET.0.map(|x| x()).unwrap_or(null_mut()) }
 }
 
+static mut FIRST_FOW_SPRITE: GlobalFunc<extern fn() -> *mut bw::LoneSprite> = GlobalFunc(None);
+pub fn first_fow_sprite() -> *mut bw::LoneSprite {
+    unsafe { FIRST_FOW_SPRITE.0.map(|x| x()).unwrap_or(null_mut()) }
+}
+
+static mut FIRST_LONE_SPRITE: GlobalFunc<extern fn() -> *mut bw::LoneSprite> = GlobalFunc(None);
+pub fn first_lone_sprite() -> *mut bw::LoneSprite {
+    unsafe { FIRST_LONE_SPRITE.0.map(|x| x()).unwrap_or(null_mut()) }
+}
+
 static mut UNITS_DAT: GlobalFunc<extern fn() -> *mut bw_dat::DatTable> = GlobalFunc(None);
 pub fn units_dat() -> *mut bw_dat::DatTable {
     unsafe { UNITS_DAT.get()() }
@@ -237,6 +247,8 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         ((*api).first_hidden_unit)().map(|x| mem::transmute(x)),
         "first hidden unit",
     );
+    FIRST_LONE_SPRITE.try_init(((*api).first_lone_sprite)().map(|x| mem::transmute(x)));
+    FIRST_FOW_SPRITE.try_init(((*api).first_fow_sprite)().map(|x| mem::transmute(x)));
     PLAYERS.init(((*api).players)().map(|x| mem::transmute(x)), "players");
     let read_file = ((*api).read_file)();
     READ_FILE.0 = Some(mem::transmute(read_file));
