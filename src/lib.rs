@@ -20,8 +20,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
 
-use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
-
 lazy_static! {
     static ref PATCHER: Mutex<whack::Patcher> = Mutex::new(whack::Patcher::new());
 }
@@ -47,51 +45,8 @@ fn init() {
     std::panic::set_hook(Box::new(|info| {
         use std::fmt::Write;
 
-        #[cfg(debug_assertions)]
-        fn backtrace() -> String {
-            use std::path::Path;
-
-            let mut backtrace = String::new();
-            backtrace::trace(|frame| {
-                let ip = frame.ip();
-                let symbol_address = frame.symbol_address();
-
-                backtrace::resolve(ip, |symbol| {
-                    let mut line = format!("    {:p}", symbol_address);
-                    if symbol_address != ip {
-                        write!(line, " ({:p})", symbol_address).unwrap();
-                    }
-                    let module = windows::module_from_address(symbol_address as *mut _);
-                    if let Some((name, base)) = module {
-                        if let Some(fname) = Path::new(&name).file_name() {
-                            write!(line, " {:?} {:p}", fname, base).unwrap();
-                        } else {
-                            write!(line, " {:?} {:p}", name, base).unwrap();
-                        }
-                    }
-                    if let Some(name) = symbol.name() {
-                        write!(line, " -- {}", name).unwrap();
-                    }
-                    if let Some(filename) = symbol.filename() {
-                        if let Some(lineno) = symbol.lineno() {
-                            write!(line, " -- {:?}:{}", filename, lineno).unwrap();
-                        } else {
-                            write!(line, " -- {:?}:???", filename).unwrap();
-                        }
-                    }
-                    writeln!(backtrace, "{}", line).unwrap();
-                });
-                true // keep going to the next frame
-            });
-            backtrace
-        }
-
-        #[cfg(not(debug_assertions))]
-        fn backtrace() -> String {
-            "".into()
-        }
-
-        let mut msg = String::new();
+        let mut msg = String::with_capacity(256);
+        writeln!(msg, "Aice {} panic", env!("CARGO_PKG_VERSION")).unwrap();
         match info.location() {
             Some(s) => writeln!(msg, "Panic at {}:{}", s.file(), s.line()).unwrap(),
             None => writeln!(msg, "Panic at unknown location").unwrap(),
@@ -105,14 +60,8 @@ fn init() {
             },
         };
         writeln!(msg, "{}", panic_msg).unwrap();
-        if cfg!(debug_assertions) {
-            write!(msg, "Backtrace:\n{}", backtrace()).unwrap();
-        }
         error!("{}", msg);
-        windows::message_box("Aice panic", &msg);
-        unsafe {
-            TerminateProcess(GetCurrentProcess(), 0x4230daef);
-        }
+        samase::crash_with_message(&msg);
     }));
 
     unsafe {

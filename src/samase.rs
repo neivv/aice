@@ -48,6 +48,12 @@ fn fatal(text: &str) -> ! {
     unreachable!();
 }
 
+static mut CRASH_WITH_MESSAGE: GlobalFunc<unsafe extern fn(*const u8) -> !> = GlobalFunc(None);
+pub fn crash_with_message(msg: &str) -> ! {
+    let msg = format!("{}\0", msg);
+    unsafe { CRASH_WITH_MESSAGE.get()(msg.as_bytes().as_ptr()) }
+}
+
 static mut GAME: GlobalFunc<extern fn() -> *mut bw::Game> = GlobalFunc(None);
 pub fn game() -> *mut bw::Game {
     unsafe { GAME.get()() }
@@ -200,7 +206,7 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     bw_dat::set_is_scr(crate::is_scr());
-    let required_version = 22;
+    let required_version = 26;
     if (*api).version < required_version {
         fatal(&format!(
             "Newer samase is required. (Plugin API version {}, this plugin requires version {})",
@@ -208,6 +214,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
             required_version,
         ));
     }
+    CRASH_WITH_MESSAGE.0 = Some((*api).crash_with_message);
 
     GAME.init(((*api).game)().map(|x| mem::transmute(x)), "Game object");
     GET_REGION.init(
