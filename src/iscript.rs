@@ -14,7 +14,7 @@ use crate::bw;
 use crate::globals::{Globals, SerializableSprite};
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
-    UnitVar,
+    UnitVar, ImageVar,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
@@ -252,6 +252,13 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::IsBlind => (**unit).is_blind as i32,
                         }
                     },
+                    Place::Image(ty) => unsafe {
+                        let image = self.image;
+                        match ty {
+                            ImageVar::Drawfunc => (*image).drawfunc as i32,
+                            ImageVar::DrawfuncParam => (*image).drawfunc_param as i32,
+                        }
+                    }
                 }
             }
         }
@@ -487,6 +494,15 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::IsBlind => (**unit).is_blind = value as u8,
                             }
                         },
+                        Place::Image(ty) => {
+                            let image = self.image;
+                            match ty {
+                                ImageVar::Drawfunc => (*image).drawfunc = value as u8,
+                                ImageVar::DrawfuncParam => {
+                                    (*image).drawfunc_param = value as usize as *mut c_void;
+                                }
+                            }
+                        }
                     }
                 }
                 PRE_END => {

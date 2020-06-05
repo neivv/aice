@@ -258,6 +258,7 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
     use self::FlingyVar::*;
     use self::BulletVar::*;
     use self::UnitVar::*;
+    use self::ImageVar::*;
     const fn flingy(x: FlingyVar) -> PlaceId {
         PlaceId::new_flingy(x)
     }
@@ -266,6 +267,9 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
     }
     const fn unit(x: UnitVar) -> PlaceId {
         PlaceId::new_unit(x)
+    }
+    const fn image(x: ImageVar) -> PlaceId {
+        PlaceId::new_image(x)
     }
     &[
         (b"flingy.move_target_x", flingy(MoveTargetX)),
@@ -298,6 +302,8 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"unit.is_blind", unit(IsBlind)),
         (b"speed", flingy(Speed)),
         (b"player", flingy(Player)),
+        (b"image.drawfunc", image(Drawfunc)),
+        (b"image.drawfunc_param", image(DrawfuncParam)),
     ]
 };
 
@@ -1137,6 +1143,13 @@ pub enum UnitVar {
     IsBlind,
 }
 
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ImageVar {
+    Drawfunc,
+    DrawfuncParam,
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Place {
     Global(u32),
@@ -1144,6 +1157,7 @@ pub enum Place {
     Flingy(FlingyVar),
     Bullet(BulletVar),
     Unit(UnitVar),
+    Image(ImageVar),
 }
 
 impl PlaceId {
@@ -1154,6 +1168,7 @@ impl PlaceId {
             Place::Flingy(id) => ((2 << 3), id as u32),
             Place::Bullet(id) => ((2 << 3) + 1, id as u32),
             Place::Unit(id) => ((2 << 3) + 2, id as u32),
+            Place::Image(id) => ((2 << 3) + 3, id as u32),
         };
         let tag_shifted = (tag as u32) << 27;
         assert!(id & tag_shifted == 0);
@@ -1169,6 +1184,9 @@ impl PlaceId {
     const fn new_unit(x: UnitVar) -> PlaceId {
         PlaceId((x as u32) | (((2 << 3) + 2) << 27))
     }
+    const fn new_image(x: ImageVar) -> PlaceId {
+        PlaceId((x as u32) | (((2 << 3) + 3) << 27))
+    }
 
     pub fn place(self) -> Place {
         let id = self.0 & !0xc000_0000;
@@ -1178,7 +1196,8 @@ impl PlaceId {
             2 | _ => match (self.0 >> 27) & 0x7 {
                 0 => Place::Flingy(unsafe { std::mem::transmute(id as u8) }),
                 1 => Place::Bullet(unsafe { std::mem::transmute(id as u8) }),
-                2 | _ => Place::Unit(unsafe { std::mem::transmute(id as u8) }),
+                2 => Place::Unit(unsafe { std::mem::transmute(id as u8) }),
+                3 | _ => Place::Image(unsafe { std::mem::transmute(id as u8) }),
             },
         }
     }

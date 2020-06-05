@@ -265,6 +265,8 @@ looking at BW's code to understand the details is recommended.
     * `6` Bullet is moving near an unit (Valkyrie attack)
 - `bullet.bounces_remaining` Amount of bounces remaining. Only used if `bullet.state` is 3
 - `bullet.order_target_x` and `bullet.order_target_y` The point which bullet is targeting
+- `image.drawfunc` Current images.dat draw function for image.
+- `image.drawfunc_param` Current images.dat draw function parameter for image.
 
 Setting the following unit variables can be used to manipulate time a buff lasts for.
 The time unit for these variables is 8 frames (Maybe 9? Needs confirming)
