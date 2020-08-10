@@ -1,17 +1,11 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 
-use std::sync::atomic::Ordering;
-
 use crate::samase;
 
 use bw_dat::{UnitId};
 
 pub use bw_dat::structs::*;
-
-pub fn is_scr() -> bool {
-    crate::IS_1161.load(Ordering::Relaxed) == false
-}
 
 pub fn orders_dat() -> &'static [DatTable] {
     unsafe {
@@ -26,13 +20,6 @@ pub fn players() -> *mut Player {
 
 pub fn game() -> *mut Game {
     samase::game()
-}
-
-pub fn point_from_rect(rect: Rect) -> Point {
-    Point {
-        x: rect.left + (rect.right - rect.left) / 2,
-        y: rect.top + (rect.bottom - rect.top) / 2,
-    }
 }
 
 pub fn first_active_unit() -> *mut Unit {
@@ -75,48 +62,6 @@ pub fn finish_unit_pre(unit: bw_dat::Unit) {
 
 pub fn finish_unit_post(unit: bw_dat::Unit) {
     unsafe { samase::finish_unit_post(*unit) }
-}
-
-// BW algorithm
-pub fn distance(a: Point, b: Point) -> u32 {
-    let x = (a.x as i32).wrapping_sub(b.x as i32).abs() as u32;
-    let y = (a.y as i32).wrapping_sub(b.y as i32).abs() as u32;
-    let (greater, lesser) = (x.max(y), x.min(y));
-    if greater / 4 > lesser {
-        greater
-    } else {
-        greater * 59 / 64 + lesser * 99 / 256
-    }
-}
-
-pub fn rect_distance(a: &Rect, b: &Rect) -> u32 {
-    let horizontal_overlap = a.left < b.right && a.right > b.left;
-    let vertical_overlap = a.top < b.bottom && a.bottom > b.top;
-    let x_diff = match horizontal_overlap {
-        true => 0,
-        false => match a.left < b.left {
-            true => b.left - a.right,
-            false => a.left - b.right,
-        },
-    };
-    let y_diff = match vertical_overlap {
-        true => 0,
-        false => match a.top < b.top {
-            true => b.top - a.bottom,
-            false => a.top - b.bottom,
-        },
-    };
-
-    distance(
-        Point {
-            x: 0,
-            y: 0,
-        },
-        Point {
-            x: x_diff,
-            y: y_diff,
-        },
-    )
 }
 
 whack_hooks!(stdcall, 0x00400000,
