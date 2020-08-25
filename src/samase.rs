@@ -1,5 +1,6 @@
 use std::mem;
 use std::ptr::{NonNull, null_mut};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libc::c_void;
 use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
@@ -84,31 +85,6 @@ pub fn first_lone_sprite() -> *mut bw::LoneSprite {
     unsafe { FIRST_LONE_SPRITE.0.map(|x| x()).unwrap_or(null_mut()) }
 }
 
-static mut UNITS_DAT: GlobalFunc<extern fn() -> *mut bw_dat::DatTable> = GlobalFunc(None);
-pub fn units_dat() -> *mut bw_dat::DatTable {
-    unsafe { UNITS_DAT.get()() }
-}
-
-static mut WEAPONS_DAT: GlobalFunc<extern fn() -> *mut bw_dat::DatTable> = GlobalFunc(None);
-pub fn weapons_dat() -> *mut bw_dat::DatTable {
-    unsafe { WEAPONS_DAT.get()() }
-}
-
-static mut UPGRADES_DAT: GlobalFunc<extern fn() -> *mut bw_dat::DatTable> = GlobalFunc(None);
-pub fn upgrades_dat() -> *mut bw_dat::DatTable {
-    unsafe { UPGRADES_DAT.get()() }
-}
-
-static mut TECHDATA_DAT: GlobalFunc<extern fn() -> *mut bw_dat::DatTable> = GlobalFunc(None);
-pub fn techdata_dat() -> *mut bw_dat::DatTable {
-    unsafe { TECHDATA_DAT.get()() }
-}
-
-static mut ORDERS_DAT: GlobalFunc<extern fn() -> *mut bw_dat::DatTable> = GlobalFunc(None);
-pub fn orders_dat() -> *mut bw_dat::DatTable {
-    unsafe { ORDERS_DAT.get()() }
-}
-
 static mut GET_REGION: GlobalFunc<extern fn(u32, u32) -> u32> = GlobalFunc(None);
 pub fn get_region(x: u32, y: u32) -> u32 {
     unsafe { GET_REGION.get()(x, y) }
@@ -132,6 +108,11 @@ pub fn get_iscript_bin() -> *mut u8 {
 static mut SPRITE_HLINES: GlobalFunc<extern fn() -> *mut *mut bw::Sprite> = GlobalFunc(None);
 pub fn sprite_hlines() -> *mut *mut bw::Sprite {
     unsafe { SPRITE_HLINES.get()() }
+}
+
+static ORDERS_DAT: AtomicUsize = AtomicUsize::new(0);
+pub fn orders_dat() -> *mut bw_dat::DatTable {
+    ORDERS_DAT.load(Ordering::Relaxed) as *mut bw_dat::DatTable
 }
 
 static mut PRINT_TEXT: GlobalFunc<extern fn(*const u8)> = GlobalFunc(None);
@@ -216,7 +197,7 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     bw_dat::set_is_scr(crate::is_scr());
-    let required_version = 29;
+    let required_version = 30;
     if (*api).version < required_version {
         fatal(&format!(
             "Newer samase is required. (Plugin API version {}, this plugin requires version {})",
@@ -256,16 +237,18 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     PLAYERS.init(((*api).players)().map(|x| mem::transmute(x)), "players");
     let read_file = ((*api).read_file)();
     READ_FILE.0 = Some(mem::transmute(read_file));
-    UNITS_DAT.init(((*api).dat)(0).map(|x| mem::transmute(x)), "units.dat");
-    bw_dat::init_units(units_dat());
-    WEAPONS_DAT.init(((*api).dat)(1).map(|x| mem::transmute(x)), "weapons.dat");
-    bw_dat::init_weapons(weapons_dat());
-    UPGRADES_DAT.init(((*api).dat)(3).map(|x| mem::transmute(x)), "upgrades.dat");
-    bw_dat::init_upgrades(upgrades_dat());
-    TECHDATA_DAT.init(((*api).dat)(4).map(|x| mem::transmute(x)), "techdata.dat");
-    bw_dat::init_techdata(techdata_dat());
-    ORDERS_DAT.init(((*api).dat)(7).map(|x| mem::transmute(x)), "orders.dat");
-    bw_dat::init_orders(orders_dat());
+    let mut dat_len = 0usize;
+    let units_dat = ((*api).extended_dat)(0).expect("units.dat")(&mut dat_len);
+    bw_dat::init_units(units_dat as *const _, dat_len);
+    let weapons_dat = ((*api).extended_dat)(1).expect("weapons.dat")(&mut dat_len);
+    bw_dat::init_weapons(weapons_dat as *const _, dat_len);
+    let upgrades_dat = ((*api).extended_dat)(3).expect("upgrades.dat")(&mut dat_len);
+    bw_dat::init_upgrades(upgrades_dat as *const _, dat_len);
+    let techdata_dat = ((*api).extended_dat)(4).expect("techdata.dat")(&mut dat_len);
+    bw_dat::init_techdata(techdata_dat as *const _, dat_len);
+    let orders_dat = ((*api).extended_dat)(7).expect("orders.dat")(&mut dat_len);
+    bw_dat::init_orders(orders_dat as *const _, dat_len);
+    ORDERS_DAT.store(orders_dat as usize, Ordering::Relaxed);
 
     GET_ISCRIPT_BIN.init(
         ((*api).get_iscript_bin)().map(|x| mem::transmute(x)),
