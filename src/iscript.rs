@@ -145,6 +145,7 @@ pub unsafe extern fn run_aice_script(
                 if let Some(unit) = bw::create_unit(unit_id, &pos, player) {
                     bw::finish_unit_pre(unit);
                     bw::finish_unit_post(unit);
+                    bw::give_ai(unit);
                 }
             }
             Err(pos) => {

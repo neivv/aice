@@ -159,6 +159,11 @@ pub unsafe fn finish_unit_post(unit: *mut bw::Unit) {
     (FINISH_UNIT_POST.0.unwrap())(unit)
 }
 
+static mut GIVE_AI: GlobalFunc<extern fn(*mut bw::Unit)> = GlobalFunc(None);
+pub unsafe fn give_ai(unit: *mut bw::Unit) {
+    (GIVE_AI.0.unwrap())(unit)
+}
+
 pub struct SamaseBox {
     data: NonNull<u8>,
     len: usize,
@@ -197,7 +202,7 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     bw_dat::set_is_scr(crate::is_scr());
-    let required_version = 30;
+    let required_version = 31;
     if (*api).version < required_version {
         fatal(&format!(
             "Newer samase is required. (Plugin API version {}, this plugin requires version {})",
@@ -261,6 +266,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     CREATE_UNIT.0 = Some(mem::transmute(((*api).create_unit)()));
     FINISH_UNIT_PRE.0 = Some(mem::transmute(((*api).finish_unit_pre)()));
     FINISH_UNIT_POST.0 = Some(mem::transmute(((*api).finish_unit_post)()));
+    GIVE_AI.0 = Some(mem::transmute(((*api).give_ai)()));
     let result = ((*api).extend_save)(
         "aice\0".as_ptr(),
         Some(crate::globals::save),
