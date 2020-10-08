@@ -164,6 +164,14 @@ pub unsafe fn give_ai(unit: *mut bw::Unit) {
     (GIVE_AI.0.unwrap())(unit)
 }
 
+static mut UNIT_ARRAY_LEN: GlobalFunc<extern fn(*mut *mut bw::Unit, *mut usize)> = GlobalFunc(None);
+pub unsafe fn unit_array() -> (*mut bw::Unit, usize) {
+    let mut arr = null_mut();
+    let mut len = 0;
+    (UNIT_ARRAY_LEN.0.unwrap())(&mut arr, &mut len);
+    (arr, len)
+}
+
 pub struct SamaseBox {
     data: NonNull<u8>,
     len: usize,
@@ -267,6 +275,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     FINISH_UNIT_PRE.0 = Some(mem::transmute(((*api).finish_unit_pre)()));
     FINISH_UNIT_POST.0 = Some(mem::transmute(((*api).finish_unit_post)()));
     GIVE_AI.0 = Some(mem::transmute(((*api).give_ai)()));
+    UNIT_ARRAY_LEN.0 = Some(mem::transmute(((*api).unit_array_len)()));
     let result = ((*api).extend_save)(
         "aice\0".as_ptr(),
         Some(crate::globals::save),

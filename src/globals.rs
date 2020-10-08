@@ -52,6 +52,7 @@ pub unsafe extern fn init_game() {
     globals.iscript_state = iscript::IscriptState::from_script(&iscript);
     iscript::set_as_bw_script(iscript);
     *Globals::get("init") = globals;
+    iscript::rebuild_sprite_owners();
 }
 
 pub unsafe extern fn save(set_data: unsafe extern fn(*const u8, usize)) {
@@ -81,6 +82,7 @@ pub unsafe extern fn load(ptr: *const u8, len: usize) -> u32 {
     let iscript = iscript::load_iscript(true);
     iscript::set_as_bw_script(iscript);
     *Globals::get("load") = data;
+    iscript::rebuild_sprite_owners();
     1
 }
 

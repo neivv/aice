@@ -68,6 +68,10 @@ pub fn give_ai(unit: bw_dat::Unit) {
     unsafe { samase::give_ai(*unit) }
 }
 
+pub fn unit_array() -> (*mut Unit, usize) {
+    unsafe { samase::unit_array() }
+}
+
 whack_hooks!(stdcall, 0x00400000,
     0x00488AF0 => increment_death_scores(@edi *mut Unit, @edx u8);
     0x004465C0 => choose_placement_position(u32, u32, *mut Point, u32, @ecx *mut Unit) -> u32;

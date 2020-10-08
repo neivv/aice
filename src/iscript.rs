@@ -820,6 +820,30 @@ impl SpriteOwnerMap {
     }
 }
 
+pub fn rebuild_sprite_owners() {
+    let mut map = SPRITE_OWNER_MAP.lock("rebuild_sprite_owners");
+    map.unit_mapping.clear();
+    map.bullet_mapping.clear();
+    unsafe {
+        let (units, len) = bw::unit_array();
+        for i in 0..len {
+            let unit = units.add(i);
+            let sprite = (*unit).sprite;
+            if !sprite.is_null() {
+                map.add_unit(Unit::from_ptr(unit).unwrap(), sprite);
+            }
+        }
+        let mut bullet = bw::first_active_bullet();
+        while !bullet.is_null() {
+            let sprite = (*bullet).sprite;
+            if !sprite.is_null() {
+                map.add_bullet(bullet, sprite);
+            }
+            bullet = (*bullet).next;
+        }
+    }
+}
+
 unsafe fn invalid_aice_command(iscript: *mut bw::Iscript, image: *mut bw::Image, offset: CodePos) {
     let sprite_id = match Sprite::from_ptr((*image).parent) {
         Some(sprite) => sprite.id().0,
