@@ -555,17 +555,35 @@ impl<'a> IscriptRunner<'a> {
                         }
                     };
                     let sprite = (*self.image).parent;
-                    let order_weapon =
-                        (bw::orders_dat()[0xd].data as *mut u8).add(unit.order().0 as usize);
+                    let orders_dat_weapon = &bw::orders_dat()[0xd];
+                    let order = unit.order().0 as usize;
+                    let new_value;
                     if expr != !0 {
                         let expression = &self.iscript.int_expressions[expr as usize];
                         let mut eval_ctx = self.eval_ctx();
                         let value = eval_ctx.eval_int(&expression);
-                        let old = *order_weapon;
+                        let old = match orders_dat_weapon.entry_size {
+                            1 => *(orders_dat_weapon.data as *mut u8).add(order) as u32,
+                            2 => *(orders_dat_weapon.data as *mut u16).add(order) as u32,
+                            4 => *(orders_dat_weapon.data as *mut u32).add(order),
+                            _ => 0,
+                        };
                         self.state.set_sprite_local(sprite, TEMP_LOCAL_ID, old as i32);
-                        *order_weapon = value as u8;
+                        new_value = value;
                     } else {
-                        *order_weapon = self.get_sprite_local(self.image, TEMP_LOCAL_ID) as u8;
+                        new_value = self.get_sprite_local(self.image, TEMP_LOCAL_ID);
+                    }
+                    match orders_dat_weapon.entry_size {
+                        1 => {
+                            *(orders_dat_weapon.data as *mut u8).add(order) = new_value as u8;
+                        }
+                        2 => {
+                            *(orders_dat_weapon.data as *mut u16).add(order) = new_value as u16;
+                        }
+                        4 => {
+                            *(orders_dat_weapon.data as *mut u32).add(order) = new_value as u32;
+                        }
+                        _ => (),
                     }
                 }
                 CLEAR_ATTACKING_FLAG => {
