@@ -42,7 +42,7 @@ impl expr::CustomState for ExprState {
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub enum Int {
-    Variable(PlaceId),
+    Variable(PlaceId, [Option<Box<IntExpr>>; 4]),
 }
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -65,11 +65,18 @@ impl<'b> expr::CustomParser for ExprParser<'b> {
             _ => true,
         }).unwrap_or(input.len());
         let word = &input[..word_end];
-        if let Some(&var) = self.compiler.variables.get(word) {
-            return Some((Int::Variable(var), &input[word_end..]));
+        let mut out = [None, None, None, None];
+        if let Some(&var_id) = self.compiler.variables.get(word) {
+            return Some((Int::Variable(var_id, out), &input[word_end..]));
         }
-        if let Some(&var) = self.parser.bw_places.get(word) {
-            return Some((Int::Variable(var), &input[word_end..]));
+        if let Ok((place, rest)) =
+            self.parser.parse_place_expr(input, Some(&mut out), self.compiler)
+        {
+            let var_id = match place {
+                ParsedPlace::Variable(_ty, var_name) => *self.compiler.variables.get(var_name)?,
+                ParsedPlace::Bw(place) => place,
+            };
+            return Some((Int::Variable(var_id, out), rest));
         }
         None
     }
@@ -259,6 +266,7 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
     use self::BulletVar::*;
     use self::UnitVar::*;
     use self::ImageVar::*;
+    use self::GameVar::*;
     const fn flingy(x: FlingyVar) -> PlaceId {
         PlaceId::new_flingy(x)
     }
@@ -270,6 +278,9 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
     }
     const fn image(x: ImageVar) -> PlaceId {
         PlaceId::new_image(x)
+    }
+    const fn game(x: GameVar) -> PlaceId {
+        PlaceId::new_game(x)
     }
     &[
         (b"flingy.move_target_x", flingy(MoveTargetX)),
@@ -304,6 +315,27 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"player", flingy(Player)),
         (b"image.drawfunc", image(Drawfunc)),
         (b"image.drawfunc_param", image(DrawfuncParam)),
+        (b"game.deaths", game(Deaths)),
+        (b"game.kills", game(Kills)),
+        (b"game.upgrade_level", game(UpgradeLevel)),
+        (b"game.upgrade_limit", game(UpgradeLimit)),
+        (b"game.tech_level", game(TechLevel)),
+        (b"game.tech_availability", game(TechAvailability)),
+        (b"game.unit_availability", game(UnitAvailability)),
+        (b"game.alliance", game(Alliance)),
+        (b"game.shared_vision", game(SharedVision)),
+        (b"game.minerals", game(Minerals)),
+        (b"game.gas", game(Gas)),
+        (b"game.zerg_supply_max", game(ZergSupplyMax)),
+        (b"game.zerg_supply_used", game(ZergSupplyUsed)),
+        (b"game.zerg_supply_provided", game(ZergSupplyProvided)),
+        (b"game.terran_supply_max", game(TerranSupplyMax)),
+        (b"game.terran_supply_used", game(TerranSupplyUsed)),
+        (b"game.terran_supply_provided", game(TerranSupplyProvided)),
+        (b"game.protoss_supply_max", game(ProtossSupplyMax)),
+        (b"game.protoss_supply_used", game(ProtossSupplyUsed)),
+        (b"game.protoss_supply_provided", game(ProtossSupplyProvided)),
+        (b"game.location", game(LocationLeft)),
     ]
 };
 
@@ -705,7 +737,7 @@ impl<'a> Parser<'a> {
                         ctx.is_continuing_commands = false;
                     }
                     CommandPrototype::Set => {
-                        let (place, _rest) = self.parse_set_place(rest)?;
+                        let (place, _rest) = self.parse_set_place(rest, None, compiler)?;
                         if let ParsedPlace::Variable(ty, var_name) = place {
                             self.add_set_decl(var_name, ty)?;
                         }
@@ -766,6 +798,7 @@ impl<'a> Parser<'a> {
         line: &PartiallyParsedLine<'a>,
         block_scope: &BlockScope<'a, '_>,
         compiler: &mut Compiler<'a>,
+        ctx: &mut CompileContext,
     ) -> Result<(), Error> {
         compiler.set_current_line(line.line_number as u32);
         match line.ty {
@@ -835,14 +868,16 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::Set => {
-                    let (place, rest) = self.parse_set_place(rest)?;
+                    ctx.expr_buffer[0] = None;
+                    let (place, rest) =
+                        self.parse_set_place(rest, Some(&mut ctx.expr_buffer), compiler)?;
                     let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
                         );
                     }
-                    compiler.add_set(place, expr);
+                    compiler.add_set(&mut ctx.write_buffer, place, expr, &mut ctx.expr_buffer);
                     Ok(())
                 }
             }
@@ -850,8 +885,28 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_set_place(&self, text: &'a [u8]) -> Result<(ParsedPlace<'a>, &'a [u8]), Error> {
-        let (place, rest) = split_first_token(text)
+    /// If `variables` is set, parses place variables `game.deaths(a, b)`, to there.
+    /// Otherwise just skips over them.
+    fn parse_set_place(
+        &self,
+        text: &'a [u8],
+        variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
+        compiler: &Compiler<'a>,
+    ) -> Result<(ParsedPlace<'a>, &'a [u8]), Error> {
+        let (expr, rest) = self.parse_place_expr(text, variables, compiler)?;
+        let (_, rest) = split_first_token(rest)
+            .filter(|x| x.0 == b"=")
+            .ok_or_else(|| Error::Msg("Expected '='"))?;
+        Ok((expr, rest))
+    }
+
+    fn parse_place_expr<'text>(
+        &self,
+        text: &'text [u8],
+        variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
+        compiler: &Compiler<'a>,
+    ) -> Result<(ParsedPlace<'text>, &'text [u8]), Error> {
+        let (place, rest) = split_first_token_brace_aware(text)
             .ok_or_else(|| Error::Msg("Expected place"))?;
         let ty = match place {
             x if x == b"global" => Some(VariableType::Global),
@@ -861,18 +916,68 @@ impl<'a> Parser<'a> {
         if let Some(ty) = ty {
             let (name, rest) = split_first_token(rest)
                 .ok_or_else(|| Error::Msg("Expected variable name"))?;
-            let (_, rest) = split_first_token(rest)
-                .filter(|x| x.0 == b"=")
-                .ok_or_else(|| Error::Msg("Expected '='"))?;
             return Ok((ParsedPlace::Variable(ty, name), rest));
         }
-        let (_, rest) = split_first_token(rest)
-            .filter(|x| x.0 == b"=")
-            .ok_or_else(|| Error::Msg("Expected '='"))?;
-        match self.bw_places.get(place.as_bytes()) {
-            Some(&s) => Ok((ParsedPlace::Bw(s), rest)),
-            None => Err(Error::Dynamic(format!("Unknown variable type '{}'", place.as_bstr()))),
+        let (place, params) = place.iter()
+            .position(|&x| x == b'(')
+            .map(|start| (&place[..start], &place[(start + 1)..]))
+            .unwrap_or_else(|| (place, b""));
+        // Params is b"param1, param2)", possibly also b"param1).left"
+
+        let mut bw = self.bw_places.get(place.as_bytes())
+            .copied()
+            .ok_or_else(|| {
+                Error::Dynamic(format!("Unknown variable type '{}'", place.as_bstr()))
+            })?;
+        let var_count = bw.place().var_count();
+        if var_count == 0 {
+            if !params.is_empty() {
+                return Err(Error::Dynamic(
+                    format!("Place '{}' does not accept parameters", place.as_bstr())
+                ));
+            }
+        } else {
+            if let Some(var_out) = variables {
+                let mut params = params;
+                for i in 0..var_count {
+                    let (expr, rest) = parse_int_expr(params, self, &compiler)?;
+                    if i != var_count - 1 {
+                        let (_, rest) = split_first_token(rest)
+                            .filter(|x| x.0 == b",")
+                            .ok_or_else(|| Error::Msg("Expected ','"))?;
+                        params = rest;
+                    } else {
+                        params = rest;
+                    }
+                    var_out[i as usize] = Some(Box::new(expr));
+                }
+                if params.get(0).copied() != Some(b')') {
+                    return Err(Error::Dynamic(
+                        format!("Too many parameters for place: '{}'", params.as_bstr())
+                    ));
+                }
+                params = &params[1..];
+                // Parse what location coord it actually is
+                if matches!(bw.place(), Place::Game(GameVar::LocationLeft)) {
+                    bw = match params {
+                        b".left" => PlaceId::new_game(GameVar::LocationLeft),
+                        b".top" => PlaceId::new_game(GameVar::LocationTop),
+                        b".right" => PlaceId::new_game(GameVar::LocationRight),
+                        b".bottom" => PlaceId::new_game(GameVar::LocationBottom),
+                        _ => return Err(Error::Dynamic(
+                            format!("Invalid location coord '{}'", params.as_bstr())
+                        )),
+                    };
+                    params = b"";
+                }
+                if !params.is_empty() {
+                    return Err(Error::Dynamic(
+                        format!("Trailing characters: '{}'", params.as_bstr())
+                    ));
+                }
+            }
         }
+        Ok((ParsedPlace::Bw(bw), rest))
     }
 }
 
@@ -883,6 +988,27 @@ struct TextParseContext<'a> {
     text: &'a [u8],
     line_number: usize,
     is_continuing_commands: bool,
+}
+
+fn split_first_token_brace_aware(text: &[u8]) -> Option<(&[u8], &[u8])> {
+    let start = text.bytes().position(|x| x != b' ' && x != b'\t')?;
+    let mut brace_depth = 0u32;
+    let mut end = start.wrapping_add(1);
+    while let Some(&byte) = text.get(end) {
+        if byte == b'(' {
+            brace_depth = brace_depth.wrapping_add(1);
+        } else if brace_depth == 0 && (byte == b' ' || byte == b'\t' || byte == b')') {
+            break;
+        } else if byte == b')' {
+            brace_depth = brace_depth.saturating_sub(1);
+        }
+        end = end.wrapping_add(1);
+    }
+    let first = &text[start..end];
+    Some(match text.bytes().skip(end).position(|x| x != b' ' && x != b'\t') {
+        Some(s) => (first, &text[end + s..]),
+        None => (first, b""),
+    })
 }
 
 fn split_first_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
@@ -909,10 +1035,10 @@ fn parse_bool_expr<'a>(
         .map_err(|e| e.into())
 }
 
-fn parse_int_expr<'a>(
+fn parse_int_expr<'a, 'b>(
     text: &'a [u8],
-    parser: &Parser<'a>,
-    compiler: &Compiler<'a>,
+    parser: &Parser<'b>,
+    compiler: &Compiler<'b>,
 ) -> Result<(IntExpr, &'a [u8]), Error> {
     let mut parser = ExprParser {
         compiler,
@@ -1069,6 +1195,12 @@ struct Compiler<'a> {
     line_info: LineInfoBuilder,
 }
 
+/// Reusable buffers
+struct CompileContext {
+    expr_buffer: [Option<Box<IntExpr>>; 4],
+    write_buffer: Vec<u8>,
+}
+
 struct BwRequiredLabels<'a> {
     set: FxHashSet<(Label<'a>, BlockId)>,
 }
@@ -1150,6 +1282,35 @@ pub enum ImageVar {
     DrawfuncParam,
 }
 
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GameVar {
+    Deaths,
+    Kills,
+    UpgradeLevel,
+    UpgradeLimit,
+    TechLevel,
+    TechAvailability,
+    UnitAvailability,
+    Alliance,
+    SharedVision,
+    Minerals,
+    Gas,
+    ZergSupplyMax,
+    TerranSupplyMax,
+    ProtossSupplyMax,
+    ZergSupplyUsed,
+    TerranSupplyUsed,
+    ProtossSupplyUsed,
+    ZergSupplyProvided,
+    TerranSupplyProvided,
+    ProtossSupplyProvided,
+    LocationLeft,
+    LocationTop,
+    LocationRight,
+    LocationBottom,
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Place {
     Global(u32),
@@ -1158,6 +1319,7 @@ pub enum Place {
     Bullet(BulletVar),
     Unit(UnitVar),
     Image(ImageVar),
+    Game(GameVar),
 }
 
 impl PlaceId {
@@ -1169,6 +1331,7 @@ impl PlaceId {
             Place::Bullet(id) => ((2 << 3) + 1, id as u32),
             Place::Unit(id) => ((2 << 3) + 2, id as u32),
             Place::Image(id) => ((2 << 3) + 3, id as u32),
+            Place::Game(id) => ((2 << 3) + 4, id as u32),
         };
         let tag_shifted = (tag as u32) << 27;
         assert!(id & tag_shifted == 0);
@@ -1187,6 +1350,9 @@ impl PlaceId {
     const fn new_image(x: ImageVar) -> PlaceId {
         PlaceId((x as u32) | (((2 << 3) + 3) << 27))
     }
+    const fn new_game(x: GameVar) -> PlaceId {
+        PlaceId((x as u32) | (((2 << 3) + 4) << 27))
+    }
 
     pub fn place(self) -> Place {
         let id = self.0 & !0xc000_0000;
@@ -1197,8 +1363,28 @@ impl PlaceId {
                 0 => Place::Flingy(unsafe { std::mem::transmute(id as u8) }),
                 1 => Place::Bullet(unsafe { std::mem::transmute(id as u8) }),
                 2 => Place::Unit(unsafe { std::mem::transmute(id as u8) }),
-                3 | _ => Place::Image(unsafe { std::mem::transmute(id as u8) }),
+                3 => Place::Image(unsafe { std::mem::transmute(id as u8) }),
+                4 | _ => Place::Game(unsafe { std::mem::transmute(id as u8) }),
             },
+        }
+    }
+}
+
+impl Place {
+    /// Places such as game.deaths(player, unit_id) have variables
+    /// (player and unit_id), return those.
+    pub fn var_count(self) -> u32 {
+        use GameVar::*;
+        match self {
+            Place::Game(var) => match var {
+                Deaths | Kills | UpgradeLevel | UpgradeLimit | TechLevel | TechAvailability |
+                    UnitAvailability | Alliance | SharedVision => 2,
+                Minerals | Gas | ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax |
+                    ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed | ZergSupplyProvided |
+                    TerranSupplyProvided | ProtossSupplyProvided | LocationLeft | LocationTop |
+                    LocationRight | LocationBottom => 1,
+            }
+            _ => 0,
         }
     }
 }
@@ -1406,18 +1592,28 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn add_set(&mut self, place: ParsedPlace, value: IntExpr) {
+    fn add_set(
+        &mut self,
+        write_buffer: &mut Vec<u8>,
+        place: ParsedPlace,
+        value: IntExpr,
+        place_vars: &mut [Option<Box<IntExpr>>; 4],
+    ) {
         self.add_flow_to_aice();
         let index = self.int_expr_id(value);
         let var_id = match place {
             ParsedPlace::Variable(_ty, var_name) => *self.variables.get(var_name).unwrap(),
             ParsedPlace::Bw(place) => place,
         };
-        let mut buffer = [0u8; 9];
-        buffer[0] = aice_op::SET;
-        LittleEndian::write_u32(&mut buffer[1..], var_id.0);
-        LittleEndian::write_u32(&mut buffer[5..], index as u32);
-        self.add_aice_code(&buffer);
+        write_buffer.clear();
+        write_buffer.push(aice_op::SET);
+        write_buffer.write_u32::<LE>(var_id.0).unwrap();
+        write_buffer.write_u32::<LE>(index as u32).unwrap();
+        for var in place_vars.iter_mut().take_while(|x| x.is_some()).filter_map(|x| x.take()) {
+            let index = self.int_expr_id(*var);
+            write_buffer.write_u32::<LE>(index as u32).unwrap();
+        }
+        self.add_aice_code(&write_buffer);
     }
 
     fn add_if(
@@ -1876,9 +2072,14 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     if !errors.is_empty() {
         return Err(errors);
     }
+    let ctx = &mut CompileContext {
+        expr_buffer: [None, None, None, None],
+        write_buffer: Vec::with_capacity(64),
+    };
+
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
-            if let Err(error) = parser.parse_line_pass3(line, &block, &mut compiler) {
+            if let Err(error) = parser.parse_line_pass3(line, &block, &mut compiler, ctx) {
                 errors.push(ErrorWithLine {
                     error,
                     line: Some(line.line_number),
@@ -2001,6 +2202,11 @@ mod test {
     fn vars() {
         let iscript = compile_success("vars.txt");
         assert_eq!(iscript.global_count, 1);
+    }
+
+    #[test]
+    fn vars2() {
+        compile_success("vars2.txt");
     }
 
     #[test]

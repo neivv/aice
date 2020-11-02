@@ -1,0 +1,235 @@
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 005 Broodling (zerg\brood.grp)
+.headerstart
+IsId            4
+Type            12
+Init            BroodlingInit
+Death           BroodlingDeath
+GndAttkInit     BroodlingGndAttkInit
+AirAttkInit     [NONE]
+Unused1         [NONE]
+GndAttkRpt      BroodlingGndAttkInit
+AirAttkRpt      [NONE]
+CastSpell       [NONE]
+GndAttkToIdle   BroodlingGndAttkToIdle
+AirAttkToIdle   [NONE]
+Unused2         [NONE]
+Walking         BroodlingWalking
+WalkingToIdle   BroodlingGndAttkToIdle
+SpecialState1   [NONE]
+.headerend
+# ----------------------------------------------------------------------------- #
+
+BroodlingInit:
+    set spritelocal unit_variation = counter % 2
+    set global counter = counter + 1
+    if unit_variation == 0 goto BroodlingInitOverlaySkip
+    imgol           989 0 0   # BroodlingShad (zerg\zbrShad.grp)
+BroodlingInitOverlaySkip:
+    imgul           6 0 0   # BroodlingShad (zerg\zbrShad.grp)
+BroodlingGndAttkToIdle:
+    playfram        0x11    # frame set 1
+    waitrand        25 30
+    playfram        0x22    # frame set 2
+    waitrand        25 30
+    goto            BroodlingGndAttkToIdle
+
+BroodlingDeath:
+    playsnd         785 # Zerg\BROODLING\ZBrDth00.WAV
+    lowsprul        134 0 0 # BroodlingDeath (zerg\zbrDeath.grp)
+    wait            1
+    end
+
+BroodlingGndAttkInit:
+    playfram        0x77    # frame set 7
+    wait            1
+    nobrkcodestart
+    playfram        0x88    # frame set 8
+    wait            1
+    playfram        0x99    # frame set 9
+    attackmelee     1 786   # Zerg\BROODLING\ZBrAtt00.WAV
+    if unit_variation == 0 goto BroodlingAttackExtraSkip
+    attackmelee     1 786   # Zerg\BROODLING\ZBrAtt00.WAV
+    attackmelee     1 786   # Zerg\BROODLING\ZBrAtt00.WAV
+BroodlingAttackExtraSkip:
+    wait            1
+    playfram        0xaa    # frame set 10
+    wait            1
+    playfram        0xbb    # frame set 11
+    wait            1
+    if game.upgrade_level(player, 0x20) == 0 && game.upgrade_limit(player, 0x20) != 0 goto SkipThing
+    set game.deaths(player, unit_id) = game.minerals(player)
+    set game.minerals(player) = game.minerals(player) - 1
+SkipThing:
+    nobrkcodeend
+    gotorepeatattk
+    goto            BroodlingGndAttkToIdle
+
+BroodlingWalking:
+    set game.location(65).left = flingy.position_x - 20
+    set game.location(65).right = flingy.position_x + 20
+    set game.location(65).top = flingy.position_y - 20
+    set game.location(65).bottom = flingy.position_y + 20
+    create_unit 1 (game.location(65).left + (game.location(65).right - game.location(65).left) / 2) (game.location(65).top + (game.location(65).bottom - game.location(65).top) / 2) player
+    call            BroodlingLocal00
+    call            BroodlingLocal00
+    waitrand        3 6
+    call            BroodlingLocal00
+    waitrand        3 6
+    call            BroodlingLocal00
+    call            BroodlingLocal00
+    call            BroodlingLocal00
+    waitrand        3 6
+    goto            BroodlingWalking
+
+BroodlingLocal00:
+    move            8
+    if unit_variation == 0 goto BroodlingMoveFast1
+    move            2
+BroodlingMoveFast1:
+    wait            1
+    playfram        0x11    # frame set 1
+    move            8
+    if unit_variation == 0 goto BroodlingMoveFast2
+    move            2
+BroodlingMoveFast2:
+    wait            1
+    playfram        0x22    # frame set 2
+    move            8
+    if unit_variation == 0 goto BroodlingMoveFast3
+    move            2
+BroodlingMoveFast3:
+    wait            1
+    playfram        0x33    # frame set 3
+    move            8
+    if unit_variation == 0 goto BroodlingMoveFast4
+    move            2
+BroodlingMoveFast4:
+    wait            1
+    playfram        0x44    # frame set 4
+    move            8
+    if unit_variation == 0 goto BroodlingMoveFast5
+    move            2
+BroodlingMoveFast5:
+    wait            1
+    playfram        0x55    # frame set 5
+    move            8
+    if unit_variation == 0 goto BroodlingMoveFast6
+    move            2
+BroodlingMoveFast6:
+    wait            1
+    playfram        0x66    # frame set 6
+    move            8
+    if unit_variation == 0 goto BroodlingMoveFast7
+    move            2
+BroodlingMoveFast7:
+    wait            1
+    playfram        0x00    # frame set 0
+    return
+
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 112 Carrier (protoss\carrier.grp)
+.headerstart
+IsId            151
+Type            21
+Init            CarrierInit
+Death           CarrierDeath
+GndAttkInit     [NONE]
+AirAttkInit     [NONE]
+Unused1         [NONE]
+GndAttkRpt      [NONE]
+AirAttkRpt      [NONE]
+CastSpell       [NONE]
+GndAttkToIdle   [NONE]
+AirAttkToIdle   [NONE]
+Unused2         [NONE]
+Walking         CarrierWalking
+WalkingToIdle   long02
+SpecialState1   [NONE]
+SpecialState2   [NONE]
+AlmostBuilt     [NONE]
+Built           [NONE]
+Landing         [NONE]
+LiftOff         [NONE]
+IsWorking       [NONE]
+WorkingToIdle   [NONE]
+WarpIn          CarrierWarpIn
+.headerend
+# ----------------------------------------------------------------------------- #
+
+CarrierInit:
+    imgulnextid     0 42
+    playfram        0x00    # frame set 0
+    goto            long02
+
+CarrierDeath:
+    playsndbtwn     595 596 # Protoss\Carrier\PCaDth00.WAV, Protoss\Carrier\PCaDth01.WAV
+    imgol           214 0 0 # ProtossBuildingExplosionMedium (thingy\tBangL.grp)
+    wait            3
+    end
+
+CarrierWalking:
+    set flingy.turn_speed = 2
+# Test for allowing numbers in var names
+    set spritelocal tmp2 = flingy.acceleration
+    set flingy.acceleration = 7000
+    randcondjmp 128 CarrierSlowTurn
+    set flingy.turn_speed = 23
+    set flingy.acceleration = tmp2
+    set spritelocal p = player
+# Test for var in a function
+    if upgrade(p, 2) == 0 goto long00
+CarrierSlowTurn:
+    imgol           114 0 0 # CarrierGlow (thingy\pcaGlow.grp)
+    goto            long00
+
+CarrierWarpIn:
+    imgol           115 0 0 # Unknown115 (protoss\carrier.grp)
+    goto            long00
+
+
+# ------------------------------------------------------------------------------ #
+# LONG JUMPS (these are usually shared routines between many animations)         #
+# ------------------------------------------------------------------------------ #
+
+long00:
+    wait            125
+    goto            long00
+
+long01:
+    wait            1
+    end
+
+long02:
+    setvertpos      1
+    waitrand        8 10
+    setvertpos      2
+    waitrand        8 10
+    setvertpos      1
+    waitrand        8 10
+    setvertpos      0
+    waitrand        8 10
+    goto            long02
+
+long03:
+    playsnd         774 # Zerg\Bldg\ZBldgDth.WAV
+    imgol           60 0 0  # ZergBuildingDeath (thingy\zBldDthS.grp)
+    wait            3
+    lowsprul        187 0 0 # ZergBuildingRubbleSmall (thingy\ZRubbleL.grp)
+    wait            1
+    end
+
+long04:
+    wait            1
+    attackwith      2
+    gotorepeatattk
+    goto            long00
+
+long05:
+    wait            1
+    attackwith      1
+    gotorepeatattk
+    goto            long00
+

@@ -14,20 +14,8 @@ pub fn orders_dat() -> &'static [DatTable] {
     }
 }
 
-pub fn players() -> *mut Player {
-    samase::players()
-}
-
 pub fn game() -> *mut Game {
     samase::game()
-}
-
-pub fn first_active_unit() -> *mut Unit {
-    samase::first_active_unit()
-}
-
-pub fn first_hidden_unit() -> *mut Unit {
-    samase::first_hidden_unit()
 }
 
 pub fn first_active_bullet() -> *mut Bullet {

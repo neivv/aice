@@ -8,13 +8,13 @@ use lazy_static::lazy_static;
 use libc::c_void;
 use serde_derive::{Serialize, Deserialize};
 
-use bw_dat::{Game, Unit, UnitId, Sprite};
+use bw_dat::{Game, Unit, UnitId, UpgradeId, Sprite, TechId, Race};
 
 use crate::bw;
 use crate::globals::{Globals, SerializableSprite};
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
-    UnitVar, ImageVar,
+    UnitVar, ImageVar, GameVar,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
@@ -87,7 +87,7 @@ pub unsafe extern fn run_aice_script(
     iscript: *mut c_void,
     image: *mut c_void,
     dry_run: u32,
-    speed_out: *mut u32,
+    _speed_out: *mut u32,
 ) {
     let bw_pos = bw_pos as *const u8;
     let iscript = iscript as *mut bw::Iscript;
@@ -171,7 +171,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
 
     fn eval_int(&mut self, val: &Int) -> i32 {
         match val {
-            Int::Variable(id) => {
+            Int::Variable(id, place_vars) => {
                 match id.place() {
                     Place::Global(id) => self.parent.state.globals[id as usize],
                     Place::SpriteLocal(id) => self.parent.get_sprite_local(self.image, id),
@@ -259,7 +259,81 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             ImageVar::Drawfunc => (*image).drawfunc as i32,
                             ImageVar::DrawfuncParam => (*image).drawfunc_param as i32,
                         }
-                    }
+                    },
+                    Place::Game(ty) => unsafe {
+                        use crate::parse::GameVar::*;
+                        let mut child_ctx = self.parent.eval_ctx();
+                        let mut vars = [0i32; 4];
+                        for i in 0..place_vars.len() {
+                            if let Some(ref expr) = place_vars[i] {
+                                vars[i] = child_ctx.eval_int(expr);
+                            }
+                        }
+                        let game = self.parent.game;
+                        // Moving this outside match since it is pretty common
+                        let player = vars[0].min(11) as u8;
+                        match ty {
+                            Deaths => game.unit_deaths(player, UnitId(vars[1] as u16)) as i32,
+                            Kills => game.unit_kills(player, UnitId(vars[1] as u16)) as i32,
+                            UpgradeLevel => {
+                                game.upgrade_level(player, UpgradeId(vars[1] as u16)) as i32
+                            }
+                            UpgradeLimit => {
+                                game.upgrade_max_level(player, UpgradeId(vars[1] as u16)) as i32
+                            }
+                            TechLevel => {
+                                game.tech_researched(player, TechId(vars[1] as u16)) as i32
+                            }
+                            TechAvailability => {
+                                game.tech_available(player, TechId(vars[1] as u16)) as i32
+                            }
+                            UnitAvailability => {
+                                game.unit_available(player, UnitId(vars[1] as u16)) as i32
+                            }
+                            Alliance => game.allied(player, vars[1].min(11) as u8) as i32,
+                            SharedVision => {
+                                game.shared_vision(player, vars[1].min(11) as u8) as i32
+                            }
+                            Minerals => game.minerals(player) as i32,
+                            Gas => game.gas(player) as i32,
+                            ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax |
+                                ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed |
+                                ZergSupplyProvided | TerranSupplyProvided |
+                                ProtossSupplyProvided =>
+                            {
+                                let race = match ty {
+                                    ZergSupplyMax | ZergSupplyUsed | ZergSupplyProvided => {
+                                        Race::Zerg
+                                    }
+                                    TerranSupplyMax | TerranSupplyUsed | TerranSupplyProvided => {
+                                        Race::Terran
+                                    }
+                                    _ => Race::Protoss,
+                                };
+                                match ty {
+                                    ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax => {
+                                        game.supply_max(player, race) as i32
+                                    }
+                                    ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed => {
+                                        game.supply_used(player, race) as i32
+                                    }
+                                    _ => {
+                                        game.supply_provided(player, race) as i32
+                                    }
+                                }
+                            }
+                            LocationLeft | LocationTop | LocationRight | LocationBottom => {
+                                let location = (vars[0]).min(254) as u8;
+                                let location = (**game).locations[location as usize];
+                                match ty {
+                                    LocationLeft => location.area.left as i32,
+                                    LocationTop => location.area.top as i32,
+                                    LocationRight => location.area.right as i32,
+                                    LocationBottom | _ => location.area.bottom as i32,
+                                }
+                            }
+                        }
+                    },
                 }
             }
         }
@@ -420,6 +494,12 @@ impl<'a> IscriptRunner<'a> {
                 SET => {
                     let place = PlaceId(self.read_u32()?);
                     let expr = self.read_u32()?;
+                    let place = place.place();
+                    let mut var_exprs = [0u32; 4];
+                    let var_count = place.var_count() as usize;
+                    for i in 0..var_count {
+                        var_exprs[i] = self.read_u32()?;
+                    }
                     if self.dry_run {
                         // Bad? Ideally would have dry-run state
                         // Maybe should stop here?
@@ -429,7 +509,14 @@ impl<'a> IscriptRunner<'a> {
                     let expression = &self.iscript.int_expressions[expr as usize];
                     let mut eval_ctx = self.eval_ctx();
                     let value = eval_ctx.eval_int(&expression);
-                    match place.place() {
+                    let mut vars = [0i32; 4];
+                    for i in 0..var_count {
+                        let expr = var_exprs[i];
+                        let expression = &self.iscript.int_expressions[expr as usize];
+                        let mut eval_ctx = self.eval_ctx();
+                        vars[i] = eval_ctx.eval_int(&expression);
+                    }
+                    match place {
                         Place::Global(id) => self.state.globals[id as usize] = value,
                         Place::SpriteLocal(id) => {
                             self.state.set_sprite_local((*self.image).parent, id, value);
@@ -503,6 +590,9 @@ impl<'a> IscriptRunner<'a> {
                                     (*image).drawfunc_param = value as usize as *mut c_void;
                                 }
                             }
+                        }
+                        Place::Game(ty) => {
+                            self.set_game_var(ty, value, &vars);
                         }
                     }
                 }
@@ -627,6 +717,85 @@ impl<'a> IscriptRunner<'a> {
             }
         }
         Ok(ScriptRunResult::Done)
+    }
+
+    fn set_game_var(&mut self, ty: GameVar, value: i32, vars: &[i32; 4]) {
+        use crate::parse::GameVar::*;
+        let game = self.game;
+        // Moving this outside match since it is pretty common
+        let player = vars[0].min(11) as u8;
+        match ty {
+            Deaths => game.set_unit_deaths(player, UnitId(vars[1] as u16), value as u32),
+            Kills => game.set_unit_kills(player, UnitId(vars[1] as u16), value as u32),
+            UpgradeLevel => {
+                game.set_upgrade_level(player, UpgradeId(vars[1] as u16), value.min(255) as u8);
+            }
+            UpgradeLimit => {
+                let upgrade = UpgradeId(vars[1] as u16);
+                game.set_upgrade_max_level(player, upgrade, value.min(255) as u8);
+            }
+            TechLevel => {
+                game.set_tech_level(player, TechId(vars[1] as u16), (value > 0) as u8);
+            }
+            TechAvailability => {
+                game.set_tech_availability(player, TechId(vars[1] as u16), (value > 0) as u8);
+            }
+            UnitAvailability => {
+                game.set_unit_availability(player, UnitId(vars[1] as u16), value > 0);
+            }
+            Alliance => game.set_alliance(player, vars[1].min(11) as u8, value > 0),
+            SharedVision => game.set_shared_vision(player, vars[1].min(11) as u8, value > 0),
+            Minerals => game.set_minerals(player, value as u32),
+            Gas => game.set_gas(player, value as u32),
+            ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax |
+                ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed |
+                ZergSupplyProvided | TerranSupplyProvided |
+                ProtossSupplyProvided =>
+            {
+                let race = match ty {
+                    ZergSupplyMax | ZergSupplyUsed | ZergSupplyProvided => {
+                        Race::Zerg
+                    }
+                    TerranSupplyMax | TerranSupplyUsed | TerranSupplyProvided => {
+                        Race::Terran
+                    }
+                    _ => Race::Protoss,
+                };
+                match ty {
+                    ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax => {
+                        game.set_supply_max(player, race, value as u32);
+                    }
+                    ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed => {
+                        game.set_supply_used(player, race, value as u32);
+                    }
+                    _ => {
+                        game.set_supply_provided(player, race, value as u32);
+                    }
+                }
+            }
+            LocationLeft | LocationTop | LocationRight | LocationBottom => unsafe {
+                let location = (vars[0]).min(254) as u8;
+                let location = (**game).locations.as_mut_ptr().add(location as usize);
+                match ty {
+                    LocationLeft => {
+                        (*location).area.left = value.max(0)
+                            .min((game.map_width_tiles() as i32) << 5);
+                    }
+                    LocationTop => {
+                        (*location).area.top = value.max(0)
+                            .min((game.map_height_tiles() as i32) << 5);
+                    }
+                    LocationRight => {
+                        (*location).area.right = value.max(0)
+                            .min((game.map_width_tiles() as i32) << 5);
+                    }
+                    LocationBottom | _ => {
+                        (*location).area.bottom = value.max(0)
+                            .min((game.map_height_tiles() as i32) << 5);
+                    }
+                }
+            },
+        }
     }
 
     fn report_missing_parent(&self, parent: &str) {

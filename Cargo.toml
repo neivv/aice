@@ -52,4 +52,4 @@ rev = "1cd95e9fdc0310ed970232d0e64cafd8641c23ca"
 
 [dependencies.bw_dat]
 git = "https://github.com/neivv/aise"
-rev = "f239bc2e66d31e4838843b987238cce9456cf8d9"
+rev = "5e8a3244113e585b68d73f82b1b03b096a8b0213"

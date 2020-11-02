@@ -234,6 +234,9 @@ expression.
 These variables have a slightly different syntax from other integer expressions, and most of them
 can be assigned with `set`. The unassignable ones aren't really different from the "builtin"
 expressions, other than them being only in Aice an not Mtl.
+Variables under `game` take 1 or 2 parameters for specifying affected player and/or relevant
+ids. Those parameters can be arbitrary expressions that are evaluated every time to determine
+which variable will be accessed.
 
 - `flingy.position_x` and `flingy.position_y` NOTE: Not assignable. x/y coordinates (in pixels) of
   the flingy
@@ -267,23 +270,58 @@ looking at BW's code to understand the details is recommended.
 - `bullet.order_target_x` and `bullet.order_target_y` The point which bullet is targeting
 - `image.drawfunc` Current images.dat draw function for image.
 - `image.drawfunc_param` Current images.dat draw function parameter for image.
+- `game.deaths(p, u)` Deaths of unit `u` for player `p`
+- `game.kills(p, u)` Kills of unit `u` for player `p`
+- `game.upgrade_level(p, u)` Upgrade level of upgrade `u` for player `p`
+- `game.upgrade_limit(p, u)` Max upgrade level of upgrade `u` for player `p`
+- `game.tech_level(p, t)` Tech level (Either 0 or 1) of tech `t` for player `p`
+- `game.tech_availability(p, r)` Whether player `p` can research tech `t` (`1`) or not (`0`)
+- `game.unit_availability(p, u)` Whether player `p` can build unit `u` (`1`) or not (`0`)
+- `game.alliance(p1, p2)` Whether player `p1` is allied to `p2` (`1`) or not (`0`)
+    The reverse (`p2` being allied to `p1`) is not considered.
+    It is possible to make a player unally themselves, though the game may not be stable
+    if that is done (Research needed).
+- `game.shared_vision(p1, p2)` Whether player `p1` is sharing vision to `p2` (`1`) or not (`0`)
+    The reverse (`p2` being sharing vision to `p1`) is not considered.
+- `game.minerals(p)` Minerals of player `p`
+- `game.gas(p)` Gas of player `p`
+- `game.zerg_supply_max` Max zerg supply of player `p`.
+- `game.zerg_supply_used` Currently used zerg supply of player `p`.
+- `game.zerg_supply_provided` Zerg supply provided by buildings of player `p`.
+- `game.terran_supply_max` Max terran supply of player `p`.
+- `game.terran_supply_used` Currently used terran supply of player `p`.
+- `game.terran_supply_provided` Terran supply provided by buildings of player `p`.
+- `game.protoss_supply_max` Max protoss supply of player `p`.
+- `game.protoss_supply_used` Currently used protoss supply of player `p`.
+- `game.protoss_supply_provided` Protoss supply provided by buildings of player `p`.
+    * **NOTE** All supply values are 2 times the displayed value as there are units that cost 0.5
+    supply. (i.e. the default max supply is 400)
+    It is possible to modify supply used / provided. It is not recommended to reduce them below
+    the original values, but increasing them is fine. If the values are reduced and end up going
+    below zero due to units dying, they will roll over to excessively high numbers.
+- `game.location(id)`.left
+- `game.location(id)`.top
+- `game.location(id)`.right
+- `game.location(id)`.bottom
+    * Coordinates of a location `id`
 
 Setting the following unit variables can be used to manipulate time a buff lasts for.
-The time unit for these variables is 8 frames (Maybe 9? Needs confirming)
+The time unit "step" for these variables is 8 frames (Maybe 9? Needs confirming)
 It is recommended to set the timer to 1 if you want to disable the buff, as that lets
 BW run its cleanup code to remove debuff overlays.
 Similarly enabling the buff by setting the value to will not cause the debuff overlays to appear.
 (You can imgol them manually though)
 The effects are expected to behave normally even if enabled with iscript,
 but nothing has been confirmed.
-- `unit.stim_timer` frames of stim remaining.
-- `unit.ensnare_timer` frames of ensnare remaining.
-- `unit.maelstrom_timer` frames of maelstrom remaining.
-- `unit.lockdown_timer` frames of lockdown remaining.
-- `unit.stasis_timer` frames of stasis remaining.
-- `unit.irradiate_timer` frames of irradiate remaining.
-- `unit.matrix_timer` frames of defensive matrix remaining.
-- `unit.death_timer` frames until the unit dies. 0 to not make unit die.
+- `unit.stim_timer` steps of stim remaining.
+- `unit.ensnare_timer` steps of ensnare remaining.
+- `unit.plague_timer` steps of plague remaining.
+- `unit.maelstrom_timer` steps of maelstrom remaining.
+- `unit.lockdown_timer` steps of lockdown remaining.
+- `unit.stasis_timer` steps of stasis remaining.
+- `unit.irradiate_timer` steps of irradiate remaining.
+- `unit.matrix_timer` steps of defensive matrix remaining.
+- `unit.death_timer` steps until the unit dies. 0 to not make unit die.
 - `unit.matrix_hitpoints` Current hitpoints for defensive matrix (256 times displayed value)
 
 [expr]: #expressions
