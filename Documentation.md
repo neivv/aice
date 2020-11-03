@@ -308,9 +308,9 @@ looking at BW's code to understand the details is recommended.
 - `game.protoss_supply_provided(p)` Protoss supply provided by buildings of player `p`.
     * **NOTE** All supply values are 2 times the displayed value as there are units that cost 0.5
     supply. (i.e. the default max supply is 400)
-    It is possible to modify supply used / provided. It is not recommended to reduce them below
-    the original values, but increasing them is fine. If the values are reduced and end up going
-    below zero due to units dying, they will roll over to excessively high numbers.
+    * It is possible to modify supply used / provided, but it is not recommended to reduce them
+    below the original values (Increasing them is fine). If the values are reduced and end up
+    going below zero due to units dying, they will roll over to excessively high numbers.
 - `game.location(id)`.left
 - `game.location(id)`.top
 - `game.location(id)`.right
