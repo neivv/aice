@@ -1,0 +1,162 @@
+
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 126 HighTemplar (protoss\templar.grp)
+.headerstart
+IsId            158
+Type            21
+Init            HighTemplarInit
+Death           HighTemplarDeath
+GndAttkInit     HighTemplarGndAttkInit
+AirAttkInit     [NONE]
+Unused1         [NONE]
+GndAttkRpt      HighTemplarGndAttkInit
+AirAttkRpt      [NONE]
+CastSpell       HighTemplarCastSpell
+GndAttkToIdle   HighTemplarGndAttkToIdle
+AirAttkToIdle   [NONE]
+Unused2         [NONE]
+Walking         HighTemplarWalking
+WalkingToIdle   HighTemplarWalkingToIdle
+SpecialState1   [NONE]
+SpecialState2   [NONE]
+AlmostBuilt     [NONE]
+Built           [NONE]
+Landing         [NONE]
+LiftOff         [NONE]
+IsWorking       [NONE]
+WorkingToIdle   [NONE]
+WarpIn          HighTemplarWarpIn
+.headerend
+# ----------------------------------------------------------------------------- #
+
+HighTemplarInit:
+    imgul           127 0 0 # HighTemplarShad (protoss\pteShad.grp)
+    playfram        0x66    # frame set 6
+    waitrand        1 2
+HighTemplarGndAttkToIdle:
+    playfram        0x66    # frame set 6
+    wait            2
+    playfram        0x77    # frame set 7
+    wait            2
+    playfram        0x88    # frame set 8
+    wait            2
+    playfram        0x99    # frame set 9
+    wait            2
+    playfram        0xaa    # frame set 10
+    wait            2
+    playfram        0xbb    # frame set 11
+    wait            2
+    playfram        0xcc    # frame set 12
+    wait            2
+    goto            HighTemplarGndAttkToIdle
+
+HighTemplarDeath:
+    playsnd         635 # Protoss\TEMPLAR\PTeDth00.WAV
+    setfldirect     0
+    playfram        0x121   # frame set 17
+    wait            2
+    playfram        0x122   # frame set 17
+    wait            2
+    playfram        0x123   # frame set 17
+    wait            2
+    playfram        0x124   # frame set 17
+    wait            2
+    playfram        0x125   # frame set 17
+    wait            2
+    playfram        0x126   # frame set 17
+    wait            2
+    playfram        0x127   # frame set 17
+    wait            2
+    end
+
+HighTemplarGndAttkInit:
+    playsnd         101 # Bullet\LaserB.wav
+    playfram        0x00    # frame set 0
+    wait            1
+    nobrkcodestart
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x22    # frame set 2
+    wait            1
+    playfram        0x33    # frame set 3
+    wait            1
+    attackwith      1
+    playfram        0x44    # frame set 4
+    wait            1
+    nobrkcodeend
+    gotorepeatattk
+    playfram        0x66    # frame set 6
+    goto            long00
+
+HighTemplarCastSpell:
+    playfram        0x00    # frame set 0
+    nobrkcodestart
+    wait            1
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x22    # frame set 2
+    wait            1
+    playfram        0x33    # frame set 3
+    wait            1
+    set spritelocal ht_repeat = 6
+    call HighTemplarCastSpellLoop
+    set spritelocal ht_repeat = 6
+    call HighTemplarCastSpellLoop2
+    sigorder        2
+    playfram        0x44    # frame set 4
+    wait            1
+    nobrkcodeend
+    gotorepeatattk
+    playfram        0x66    # frame set 6
+    goto            long00
+
+HighTemplarCastSpellLoop:
+    castspell
+    wait 6
+    if ht_repeat == 0 goto HighTemplarCastSpellRet
+    set spritelocal ht_repeat = ht_repeat - 1
+    call HighTemplarCastSpellLoop
+HighTemplarCastSpellRet:
+    return
+
+HighTemplarCastSpellLoop2:
+    sprol           373 0 0 # ScarabTrail (thingy\HKTrail.grp)
+    wait 6
+    set spritelocal ht_repeat = ht_repeat - 1
+    if ht_repeat != 0 call HighTemplarCastSpellLoop2
+    castspell
+    sprol           309 0 0 # MissleTrail (thingy\smoke.grp)
+    wait 6
+    return
+
+HighTemplarWalking:
+    playfram        0xee    # frame set 14
+    wait            1
+    playfram        0xff    # frame set 15
+    wait            1
+    playfram        0x110   # frame set 16
+    wait            1
+    playfram        0x55    # frame set 5
+    setvertpos      0
+HighTemplarLocal00:
+    wait            3
+    spruluselo      320 0 0 # HighTemplarTrail (thingy\pteglow.grp)
+    goto            HighTemplarLocal00
+
+HighTemplarWalkingToIdle:
+    playfram        0x110   # frame set 16
+    wait            1
+    playfram        0xff    # frame set 15
+    wait            1
+    playfram        0xee    # frame set 14
+    wait            1
+    goto            HighTemplarGndAttkToIdle
+
+HighTemplarWarpIn:
+    imgol           128 0 0 # Unknown128 (protoss\templar.grp)
+    goto            long00
+
+long00:
+    wait            125
+    goto            long00

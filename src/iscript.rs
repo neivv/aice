@@ -507,38 +507,22 @@ impl<'a> IscriptRunner<'a> {
                         }
                     }
                 }
-                IF => {
+                IF | IF_CALL => {
                     let cond = self.read_u32()?;
                     let dest = CodePosition(self.read_u32()?);
                     let condition = &self.iscript.conditions[cond as usize];
                     let mut eval_ctx = self.eval_ctx();
                     if eval_ctx.eval_bool(&condition) {
-                        self.jump_to(dest);
+                        if opcode == IF {
+                            self.jump_to(dest);
+                        } else {
+                            self.do_call(dest);
+                        }
                     }
                 }
                 CALL => {
                     let dest = CodePosition(self.read_u32()?);
-                    let return_pos = self.pos;
-                    let call_stack_pos = self.state.get_image_local(self.image, CALL_STACK_POS_ID)
-                        .unwrap_or(0);
-                    if call_stack_pos >= CALL_STACK_LIMIT {
-                        bw_print!(
-                            "Error {}: call stack depth limit ({}) reached",
-                            self.current_line(), CALL_STACK_LIMIT,
-                        );
-                    } else {
-                        self.state.set_image_local(
-                            self.image,
-                            CALL_STACK_POS_ID,
-                            call_stack_pos + 1,
-                        );
-                        self.state.set_image_local(
-                            self.image,
-                            CALL_STACK_RETURN_POS_BASE + call_stack_pos,
-                            return_pos as u32,
-                        );
-                        self.jump_to(dest);
-                    }
+                    self.do_call(dest);
                 }
                 RETURN => {
                     let call_stack_pos = self.state.get_image_local(self.image, CALL_STACK_POS_ID)
@@ -800,6 +784,30 @@ impl<'a> IscriptRunner<'a> {
             }
         }
         Ok(ScriptRunResult::Done)
+    }
+
+    fn do_call(&mut self, dest: CodePosition) {
+        let return_pos = self.pos;
+        let call_stack_pos = self.state.get_image_local(self.image, CALL_STACK_POS_ID)
+            .unwrap_or(0);
+        if call_stack_pos >= CALL_STACK_LIMIT {
+            bw_print!(
+                "Error {}: call stack depth limit ({}) reached",
+                self.current_line(), CALL_STACK_LIMIT,
+            );
+        } else {
+            self.state.set_image_local(
+                self.image,
+                CALL_STACK_POS_ID,
+                call_stack_pos + 1,
+            );
+            self.state.set_image_local(
+                self.image,
+                CALL_STACK_RETURN_POS_BASE + call_stack_pos,
+                return_pos as u32,
+            );
+            self.jump_to(dest);
+        }
     }
 
     fn set_game_var(&mut self, ty: GameVar, value: i32, vars: &[i32; 4]) {

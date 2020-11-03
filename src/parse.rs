@@ -109,6 +109,7 @@ pub mod aice_op {
     pub const CREATE_UNIT: u8 = 0x07;
     pub const CALL: u8 = 0x08;
     pub const RETURN: u8 = 0x09;
+    pub const IF_CALL: u8 = 0x0a;
 }
 
 quick_error! {
@@ -819,13 +820,19 @@ impl<'a> Parser<'a> {
                     let (condition, rest) = parse_bool_expr(rest, self, &compiler)?;
                     let mut tokens = rest.fields();
                     let next = tokens.next();
-                    if next != Some(b"goto") {
-                        return Err(Error::Dynamic(format!("Expected 'goto', got {:?}", next)));
-                    }
+                    let is_call = match next {
+                        Some(b"goto") => false,
+                        Some(b"call") => true,
+                        _ => {
+                            return Err(Error::Dynamic(
+                                format!("Expected 'goto' or 'call', got {:?}", next)
+                            ));
+                        }
+                    };
                     let label = tokens.next()
                         .and_then(|l| parse_label_ref(l))
                         .ok_or_else(|| Error::Msg("Expected label after goto"))?;
-                    compiler.add_if(condition, label, block_scope)
+                    compiler.add_if(condition, label, block_scope, is_call)
                 }
                 CommandPrototype::Call => {
                     let mut tokens = rest.fields();
@@ -1635,7 +1642,8 @@ impl<'a> Compiler<'a> {
         &mut self,
         condition: BoolExpr,
         dest: Label<'a>,
-        block_scope: &BlockScope<'a, '_>
+        block_scope: &BlockScope<'a, '_>,
+        is_call: bool,
     ) -> Result<(), Error> {
         self.add_flow_to_aice();
         let index = match self.existing_conditions.get(&condition).cloned() {
@@ -1652,7 +1660,7 @@ impl<'a> Compiler<'a> {
             .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
 
         let mut buffer = [0u8; 9];
-        buffer[0] = aice_op::IF;
+        buffer[0] = if is_call { aice_op::IF_CALL } else { aice_op::IF };
         LittleEndian::write_u32(&mut buffer[1..], index as u32);
         LittleEndian::write_u32(&mut buffer[5..], pos.0);
         let offset = self.aice_bytecode.len() as u32 + 5;
@@ -2283,5 +2291,10 @@ mod test {
         assert_eq!(iscript.line_info.pos_to_line(CodePosition::aice(0)), 42);
         assert_eq!(iscript.line_info.pos_to_line(CodePosition::aice(12)), 51);
         assert_eq!(iscript.line_info.pos_to_line(CodePosition::aice(6 * 12)), 229);
+    }
+
+    #[test]
+    fn if_call() {
+        compile_success("if2.txt");
     }
 }

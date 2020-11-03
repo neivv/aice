@@ -38,9 +38,10 @@ though as far as I'm aware, no plugin extends the format of iscript.bin.
 
 ```
 if <condition> goto <label>
+if <condition> call <label>
 ```
 
-Jumps to `label` if the `condition` evaluates to `true`. The condition can be an arbitrary
+Jumps to or calls `label` if the `condition` evaluates to `true`. The condition can be an arbitrary
 expression, see [Expressions][expr] for the syntax on expressions.
 
 ### set
