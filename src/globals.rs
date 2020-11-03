@@ -90,39 +90,58 @@ fn init_sprite_save_load() {
     unsafe {
         let game = Game::from_ptr(bw::game());
         let hlines = crate::samase::sprite_hlines();
-        let sprite = (0..(**game).map_height_tiles).filter_map(|x| {
+        let (sprite, image) = (0..(**game).map_height_tiles).filter_map(|x| {
             let ptr = *hlines.add(x as usize);
-            if ptr.is_null() {
-                None
-            } else {
-                Some(ptr)
-            }
-        }).next().unwrap_or(null_mut());
+            let sprite = bw_dat::Sprite::from_ptr(ptr)?;
+            let image = sprite.images().next()?;
+            Some((*sprite, *image))
+        }).next().unwrap_or((null_mut(), null_mut()));
         SAVE_SPRITE_ARRAY.store(sprite as usize, Ordering::Relaxed);
+        SAVE_IMAGE_ARRAY.store(image as usize, Ordering::Relaxed);
     }
 }
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
 pub struct SerializableSprite(pub *mut bw::Sprite);
+
+#[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
+pub struct SerializableImage(pub *mut bw::Image);
+
 static SAVE_SPRITE_ARRAY: AtomicUsize = AtomicUsize::new(0);
+static SAVE_IMAGE_ARRAY: AtomicUsize = AtomicUsize::new(0);
 
 impl serde::Serialize for SerializableSprite {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let offset = (self.0 as usize).wrapping_sub(SAVE_SPRITE_ARRAY.load(Ordering::Relaxed));
-        (offset as u32).serialize(serializer)
+        let index = offset as isize / 0x28;
+        (index as u32).serialize(serializer)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for SerializableSprite {
     fn deserialize<S: Deserializer<'de>>(deserializer: S) -> Result<Self, S::Error> {
-        use serde::de::Error;
-        let offset = u32::deserialize(deserializer)?;
-        if offset != 0 {
-            let ptr = (SAVE_SPRITE_ARRAY.load(Ordering::Relaxed) as usize)
-                .wrapping_add(offset as usize) as *mut bw::Sprite;
-            Ok(SerializableSprite(ptr))
-        } else {
-            Err(S::Error::custom(format!("Can't load sprite")))
-        }
+        let index = u32::deserialize(deserializer)?;
+        let offset = index as i32 as isize * 0x28;
+        let ptr = (SAVE_SPRITE_ARRAY.load(Ordering::Relaxed) as usize)
+            .wrapping_add(offset as usize) as *mut bw::Sprite;
+        Ok(SerializableSprite(ptr))
+    }
+}
+
+impl serde::Serialize for SerializableImage {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let offset = (self.0 as usize).wrapping_sub(SAVE_IMAGE_ARRAY.load(Ordering::Relaxed));
+        let index = offset as isize / 0x40;
+        (index as u32).serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SerializableImage {
+    fn deserialize<S: Deserializer<'de>>(deserializer: S) -> Result<Self, S::Error> {
+        let index = u32::deserialize(deserializer)?;
+        let offset = index as i32 as isize * 0x40;
+        let ptr = (SAVE_IMAGE_ARRAY.load(Ordering::Relaxed) as usize)
+            .wrapping_add(offset as usize) as *mut bw::Image;
+        Ok(SerializableImage(ptr))
     }
 }

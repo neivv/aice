@@ -111,6 +111,17 @@ create_unit <unit_id> <x> <y> <player>
 Creates an unit for player. The unit will be spawned at the specified position, even if a ground
 unit would not fit there or the area is unwalkable. All four arguments are [expressions][expr].
 
+### call
+
+```
+call <label>
+```
+
+Calls a subroutine. Use `return` inside subroutine to continue from a point after `call`.
+
+Unlike `call` in vanilla BW, which only allows a single call that must be returned from before
+using `call` again, Aice allows nested calls up to 256 calls.
+
 #### Example
 
 ```

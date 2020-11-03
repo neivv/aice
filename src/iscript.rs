@@ -11,7 +11,7 @@ use serde_derive::{Serialize, Deserialize};
 use bw_dat::{Game, Unit, UnitId, UpgradeId, Sprite, TechId, Race};
 
 use crate::bw;
-use crate::globals::{Globals, SerializableSprite};
+use crate::globals::{Globals, SerializableSprite, SerializableImage};
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
     UnitVar, ImageVar, GameVar,
@@ -27,10 +27,14 @@ lazy_static! {
 #[derive(Serialize, Deserialize, Default)]
 pub struct IscriptState {
     sprite_locals: FxHashMap<SerializableSprite, Vec<SpriteLocal>>,
+    image_locals: FxHashMap<SerializableImage, FxHashMap<u32, u32>>,
     globals: Vec<i32>,
 }
 
 const TEMP_LOCAL_ID: u32 = !0;
+const CALL_STACK_POS_ID: u32 = !1;
+const CALL_STACK_RETURN_POS_BASE: u32 = 0xff00_0000;
+const CALL_STACK_LIMIT: u32 = 256;
 
 /// Unit id of a unit which is being created, !0 for none.
 /// Used as a stack as a unit creation iscript can cause another unit to be created.
@@ -69,6 +73,18 @@ impl IscriptState {
         }
     }
 
+    fn get_image_local(&self, image: *mut bw::Image, id: u32) -> Option<u32> {
+        self.image_locals.get(&SerializableImage(image))?
+            .get(&id)
+            .copied()
+    }
+
+    fn set_image_local(&mut self, image: *mut bw::Image, id: u32, value: u32) {
+        let entry = self.image_locals.entry(SerializableImage(image));
+        entry.or_insert_with(|| FxHashMap::with_capacity_and_hasher(4, Default::default()))
+            .insert(id, value);
+    }
+
     fn get_sprite_locals_mut(&mut self, sprite: *mut bw::Sprite) -> &mut Vec<SpriteLocal> {
         self.sprite_locals.entry(SerializableSprite(sprite))
             .or_insert_with(|| Vec::new())
@@ -77,6 +93,7 @@ impl IscriptState {
     pub fn from_script(iscript: &Iscript) -> IscriptState {
         IscriptState {
             sprite_locals: FxHashMap::default(),
+            image_locals: FxHashMap::default(),
             globals: vec![0; iscript.global_count as usize],
         }
     }
@@ -466,6 +483,14 @@ impl<'a> IscriptRunner<'a> {
                     return Ok(ScriptRunResult::Done);
                 }
                 ANIMATION_START => {
+                    // Avoid allocating imglocals if calls weren't used
+                    let needs_call_stack_reset = self.state
+                        .get_image_local(self.image, CALL_STACK_POS_ID)
+                        .filter(|&x| x != 0)
+                        .is_some();
+                    if needs_call_stack_reset {
+                        self.state.set_image_local(self.image, CALL_STACK_POS_ID, 0);
+                    }
                     let header_index = ((*self.bw_script).header - 0x1c) / 8;
                     let animation = (*self.bw_script).animation;
                     let start_pos = self.iscript.headers.get(header_index as usize)
@@ -489,6 +514,63 @@ impl<'a> IscriptRunner<'a> {
                     let mut eval_ctx = self.eval_ctx();
                     if eval_ctx.eval_bool(&condition) {
                         self.jump_to(dest);
+                    }
+                }
+                CALL => {
+                    let dest = CodePosition(self.read_u32()?);
+                    let return_pos = self.pos;
+                    let call_stack_pos = self.state.get_image_local(self.image, CALL_STACK_POS_ID)
+                        .unwrap_or(0);
+                    if call_stack_pos >= CALL_STACK_LIMIT {
+                        bw_print!(
+                            "Error {}: call stack depth limit ({}) reached",
+                            self.current_line(), CALL_STACK_LIMIT,
+                        );
+                    } else {
+                        self.state.set_image_local(
+                            self.image,
+                            CALL_STACK_POS_ID,
+                            call_stack_pos + 1,
+                        );
+                        self.state.set_image_local(
+                            self.image,
+                            CALL_STACK_RETURN_POS_BASE + call_stack_pos,
+                            return_pos as u32,
+                        );
+                        self.jump_to(dest);
+                    }
+                }
+                RETURN => {
+                    let call_stack_pos = self.state.get_image_local(self.image, CALL_STACK_POS_ID)
+                        .unwrap_or(0);
+                    if call_stack_pos == 0 {
+                        bw_print!(
+                            "Error {}: tried to return without using call",
+                            self.current_line(),
+                        );
+                        // Global infloop
+                        (*self.bw_script).pos = 0x5;
+                        self.in_aice_code = false;
+                    } else {
+                        let return_pos = self.state.get_image_local(
+                            self.image,
+                            CALL_STACK_RETURN_POS_BASE + call_stack_pos - 1,
+                        );
+                        self.state.set_image_local(
+                            self.image,
+                            CALL_STACK_POS_ID,
+                            call_stack_pos - 1,
+                        );
+                        match return_pos {
+                            Some(return_pos) => {
+                                self.jump_to(CodePosition::aice(return_pos));
+                            }
+                            None => {
+                                warn!("Broken return");
+                                (*self.bw_script).pos = 0x5;
+                                self.in_aice_code = false;
+                            }
+                        }
                     }
                 }
                 SET => {
@@ -604,6 +686,7 @@ impl<'a> IscriptRunner<'a> {
                     }
                     let sprite = Sprite::from_ptr((*self.image).parent)
                         .expect("Image had no parent??");
+                    self.state.image_locals.remove(&SerializableImage(self.image));
                     if sprite.images().count() == 1 {
                         // This is the last image being deleted, the sprite
                         // will be cleaned up as well

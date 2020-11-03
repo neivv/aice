@@ -107,6 +107,8 @@ pub mod aice_op {
     pub const SET_ORDER_WEAPON: u8 = 0x05;
     pub const CLEAR_ATTACKING_FLAG: u8 = 0x06;
     pub const CREATE_UNIT: u8 = 0x07;
+    pub const CALL: u8 = 0x08;
+    pub const RETURN: u8 = 0x09;
 }
 
 quick_error! {
@@ -239,8 +241,8 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"tmprmgraphicstart", bw_cmd(0x32, &[])),
         (b"tmprmgraphicend", bw_cmd(0x33, &[])),
         (b"setfldirect", bw_cmd(0x34, &[U8])),
-        (b"call", bw_cmd(0x35, &[Label])),
-        (b"return", bw_cmd_final(0x36, &[])),
+        (b"call", Call),
+        (b"return", Return),
         (b"setflspeed", bw_cmd(0x37, &[U16])),
         (b"creategasoverlays", bw_cmd(0x38, &[U8])),
         (b"pwrupcondjmp", bw_cmd(0x39, &[Label])),
@@ -348,6 +350,8 @@ enum CommandPrototype {
     FireWeapon,
     GotoRepeatAttk,
     CreateUnit,
+    Call,
+    Return,
 }
 
 pub struct Iscript {
@@ -733,7 +737,7 @@ impl<'a> Parser<'a> {
                         mark_required_bw_labels(rest, commands, compiler, ctx)?;
                         ctx.is_continuing_commands = !ends_flow;
                     }
-                    CommandPrototype::End => {
+                    CommandPrototype::End | CommandPrototype::Return => {
                         ctx.is_continuing_commands = false;
                     }
                     CommandPrototype::Set => {
@@ -822,6 +826,17 @@ impl<'a> Parser<'a> {
                         .and_then(|l| parse_label_ref(l))
                         .ok_or_else(|| Error::Msg("Expected label after goto"))?;
                     compiler.add_if(condition, label, block_scope)
+                }
+                CommandPrototype::Call => {
+                    let mut tokens = rest.fields();
+                    let label = tokens.next()
+                        .and_then(|l| parse_label_ref(l))
+                        .ok_or_else(|| Error::Msg("Expected label"))?;
+                    compiler.add_call(label, block_scope)
+                }
+                CommandPrototype::Return => {
+                    compiler.add_aice_command(aice_op::RETURN);
+                    Ok(())
                 }
                 CommandPrototype::FireWeapon => {
                     let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
@@ -1641,6 +1656,30 @@ impl<'a> Compiler<'a> {
         LittleEndian::write_u32(&mut buffer[1..], index as u32);
         LittleEndian::write_u32(&mut buffer[5..], pos.0);
         let offset = self.aice_bytecode.len() as u32 + 5;
+        if pos.is_unknown() {
+            let block_id = block_scope.block_id();
+            self.needed_label_positions.push((CodePosition::aice(offset), dest, block_id));
+        }
+        if pos.if_bw_pos().is_some() {
+            self.bw_offsets_in_aice.push(offset);
+        }
+        self.add_aice_code(&buffer);
+        Ok(())
+    }
+
+    fn add_call(
+        &mut self,
+        dest: Label<'a>,
+        block_scope: &BlockScope<'a, '_>
+    ) -> Result<(), Error> {
+        self.add_flow_to_aice();
+        let pos = self.label_location(dest, block_scope)
+            .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
+
+        let mut buffer = [0u8; 5];
+        buffer[0] = aice_op::CALL;
+        LittleEndian::write_u32(&mut buffer[1..], pos.0);
+        let offset = self.aice_bytecode.len() as u32 + 1;
         if pos.is_unknown() {
             let block_id = block_scope.block_id();
             self.needed_label_positions.push((CodePosition::aice(offset), dest, block_id));
