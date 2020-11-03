@@ -297,15 +297,15 @@ looking at BW's code to understand the details is recommended.
     The reverse (`p2` being sharing vision to `p1`) is not considered.
 - `game.minerals(p)` Minerals of player `p`
 - `game.gas(p)` Gas of player `p`
-- `game.zerg_supply_max` Max zerg supply of player `p`.
-- `game.zerg_supply_used` Currently used zerg supply of player `p`.
-- `game.zerg_supply_provided` Zerg supply provided by buildings of player `p`.
-- `game.terran_supply_max` Max terran supply of player `p`.
-- `game.terran_supply_used` Currently used terran supply of player `p`.
-- `game.terran_supply_provided` Terran supply provided by buildings of player `p`.
-- `game.protoss_supply_max` Max protoss supply of player `p`.
-- `game.protoss_supply_used` Currently used protoss supply of player `p`.
-- `game.protoss_supply_provided` Protoss supply provided by buildings of player `p`.
+- `game.zerg_supply_max(p)` Max zerg supply of player `p`.
+- `game.zerg_supply_used(p)` Currently used zerg supply of player `p`.
+- `game.zerg_supply_provided(p)` Zerg supply provided by buildings of player `p`.
+- `game.terran_supply_max(p)` Max terran supply of player `p`.
+- `game.terran_supply_used(p)` Currently used terran supply of player `p`.
+- `game.terran_supply_provided(p)` Terran supply provided by buildings of player `p`.
+- `game.protoss_supply_max(p)` Max protoss supply of player `p`.
+- `game.protoss_supply_used(p)` Currently used protoss supply of player `p`.
+- `game.protoss_supply_provided(p)` Protoss supply provided by buildings of player `p`.
     * **NOTE** All supply values are 2 times the displayed value as there are units that cost 0.5
     supply. (i.e. the default max supply is 400)
     It is possible to modify supply used / provided. It is not recommended to reduce them below
