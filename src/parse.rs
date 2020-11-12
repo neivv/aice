@@ -314,6 +314,12 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"unit.plague_timer", unit(PlagueTimer)),
         (b"unit.maelstrom_timer", unit(MaelstormTimer)),
         (b"unit.is_blind", unit(IsBlind)),
+        (b"unit.hitpoints", unit(Hitpoints)),
+        (b"unit.shields", unit(Shields)),
+        (b"unit.energy", unit(Energy)),
+        (b"unit.max_hitpoints", unit(MaxHitpoints)),
+        (b"unit.max_shields", unit(MaxShields)),
+        (b"unit.max_energy", unit(MaxEnergy)),
         (b"speed", flingy(Speed)),
         (b"player", flingy(Player)),
         (b"image.drawfunc", image(Drawfunc)),
@@ -1295,6 +1301,12 @@ pub enum UnitVar {
     PlagueTimer,
     MaelstormTimer,
     IsBlind,
+    Hitpoints,
+    MaxHitpoints,
+    Shields,
+    MaxShields,
+    Energy,
+    MaxEnergy,
 }
 
 #[repr(u8)]

@@ -280,6 +280,12 @@ looking at BW's code to understand the details is recommended.
     * `6` Bullet is moving near an unit (Valkyrie attack)
 - `bullet.bounces_remaining` Amount of bounces remaining. Only used if `bullet.state` is 3
 - `bullet.order_target_x` and `bullet.order_target_y` The point which bullet is targeting
+- `unit.hitpoints` Current hitpoints of the unit (256 times displayed value).
+- `unit.shields` Current shields of the unit (256 times displayed value).
+- `unit.energy` Current energy of the unit (256 times displayed value).
+- `unit.max_hitpoints` Units.dat hitpoints for unit (256 times displayed value).
+- `unit.max_shields` Units.dat shields for unit (256 times displayed value).
+- `unit.max_energy` Max energy for unit (256 times displayed value).
 - `image.drawfunc` Current images.dat draw function for image.
 - `image.drawfunc_param` Current images.dat draw function parameter for image.
 - `game.deaths(p, u)` Deaths of unit `u` for player `p`

@@ -268,6 +268,14 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::PlagueTimer => (**unit).plague_timer as i32,
                             UnitVar::MaelstormTimer => (**unit).maelstrom_timer as i32,
                             UnitVar::IsBlind => (**unit).is_blind as i32,
+                            UnitVar::Hitpoints => unit.hitpoints(),
+                            UnitVar::Shields => unit.shields(),
+                            UnitVar::Energy => unit.energy() as i32,
+                            UnitVar::MaxHitpoints => unit.id().hitpoints(),
+                            UnitVar::MaxShields => unit.id().shields(),
+                            UnitVar::MaxEnergy => {
+                                self.parent.game.max_energy(unit.player(), unit.id()) as i32
+                            }
                         }
                     },
                     Place::Image(ty) => unsafe {
@@ -646,6 +654,12 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::PlagueTimer => (**unit).plague_timer = value as u8,
                                 UnitVar::MaelstormTimer => (**unit).maelstrom_timer = value as u8,
                                 UnitVar::IsBlind => (**unit).is_blind = value as u8,
+                                UnitVar::Hitpoints => (**unit).hitpoints = value,
+                                UnitVar::Shields => (**unit).shields = value,
+                                UnitVar::Energy => (**unit).energy = value as u16,
+                                UnitVar::MaxHitpoints => bw_print!("Cannot set max hitpoints"),
+                                UnitVar::MaxShields => bw_print!("Cannot set max shields"),
+                                UnitVar::MaxEnergy => bw_print!("Cannot set max energy"),
                             }
                         },
                         Place::Image(ty) => {
