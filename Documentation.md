@@ -281,11 +281,17 @@ looking at BW's code to understand the details is recommended.
 - `bullet.bounces_remaining` Amount of bounces remaining. Only used if `bullet.state` is 3
 - `bullet.order_target_x` and `bullet.order_target_y` The point which bullet is targeting
 - `unit.hitpoints` Current hitpoints of the unit (256 times displayed value).
+    * Setting hitpoints above maximum value makes the game freeze when damaging a building with
+    damage overlays.
+    * Setting hitpoints to 0 does not kill the unit, but makes the unit unkillable instead.
 - `unit.shields` Current shields of the unit (256 times displayed value).
 - `unit.energy` Current energy of the unit (256 times displayed value).
 - `unit.max_hitpoints` Units.dat hitpoints for unit (256 times displayed value).
+    * This value cannot be modified.
 - `unit.max_shields` Units.dat shields for unit (256 times displayed value).
+    * This value cannot be modified.
 - `unit.max_energy` Max energy for unit (256 times displayed value).
+    * This value cannot be modified.
 - `image.drawfunc` Current images.dat draw function for image.
 - `image.drawfunc_param` Current images.dat draw function parameter for image.
 - `game.deaths(p, u)` Deaths of unit `u` for player `p`
@@ -300,7 +306,7 @@ looking at BW's code to understand the details is recommended.
     It is possible to make a player unally themselves, though the game may not be stable
     if that is done (Research needed).
 - `game.shared_vision(p1, p2)` Whether player `p1` is sharing vision to `p2` (`1`) or not (`0`)
-    The reverse (`p2` being sharing vision to `p1`) is not considered.
+    The reverse (`p2` sharing vision to `p1`) is not considered.
 - `game.minerals(p)` Minerals of player `p`
 - `game.gas(p)` Gas of player `p`
 - `game.zerg_supply_max(p)` Max zerg supply of player `p`.
