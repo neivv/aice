@@ -1,6 +1,5 @@
 use std::slice;
 
-use lazy_static::lazy_static;
 use libc::c_void;
 use winapi::shared::windef::HWND;
 
@@ -45,27 +44,6 @@ unsafe extern "stdcall" fn identify(_plugin: *mut MpqdraftPlugin, plugin_id: *mu
     1
 }
 
-lazy_static! {
-    static ref NAME: &'static str = {
-        let names = &[
-            "A-class Ice",
-            "Addicting Ice",
-            "Advanced Ice",
-            "Alternative Ice",
-            "Another Ice",
-            "Any Ice",
-            "Aquatic Ice",
-            "Applied Ice",
-            "Awesome Ice",
-            "AAAAAAAAAAAARRRGH ICE",
-            "Actually I cannot explain",
-            "Australian imaginary creature extension",
-            "Argumentation implies competent existence",
-        ];
-        names[rand::random::<usize>() % names.len()]
-    };
-}
-
 unsafe extern "stdcall" fn get_plugin_name(
     _plugin: *mut MpqdraftPlugin,
     out: *mut u8,
@@ -74,7 +52,7 @@ unsafe extern "stdcall" fn get_plugin_name(
     use std::io::Write;
 
     let mut out = slice::from_raw_parts_mut(out, out_size as usize);
-    let result = write!(out, "{} {}\0", *NAME, env!("CARGO_PKG_VERSION"));
+    let result = write!(out, "aice\0");
     if result.is_err() {
         0
     } else {
