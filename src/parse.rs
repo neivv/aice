@@ -1021,11 +1021,12 @@ struct TextParseContext<'a> {
 fn split_first_token_brace_aware(text: &[u8]) -> Option<(&[u8], &[u8])> {
     let start = text.bytes().position(|x| x != b' ' && x != b'\t')?;
     let mut brace_depth = 0u32;
+    let is_word_token = is_word_char(text[0]);
     let mut end = start.wrapping_add(1);
     while let Some(&byte) = text.get(end) {
         if byte == b'(' {
             brace_depth = brace_depth.wrapping_add(1);
-        } else if brace_depth == 0 && (byte == b' ' || byte == b'\t' || byte == b')') {
+        } else if brace_depth == 0 && (is_word_char(byte) != is_word_token || byte == b')') {
             break;
         } else if byte == b')' {
             brace_depth = brace_depth.saturating_sub(1);
@@ -1037,6 +1038,10 @@ fn split_first_token_brace_aware(text: &[u8]) -> Option<(&[u8], &[u8])> {
         Some(s) => (first, &text[end + s..]),
         None => (first, b""),
     })
+}
+
+fn is_word_char(val: u8) -> bool {
+    matches!(val, b'a' ..= b'z' | b'A' ..= b'Z' | b'.' | b'_' | b'0' ..= b'9')
 }
 
 fn split_first_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
@@ -2308,5 +2313,34 @@ mod test {
     #[test]
     fn if_call() {
         compile_success("if2.txt");
+    }
+
+    #[test]
+    fn create_unit_expr_regression() {
+        let iscript = compile_success("create_unit_expr.txt");
+        // The pos_to_line currently returns next aice line for any position
+        // that isn't inside the command start; search in reverse to find the actual
+        // line 47
+        let aice_pos = (0..0x40).rfind(|&i| {
+            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 47
+        }).unwrap() as usize;
+        assert_eq!(iscript.aice_data[aice_pos], aice_op::CREATE_UNIT);
+        let x = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]) as usize;
+        let y = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 9)..]) as usize;
+        let x_place = BW_PLACES.iter()
+            .find(|x| x.0 == b"flingy.position_x")
+            .map(|x| x.1)
+            .unwrap();
+        let y_place = BW_PLACES.iter()
+            .find(|x| x.0 == b"flingy.position_y")
+            .map(|x| x.1)
+            .unwrap();
+        let x_expr = IntExprTree::Custom(Int::Variable(x_place, [None, None, None, None]));
+        let y_expr = IntExprTree::Sub(Box::new((
+            IntExprTree::Custom(Int::Variable(y_place, [None, None, None, None])),
+            IntExprTree::Integer(9),
+        )));
+        assert_eq!(*iscript.int_expressions[x].inner(), x_expr);
+        assert_eq!(*iscript.int_expressions[y].inner(), y_expr);
     }
 }

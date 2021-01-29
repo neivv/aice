@@ -1,0 +1,61 @@
+
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 084 QueensNest (zerg\nest.grp)
+.headerstart
+IsId           	50
+Type           	20
+Init           	QueenNestInit
+Death          	[NONE]
+GndAttkInit    	[NONE]
+AirAttkInit    	[NONE]
+Unused1        	[NONE]
+GndAttkRpt     	[NONE]
+AirAttkRpt     	[NONE]
+CastSpell      	[NONE]
+GndAttkToIdle  	[NONE]
+AirAttkToIdle  	[NONE]
+Unused2        	[NONE]
+Walking        	[NONE]
+WalkingToIdle  	[NONE]
+SpecialState1  	[NONE]
+SpecialState2  	[NONE]
+AlmostBuilt    	QueenNestAlmostBuilt
+Built          	QueenNestBuilt
+Landing        	[NONE]
+LiftOff        	[NONE]
+IsWorking      	QueenNestIsWorking
+WorkingToIdle  	QueenNestIsWorking
+WarpIn         	[NONE]
+.headerend
+# ----------------------------------------------------------------------------- #
+
+QueenNestInit:
+	imgul          	85 0 0	# QueensNestShad (zerg\zneShad.grp)
+	playfram       	0
+	goto           	long00
+
+QueenNestAlmostBuilt:
+	imgol          	108 0 0	# ZergBuildingSpawnMedium (zerg\zSpawn02.grp)
+QueenNestBuilt:
+	playfram       	0
+	playsnd			90
+	waitrand       	3 6
+	if frame_count < 160 goto QueenNestIsWorking
+	playsnd  		928
+	sprol          	156 0 0	# QueenBirth (zerg\zquDeath.grp)
+	create_unit 45 flingy.position_x flingy.position_y-9 player
+QueenNestIsWorking:
+	playfram       	1
+	wait           	2
+	playfram       	2
+	wait           	4
+	playfram       	1
+	wait           	2
+	playfram       	0
+	wait           	4
+	goto           	QueenNestIsWorking
+
+long00:
+    wait            125
+    goto            long00
