@@ -283,6 +283,8 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                         match ty {
                             ImageVar::Drawfunc => (*image).drawfunc as i32,
                             ImageVar::DrawfuncParam => (*image).drawfunc_param as i32,
+                            ImageVar::Frame => (*image).frame as i32,
+                            ImageVar::BaseFrame => (*image).frameset as i32,
                         }
                     },
                     Place::Game(ty) => unsafe {
@@ -669,6 +671,8 @@ impl<'a> IscriptRunner<'a> {
                                 ImageVar::DrawfuncParam => {
                                     (*image).drawfunc_param = value as usize as *mut c_void;
                                 }
+                                ImageVar::Frame => bw_print!("Cannot set frame"),
+                                ImageVar::BaseFrame => bw_print!("Cannot set base frame"),
                             }
                         }
                         Place::Game(ty) => {
@@ -790,6 +794,24 @@ impl<'a> IscriptRunner<'a> {
                     };
                     let player = player as u8;
                     return Ok(ScriptRunResult::CreateUnit(unit_id, pos, player));
+                }
+                PLAY_FRAME => {
+                    let expr = self.read_u32()?;
+                    if self.dry_run {
+                        continue;
+                    }
+                    self.init_sprite_owner();
+                    let expression = &self.iscript.int_expressions[expr as usize];
+                    let mut eval_ctx = self.eval_ctx();
+                    let value = clamp_i32_u16(eval_ctx.eval_int(&expression));
+                    let image = self.image;
+                    if let Err(limit) = image_play_frame(image, value) {
+                        bw_print!(
+                            "ERROR {}: Image 0x{:x} has only {} frames, tried to display \
+                            frame {}",
+                            self.current_line(), (*image).image_id, value, limit,
+                        );
+                    }
                 }
                 x => {
                     error!("Unknown opcode {:02x}", x);
@@ -991,6 +1013,31 @@ impl<'a> IscriptRunner<'a> {
             None => Err(self.pos as u32),
         }
     }
+}
+
+fn clamp_i32_u16(val: i32) -> u16 {
+    val.max(0).min(i32::from(u16::MAX)) as u16
+}
+
+unsafe fn image_play_frame(image: *mut bw::Image, frameset: u16) -> Result<(), u16> {
+    if (*image).drawfunc == 0xb {
+        // HP bar, does not have a concept of frame and grp pointer isn't same struct.
+        return Ok(());
+    }
+    if (*image).frameset != frameset {
+        let frame = frameset.saturating_add((*image).direction as u16);
+        let limit = grp_frames((*image).grp);
+        if frame >= limit {
+            return Err(limit);
+        }
+        (*image).frameset = frameset;
+        (*image).frame = frame;
+    }
+    Ok(())
+}
+
+unsafe fn grp_frames(grp: *mut c_void) -> u16 {
+    *(grp as *mut u16)
 }
 
 /// Shows a message explaining that first frame of unit's iscript

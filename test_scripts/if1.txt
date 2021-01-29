@@ -33,14 +33,14 @@ Burrow          HydraliskBurrow
 UnBurrow        HydraliskUnBurrow
 Enable          [NONE]
 .headerend
-# ----------------------------------------------------------------------------- #
+# these warpoverlays used to be playfram, but then playfram was switched to be an aice cmd, so using another vanilla cmd with 3 bytes
 
 HydraliskInit:
     imgul           30 0 0  # HydraliskShad (zerg\zhyShad.grp)
 HydraliskWalkingToIdle:
-    playfram        0x17e
+    warpoverlay 112
     if unit_id == 53 goto HydraliskLocal02
-    playfram        0x55    # frame set 5
+    warpoverlay 112
 HydraliskLocal02:
     waitrand        63 75
     randcondjmp     25 HydraliskLocal00
@@ -49,122 +49,122 @@ HydraliskLocal02:
 
 HydraliskLocal00:
     if unit_id == 53 goto HunuLocal00
-    playfram        0x00    # frame set 0
+warpoverlay 0
     wait            1
-    playfram        0x11    # frame set 1
+warpoverlay 0
     wait            1
-    playfram        0x22    # frame set 2
+warpoverlay 0
     wait            1
-    playfram        0x33    # frame set 3
+warpoverlay 0
     wait            25
-    playfram        0x22    # frame set 2
+warpoverlay 0
     wait            1
-    playfram        0x11    # frame set 1
+warpoverlay 0
     wait            1
-    playfram        0x00    # frame set 0
+warpoverlay 0
     wait            1
     goto            HydraliskWalkingToIdle
 
 HunuLocal00:
-    playfram        0x129    # frame set 0
+warpoverlay 0
     wait            1
-    playfram        0x13a    # frame set 1
+warpoverlay 0
     wait            1
-    playfram        0x14b    # frame set 2
+warpoverlay 0
     wait            1
-    playfram        0x15c    # frame set 3
+warpoverlay 0
     wait            25
-    playfram        0x14b    # frame set 2
+warpoverlay 0
     wait            1
-    playfram        0x13a    # frame set 1
+warpoverlay 0
     wait            1
-    playfram        0x129    # frame set 0
+warpoverlay 0
     wait            1
     goto            HydraliskWalkingToIdle
 
 HydraliskLocal01:
     randcondjmp     128 HydraliskLocal03
     if unit_id == 53 goto HunuLocal01
-    playfram        0x66    # frame set 6
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0x77    # frame set 7
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0x88    # frame set 8
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0x99    # frame set 9
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0xaa    # frame set 10
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0xbb    # frame set 11
+warpoverlay 0
     wait            1
     turnccwise      1
     goto            HydraliskWalkingToIdle
 
 HunuLocal01:
-    playfram        0x18f    # frame set 6
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0x1a0    # frame set 7
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0x1b1    # frame set 8
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0x1c2    # frame set 9
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0x1d3    # frame set 10
+warpoverlay 0
     wait            1
     turnccwise      1
-    playfram        0x1e4    # frame set 11
+warpoverlay 0
     wait            1
     turnccwise      1
     goto            HydraliskWalkingToIdle
 
 HydraliskLocal03:
     if unit_id == 53 goto HunuLocal03
-    playfram        0x66    # frame set 6
+warpoverlay 0
     wait            1
     turncwise       1
-    playfram        0x77    # frame set 7
+warpoverlay 0
     wait            1
     turncwise       1
-    playfram        0x88    # frame set 8
+warpoverlay 0
     wait            1
     turncwise       1
-    playfram        0x99    # frame set 9
+warpoverlay 0
     wait            1
     turncwise       1
-    playfram        0xaa    # frame set 10
+warpoverlay 0
     wait            1
     turncwise       1
-    playfram        0xbb    # frame set 11
+warpoverlay 0
     wait            1
     turncwise       1
     goto            HydraliskWalkingToIdle
 
 HunuLocal03:
-    playfram        0x18f    # frame set 6
+warpoverlay 0
     wait            1
     turncwise      1
-    playfram        0x1a0    # frame set 7
+warpoverlay 0
     wait            1
     turncwise      1
-    playfram        0x1b1    # frame set 8
+warpoverlay 0
     wait            1
     turncwise      1
-    playfram        0x1c2    # frame set 9
+warpoverlay 0
     wait            1
     turncwise      1
-    playfram        0x1d3    # frame set 10
+warpoverlay 0
     wait            1
     turncwise      1
-    playfram        0x1e4    # frame set 11
+warpoverlay 0
     wait            1
     turncwise      1
     goto            HydraliskWalkingToIdle
@@ -173,42 +173,42 @@ HydraliskDeath:
     playsnd         867 # Zerg\Hydra\ZHyDth00.WAV
     setfldirect     0
     if unit_id == 53 goto HunuDeath
-    playfram        0xcc    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0xcd    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0xce    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0xcf    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0xd0    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0xd1    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0xd2    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0xd3    # frame set 12
+warpoverlay 0
     wait            2
     lowsprul        147 0 0 # HydraliskDeath (zerg\zhyDeath.grp)
     wait            1
     end
 
 HunuDeath:
-    playfram        0x1f5    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0x1f6    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0x1f7    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0x1f8    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0x1f9    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0x1fa    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0x1fb    # frame set 12
+warpoverlay 0
     wait            2
-    playfram        0x1fc    # frame set 12
+warpoverlay 0
     wait            2
     lowsprul        147 0 0 # HydraliskDeath (zerg\zhyDeath.grp)
     wait            1
@@ -216,24 +216,24 @@ HunuDeath:
 
 HydraliskGndAttkInit:
     if unit_id == 53 goto HunuGndInit
-    playfram        0x00    # frame set 0
+warpoverlay 0
     wait            1
     nobrkcodestart
-    playfram        0x11    # frame set 1
+warpoverlay 0
     wait            1
-    playfram        0x22    # frame set 2
+warpoverlay 0
     wait            1
-    playfram        0x33    # frame set 3
+warpoverlay 0
     wait            1
 HydraliskGndAttkRpt:
     if unit_id == 53 goto HunuGndRpt
     wait            1
-    playfram        0x44    # frame set 4
+warpoverlay 0
     playsnd         64  # Bullet\SpoogHit.wav
     sproluselo      332 0   # NeedleSpines (thingy\spooge.grp)
     attack
     wait            1
-    playfram        0x33    # frame set 3
+warpoverlay 0
     wait            1
     nobrkcodeend
     gotorepeatattk

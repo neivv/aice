@@ -87,6 +87,18 @@ has not been explicitly confirmed. The very least they have very similar behavio
 target regardless of its `weapons.dat` configuration, making it less useful than `fireweapon` with
 certain weapons.
 
+### playfram
+
+```
+playfram <frame>
+```
+
+Aice allows specifying arbitrary [expression][expr] for `playfram` command.
+
+Otherwise the functionality is same as in vanilla BW: If the image ID has `Turning Graphic` is
+set in `images.dat`, the actual displayed frame will be chosen from range `frame` to `frame + 16`
+depending on image's rotation.
+
 ### gotorepeatattk
 
 ```
@@ -292,6 +304,14 @@ looking at BW's code to understand the details is recommended.
     * This value cannot be modified.
 - `unit.max_energy` Max energy for unit (256 times displayed value).
     * This value cannot be modified.
+- `image.frame` The latest frameset base that was specified with `playfram`, or copied from
+    the primary overlay by using `followmaingraphic`, `engset`, or `engframe`.
+    * This value cannot be modified with `set`, use `playfram <value>` instead.
+- `image.displayed_frame` Current frame that the image is displaying (Taking direction into account).
+    * This is not the frameset base which is used in `playfram` if the image has `Turning
+    Graphic` set in `images.dat`.
+    * This value cannot be modified with `set`. You can use `playfram` to modify the frameset base,
+    which will also change the current frame depending on rotation.
 - `image.drawfunc` Current images.dat draw function for image.
 - `image.drawfunc_param` Current images.dat draw function parameter for image.
 - `game.deaths(p, u)` Deaths of unit `u` for player `p`

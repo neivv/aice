@@ -110,6 +110,7 @@ pub mod aice_op {
     pub const CALL: u8 = 0x08;
     pub const RETURN: u8 = 0x09;
     pub const IF_CALL: u8 = 0x0a;
+    pub const PLAY_FRAME: u8 = 0x0b;
 }
 
 quick_error! {
@@ -191,7 +192,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
     use CommandPrototype::*;
     use BwCommandParam::*;
     &[
-        (b"playfram", bw_cmd(0x00, &[U16])),
+        (b"playfram", PlayFram),
         (b"playframtile", bw_cmd(0x01, &[U16])),
         (b"sethorpos", bw_cmd(0x02, &[I8])),
         (b"setvertpos", bw_cmd(0x03, &[I8])),
@@ -324,6 +325,8 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"player", flingy(Player)),
         (b"image.drawfunc", image(Drawfunc)),
         (b"image.drawfunc_param", image(DrawfuncParam)),
+        (b"image.displayed_frame", image(Frame)),
+        (b"image.frame", image(BaseFrame)),
         (b"game.deaths", game(Deaths)),
         (b"game.kills", game(Kills)),
         (b"game.upgrade_level", game(UpgradeLevel)),
@@ -359,6 +362,7 @@ enum CommandPrototype {
     CreateUnit,
     Call,
     Return,
+    PlayFram,
 }
 
 pub struct Iscript {
@@ -865,6 +869,17 @@ impl<'a> Parser<'a> {
                     compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, !0);
                     Ok(())
                 }
+                CommandPrototype::PlayFram => {
+                    let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
+                    if !rest.is_empty() {
+                        return Err(
+                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
+                        );
+                    }
+                    let id = compiler.int_expr_id(expr);
+                    compiler.add_aice_command_u32(aice_op::PLAY_FRAME, id);
+                    Ok(())
+                }
                 CommandPrototype::GotoRepeatAttk => {
                     compiler.add_aice_command(aice_op::CLEAR_ATTACKING_FLAG);
                     Ok(())
@@ -1319,6 +1334,8 @@ pub enum UnitVar {
 pub enum ImageVar {
     Drawfunc,
     DrawfuncParam,
+    Frame,
+    BaseFrame,
 }
 
 #[repr(u8)]
