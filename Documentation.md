@@ -343,10 +343,10 @@ looking at BW's code to understand the details is recommended.
     * It is possible to modify supply used / provided, but it is not recommended to reduce them
     below the original values (Increasing them is fine). If the values are reduced and end up
     going below zero due to units dying, they will roll over to excessively high numbers.
-- `game.location(id)`.left
-- `game.location(id)`.top
-- `game.location(id)`.right
-- `game.location(id)`.bottom
+- `game.location(id).left`
+- `game.location(id).top`
+- `game.location(id).right`
+- `game.location(id).bottom`
     * Coordinates of a location `id`
 
 Setting the following unit variables can be used to manipulate time a buff lasts for.
