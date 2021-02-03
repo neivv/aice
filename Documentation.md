@@ -124,17 +124,6 @@ create_unit <unit_id> <x> <y> <player>
 Creates an unit for player. The unit will be spawned at the specified position, even if a ground
 unit would not fit there or the area is unwalkable. All four arguments are [expressions][expr].
 
-### call
-
-```
-call <label>
-```
-
-Calls a subroutine. Use `return` inside subroutine to continue from a point after `call`.
-
-Unlike `call` in vanilla BW, which only allows a single call that must be returned from before
-using `call` again, Aice allows nested calls up to 256 calls.
-
 #### Example
 
 ```
@@ -145,6 +134,17 @@ create_unit 40 (flingy.position_x - 3) (flingy.position_y - 3) player
 Creates 2 broodlings at the current unit exists for the current unit's player, slightly on top
 of each other. Parentheses around x/y expressions would be optional, but the are likely nicer
 for readability
+
+### call
+
+```
+call <label>
+```
+
+Calls a subroutine. Use `return` inside subroutine to continue from a point after `call`.
+
+Unlike `call` in vanilla BW, which only allows a single call that must be returned from before
+using `call` again, Aice allows nested calls up to 256 calls.
 
 ## Expressions
 
