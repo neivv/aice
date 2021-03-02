@@ -111,6 +111,8 @@ pub mod aice_op {
     pub const RETURN: u8 = 0x09;
     pub const IF_CALL: u8 = 0x0a;
     pub const PLAY_FRAME: u8 = 0x0b;
+    pub const SIGORDER: u8 = 0x0c;
+    pub const ORDER_DONE: u8 = 0x0d;
 }
 
 quick_error! {
@@ -226,7 +228,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"turn1cwise", bw_cmd(0x21, &[])),
         (b"turnrand", bw_cmd(0x22, &[U8])),
         (b"setspawnframe", bw_cmd(0x23, &[U8])),
-        (b"sigorder", bw_cmd(0x24, &[U8])),
+        (b"sigorder", Sigorder),
         (b"attackwith", bw_cmd(0x25, &[U8])),
         (b"attack", bw_cmd(0x26, &[])),
         (b"castspell", bw_cmd(0x27, &[])),
@@ -254,7 +256,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"imgulnextid", bw_cmd(0x3d, &[I8, I8])),
         (b"liftoffcondjmp", bw_cmd(0x3f, &[Label])),
         (b"warpoverlay", bw_cmd(0x40, &[U16])),
-        (b"orderdone", bw_cmd(0x41, &[U8])),
+        (b"orderdone", OrderDone),
         (b"grdsprol", bw_cmd(0x42, &[U16, I8, I8])),
         (b"__43", bw_cmd(0x43, &[])),
         (b"dogrddamage", bw_cmd(0x44, &[])),
@@ -363,6 +365,8 @@ enum CommandPrototype {
     Call,
     Return,
     PlayFram,
+    Sigorder,
+    OrderDone,
 }
 
 pub struct Iscript {
@@ -878,6 +882,23 @@ impl<'a> Parser<'a> {
                     }
                     let id = compiler.int_expr_id(expr);
                     compiler.add_aice_command_u32(aice_op::PLAY_FRAME, id);
+                    Ok(())
+                }
+                CommandPrototype::Sigorder | CommandPrototype::OrderDone => {
+                    let mut tokens = rest.fields();
+                    let flags = tokens.next().and_then(|x| parse_u8(x));
+                    let has_next = tokens.next().is_some();
+                    let flags = match (flags, has_next) {
+                        (Some(s), false) => s,
+                        _ => return Err(Error::Dynamic(format!(
+                            "Expected single integer paramete, got '{}'", rest.as_bstr(),
+                        ))),
+                    };
+                    let op = match command {
+                        CommandPrototype::Sigorder => aice_op::SIGORDER,
+                        _ => aice_op::ORDER_DONE,
+                    };
+                    compiler.add_aice_command_u8(op, flags);
                     Ok(())
                 }
                 CommandPrototype::GotoRepeatAttk => {
@@ -1736,6 +1757,11 @@ impl<'a> Compiler<'a> {
     fn add_aice_command(&mut self, byte: u8) {
         self.add_flow_to_aice();
         self.add_aice_code(&[byte]);
+    }
+
+    fn add_aice_command_u8(&mut self, byte: u8, param: u8) {
+        self.add_flow_to_aice();
+        self.add_aice_code(&[byte, param]);
     }
 
     fn add_aice_command_u32(&mut self, byte: u8, param: u32) {

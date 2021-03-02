@@ -598,16 +598,9 @@ impl<'a> IscriptRunner<'a> {
                             self.state.set_sprite_local((*self.image).parent, id, value);
                         }
                         Place::Flingy(ty) => {
-                            let flingy = self.unit.map(|x| *x)
-                                .or_else(|| self.bullet.map(|x| x as *mut bw::Unit));
-                            let flingy = match flingy {
+                            let flingy = match self.get_flingy() {
                                 Some(s) => s,
-                                None => {
-                                    self.report_missing_parent("flingy");
-                                    show_unit_frame0_help();
-                                    show_bullet_frame0_help();
-                                    continue 'op_loop;
-                                }
+                                None => continue 'op_loop,
                             };
                             set_flingy_var(flingy, ty, value);
                         }
@@ -813,6 +806,21 @@ impl<'a> IscriptRunner<'a> {
                         );
                     }
                 }
+                SIGORDER | ORDER_DONE => {
+                    let flags = self.read_u8()?;
+                    if self.dry_run {
+                        continue;
+                    }
+                    let flingy = match self.get_flingy() {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    if opcode == SIGORDER {
+                        (*flingy).order_signal |= flags;
+                    } else {
+                        (*flingy).order_signal &= !flags;
+                    }
+                }
                 x => {
                     error!("Unknown opcode {:02x}", x);
                     return Err(opcode_pos);
@@ -820,6 +828,21 @@ impl<'a> IscriptRunner<'a> {
             }
         }
         Ok(ScriptRunResult::Done)
+    }
+
+    fn get_flingy(&mut self) -> Option<*mut bw::Unit> {
+        self.init_sprite_owner();
+        let flingy = self.unit.map(|x| *x)
+            .or_else(|| self.bullet.map(|x| x as *mut bw::Unit));
+        match flingy {
+            Some(s) => Some(s),
+            None => {
+                self.report_missing_parent("flingy");
+                show_unit_frame0_help();
+                show_bullet_frame0_help();
+                None
+            }
+        }
     }
 
     fn do_call(&mut self, dest: CodePosition) {
