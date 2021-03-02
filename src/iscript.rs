@@ -813,7 +813,12 @@ impl<'a> IscriptRunner<'a> {
                     }
                     let flingy = match self.get_flingy() {
                         Some(s) => s,
-                        None => continue,
+                        None => {
+                            // Global infloop
+                            (*self.bw_script).pos = 0x5;
+                            self.in_aice_code = false;
+                            continue;
+                        }
                     };
                     if opcode == SIGORDER {
                         (*flingy).order_signal |= flags;
