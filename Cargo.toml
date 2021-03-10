@@ -20,19 +20,19 @@ overflow-checks = true
 lto = true
 
 [dependencies]
-bincode = "1.0"
+bincode = "=1.2.1"
 bitflags = "1.0"
 bstr = "0.2.7"
 byteorder = "1.1"
 chrono = "0.4"
-fern = "=0.5.8"
+fern = "0.6"
 fxhash = "0.2.1"
 lazy_static = "1.0"
 libc = "0.2"
 log = "0.4"
-parking_lot = "0.10"
-quick-error = "1.2"
-rand = "0.7"
+parking_lot = "0.11"
+quick-error = "2.0"
+rand = "0.8"
 scopeguard = "1.0"
 serde = { version = "1.0.27", features = ["rc"] }
 serde_derive = "1.0.27"
@@ -42,14 +42,11 @@ smallvec = "1.0"
 version = "0.3.3"
 features = ["heapapi", "libloaderapi", "processthreadsapi", "winuser", "wingdi"]
 
-[dependencies.whack]
-git = "https://github.com/neivv/whack/"
-rev = "e8e847864c2938735040ca3c68ef1cf9e03b692f"
-
 [dependencies.samase_shim]
 git = "https://github.com/neivv/samase_plugin"
-rev = "1cd95e9fdc0310ed970232d0e64cafd8641c23ca"
+rev = "81418d2789065acb467399216b8689770eb40d23"
 
 [dependencies.bw_dat]
 git = "https://github.com/neivv/aise"
-rev = "5e8a3244113e585b68d73f82b1b03b096a8b0213"
+rev = "f3f641be620c8af65844872fa272175f94cf0154"
+features = ["serde"]

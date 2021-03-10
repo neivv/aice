@@ -19,8 +19,8 @@ use crate::parse::{
 use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
 
+static ISCRIPT: Mutex<Option<Iscript>> = Mutex::new(None);
 lazy_static! {
-    static ref ISCRIPT: Mutex<Option<Iscript>> = Mutex::new(None);
     static ref SPRITE_OWNER_MAP: Mutex<SpriteOwnerMap> = Mutex::new(SpriteOwnerMap::new());
 }
 

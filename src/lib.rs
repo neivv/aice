@@ -1,7 +1,5 @@
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate whack;
 
 #[macro_use] mod macros;
 
@@ -16,13 +14,6 @@ mod recurse_checked_mutex;
 mod windows;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-
-use lazy_static::lazy_static;
-use parking_lot::Mutex;
-
-lazy_static! {
-    static ref PATCHER: Mutex<whack::Patcher> = Mutex::new(whack::Patcher::new());
-}
 
 fn init() {
     if cfg!(debug_assertions) {
@@ -84,13 +75,6 @@ pub extern fn Initialize() {
         let f: fn() = || {
             let ctx = samase_shim::init_1161();
             samase::samase_plugin_init(ctx.api());
-
-            let mut active_patcher = PATCHER.lock();
-
-            let mut exe = active_patcher.patch_exe(0x00400000);
-            bw::init_funcs(&mut exe);
-            bw::init_vars(&mut exe);
-            //exe.hook_opt(bw::increment_death_scores, aiscript::increment_deaths);
         };
         samase_shim::on_win_main(f);
     }
