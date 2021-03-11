@@ -349,6 +349,17 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                     }
                                 }
                             }
+                            UnitsTotal | UnitsProduced | UnitsOwned | UnitsLost | UnitsKilled |
+                                UnitsScore | UnitsKilledScore | BuildingsTotal |
+                                BuildingsConstructed | BuildingsOwned | BuildingsLost |
+                                BuildingsRazed | BuildingsScore | BuildingsRazedScore|
+                                FactoriesConstructed | FactoriesOwned | FactoriesLost |
+                                FactoriesRazed =>
+                            {
+                                let index = ty as u8 - UnitsTotal as u8;
+                                game.score(index, player) as i32
+                            }
+                            CustomScore => game.custom_score(player) as i32,
                             LocationLeft | LocationTop | LocationRight | LocationBottom => {
                                 let location = (vars[0]).min(254) as u8;
                                 let location = (**game).locations[location as usize];
@@ -928,6 +939,16 @@ impl<'a> IscriptRunner<'a> {
                     }
                 }
             }
+            UnitsTotal | UnitsProduced | UnitsOwned | UnitsLost | UnitsKilled |
+                UnitsScore | UnitsKilledScore | BuildingsTotal |
+                BuildingsConstructed | BuildingsOwned | BuildingsLost |
+                BuildingsRazed | BuildingsScore | BuildingsRazedScore | FactoriesConstructed |
+                FactoriesOwned | FactoriesLost | FactoriesRazed =>
+            {
+                let index = ty as u8 - UnitsTotal as u8;
+                game.set_score(index, player, value as u32);
+            }
+            CustomScore => game.set_custom_score(player, value as u32),
             LocationLeft | LocationTop | LocationRight | LocationBottom => unsafe {
                 let location = (vars[0]).min(254) as u8;
                 let location = (**game).locations.as_mut_ptr().add(location as usize);

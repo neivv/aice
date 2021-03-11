@@ -348,6 +348,28 @@ looking at BW's code to understand the details is recommended.
 - `game.location(id).right`
 - `game.location(id).bottom`
     * Coordinates of a location `id`
+- `game.units_total(p)` Total units of player `p`.
+- `game.units_produced(p)` Amount of units produced by player `p`.
+- `game.units_owned(p)` Amount of units owned by player `p`.
+- `game.units_lost(p)` Amount of units player `p` has lost.
+- `game.units_killed(p)` Amount of units player `p` has killed.
+- `game.units_score(p)` Unit production score of player `p`.
+- `game.units_killed_score(p)` Unit killing score of player `p`.
+- `game.buildings_total(p)` Total buildings of player `p`.
+- `game.buildings_constructed(p)` Amount of buildings constructed by player `p`.
+- `game.buildings_owned(p)` Amount of buildings owned by player `p`.
+- `game.buildings_lost(p)` Amount of buildings lost by player `p`.
+- `game.buildings_razed(p)` Amount of buildings razed by player `p`.
+- `game.buildings_score(p)` Building construction score of player `p`.
+- `game.buildings_razed_score(p)` Building razing score of player `p`.
+- `game.factories_constructed(p)` Amount of factories (Unit-producing buildings) constructed by
+player `p`.
+- `game.factories_owned(p)` Amount of factories owned by player `p`.
+- `game.factories_lost(p)` Amount of factories lost by player `p`.
+- `game.factories_razed(p)` Amount of factories razed by player `p`.
+- `game.custom_score(p)` Custom score (Which can be accessed through triggers) of player `p`.
+    * I don't know what's the difference between "total" and "owned" values. Maybe "owned" only
+    includes units that are currently alive? Making "total" similar to "produced?
 
 Setting the following unit variables can be used to manipulate time a buff lasts for.
 The time unit "step" for these variables is 8 frames (Maybe 9? Needs confirming)

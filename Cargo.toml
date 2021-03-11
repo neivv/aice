@@ -48,5 +48,5 @@ rev = "81418d2789065acb467399216b8689770eb40d23"
 
 [dependencies.bw_dat]
 git = "https://github.com/neivv/aise"
-rev = "f3f641be620c8af65844872fa272175f94cf0154"
+rev = "c0a5ddb6238a87fa832315867aba8d9cf3b0150c"
 features = ["serde"]

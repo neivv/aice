@@ -350,6 +350,25 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"game.protoss_supply_used", game(ProtossSupplyUsed)),
         (b"game.protoss_supply_provided", game(ProtossSupplyProvided)),
         (b"game.location", game(LocationLeft)),
+        (b"game.units_total", game(UnitsTotal)),
+        (b"game.units_produced", game(UnitsProduced)),
+        (b"game.units_owned", game(UnitsOwned)),
+        (b"game.units_lost", game(UnitsLost)),
+        (b"game.units_killed", game(UnitsKilled)),
+        (b"game.units_score", game(UnitsScore)),
+        (b"game.units_killed_score", game(UnitsKilledScore)),
+        (b"game.buildings_total", game(BuildingsTotal)),
+        (b"game.buildings_constructed", game(BuildingsConstructed)),
+        (b"game.buildings_owned", game(BuildingsOwned)),
+        (b"game.buildings_lost", game(BuildingsLost)),
+        (b"game.buildings_razed", game(BuildingsRazed)),
+        (b"game.buildings_score", game(BuildingsScore)),
+        (b"game.buildings_razed_score", game(BuildingsRazedScore)),
+        (b"game.factories_constructed", game(FactoriesConstructed)),
+        (b"game.factories_owned", game(FactoriesOwned)),
+        (b"game.factories_lost", game(FactoriesLost)),
+        (b"game.factories_razed", game(FactoriesRazed)),
+        (b"game.custom_score", game(CustomScore)),
     ]
 };
 
@@ -1386,6 +1405,26 @@ pub enum GameVar {
     LocationTop,
     LocationRight,
     LocationBottom,
+    // Note: Score vars get casted based on index, their ordering should not be edited
+    UnitsTotal,
+    UnitsProduced,
+    UnitsOwned,
+    UnitsLost,
+    UnitsKilled,
+    UnitsScore,
+    UnitsKilledScore,
+    BuildingsTotal,
+    BuildingsConstructed,
+    BuildingsOwned,
+    BuildingsLost,
+    BuildingsRazed,
+    BuildingsScore,
+    BuildingsRazedScore,
+    FactoriesConstructed,
+    FactoriesOwned,
+    FactoriesLost,
+    FactoriesRazed,
+    CustomScore,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1459,7 +1498,11 @@ impl Place {
                 Minerals | Gas | ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax |
                     ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed | ZergSupplyProvided |
                     TerranSupplyProvided | ProtossSupplyProvided | LocationLeft | LocationTop |
-                    LocationRight | LocationBottom => 1,
+                    LocationRight | LocationBottom | UnitsTotal | UnitsProduced | UnitsOwned |
+                    UnitsLost | UnitsKilled | UnitsScore | UnitsKilledScore | BuildingsTotal |
+                    BuildingsConstructed | BuildingsOwned | BuildingsLost | BuildingsRazed |
+                    BuildingsScore | BuildingsRazedScore | FactoriesConstructed | FactoriesOwned |
+                    FactoriesLost | FactoriesRazed | CustomScore => 1,
             }
             _ => 0,
         }
