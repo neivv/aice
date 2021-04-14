@@ -369,6 +369,7 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"game.factories_lost", game(FactoriesLost)),
         (b"game.factories_razed", game(FactoriesRazed)),
         (b"game.custom_score", game(CustomScore)),
+        (b"game.player_color_choice", game(PlayerColorChoice)),
     ]
 };
 
@@ -1425,6 +1426,7 @@ pub enum GameVar {
     FactoriesLost,
     FactoriesRazed,
     CustomScore,
+    PlayerColorChoice,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1502,7 +1504,7 @@ impl Place {
                     UnitsLost | UnitsKilled | UnitsScore | UnitsKilledScore | BuildingsTotal |
                     BuildingsConstructed | BuildingsOwned | BuildingsLost | BuildingsRazed |
                     BuildingsScore | BuildingsRazedScore | FactoriesConstructed | FactoriesOwned |
-                    FactoriesLost | FactoriesRazed | CustomScore => 1,
+                    FactoriesLost | FactoriesRazed | CustomScore | PlayerColorChoice => 1,
             }
             _ => 0,
         }

@@ -139,7 +139,8 @@ pub unsafe extern fn run_aice_script(
     }
 
     loop {
-        let mut globals = Globals::get("run_aice_script");
+        let mut globals_guard = Globals::get("run_aice_script");
+        let globals = &mut *globals_guard;
         let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("run_aice_script");
         let mut runner = IscriptRunner::new(
             this,
@@ -149,6 +150,7 @@ pub unsafe extern fn run_aice_script(
             image,
             dry_run != 0,
             game,
+            &globals.player_lobby_color_choices,
             &mut sprite_owner_map,
         );
         let result = runner.run_script();
@@ -156,7 +158,7 @@ pub unsafe extern fn run_aice_script(
         match result {
             Ok(ScriptRunResult::Done) => return,
             Ok(ScriptRunResult::CreateUnit(unit_id, pos, player)) => {
-                drop(globals);
+                drop(globals_guard);
                 drop(sprite_owner_map);
                 drop(this_guard);
                 if let Some(unit) = bw::create_unit(unit_id, &pos, player) {
@@ -360,6 +362,11 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 game.score(index, player) as i32
                             }
                             CustomScore => game.custom_score(player) as i32,
+                            PlayerColorChoice => {
+                                self.parent.player_lobby_color_choices.get(player as usize)
+                                    .copied()
+                                    .unwrap_or(0x16) as i32
+                            }
                             LocationLeft | LocationTop | LocationRight | LocationBottom => {
                                 let location = (vars[0]).min(254) as u8;
                                 let location = (**game).locations[location as usize];
@@ -402,6 +409,7 @@ struct IscriptRunner<'a> {
     game: Game,
     unit: Option<Unit>,
     bullet: Option<*mut bw::Bullet>,
+    player_lobby_color_choices: [u8; 8],
 }
 
 enum ScriptRunResult {
@@ -418,6 +426,7 @@ impl<'a> IscriptRunner<'a> {
         image: *mut bw::Image,
         dry_run: bool,
         game: Game,
+        player_lobby_color_choices: &[u8; 8],
         sprite_owner_map: &'a mut SpriteOwnerMap,
     ) -> IscriptRunner<'a> {
         IscriptRunner {
@@ -434,6 +443,7 @@ impl<'a> IscriptRunner<'a> {
             in_aice_code: true,
             unit: None,
             bullet: None,
+            player_lobby_color_choices: *player_lobby_color_choices,
         }
     }
 
@@ -971,6 +981,7 @@ impl<'a> IscriptRunner<'a> {
                     }
                 }
             },
+            PlayerColorChoice => bw_print!("Cannot set player_color_choice"),
         }
     }
 

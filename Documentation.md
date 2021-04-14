@@ -370,6 +370,34 @@ player `p`.
 - `game.custom_score(p)` Custom score (Which can be accessed through triggers) of player `p`.
     * I don't know what's the difference between "total" and "owned" values. Maybe "owned" only
     includes units that are currently alive? Making "total" similar to "produced?
+- `game.player_color_choice(p)` Color selected for player `p` in SC:R lobby. Not sure if the
+    values are sensible when the map isn't configured to allow player select their color in lobby.
+    * This value cannot be modified.
+    * Values:
+        * `0` Red
+        * `1` Blue
+        * `2` Teal
+        * `3` Purple
+        * `4` Orange
+        * `5` Brown
+        * `6` White
+        * `7` Yellow
+        * `8` Green
+        * `9` Pale Yellow
+        * `10` Tan
+        * `11` Dark Aqua (Cannot be selected in lobby)
+        * `12` Pale Green
+        * `13` Bluish Grey
+        * `14` Cyan (Cannot be selected in lobby)
+        * `15` Pink
+        * `16` Olive
+        * `17` Lime
+        * `18` Navy
+        * `19` Magenta
+        * `20` Grey
+        * `21` Black
+        * `22` Default / Random
+        * `23` Map specified
 
 Setting the following unit variables can be used to manipulate time a buff lasts for.
 The time unit "step" for these variables is 8 frames (Maybe 9? Needs confirming)

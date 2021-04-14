@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::ptr::null_mut;
 use std::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,12 +20,15 @@ lazy_static! {
 #[derive(Serialize, Deserialize)]
 pub struct Globals {
     pub iscript_state: iscript::IscriptState,
+    /// This is reset on game init, so copy it as global
+    pub player_lobby_color_choices: [u8; 8],
 }
 
 impl Globals {
     fn new() -> Globals {
         Globals {
             iscript_state: iscript::IscriptState::default(),
+            player_lobby_color_choices: [0; 8],
         }
     }
 
@@ -47,9 +51,12 @@ pub unsafe fn init_for_lobby_map_preview() -> crate::parse::Iscript {
 }
 
 pub unsafe extern fn init_game() {
+    let game = Game::from_ptr(bw::game());
     let mut globals = Globals::new();
     let iscript = iscript::load_iscript(true);
     globals.iscript_state = iscript::IscriptState::from_script(&iscript);
+    globals.player_lobby_color_choices = (&(**game).scr_player_color_preference[..8])
+        .try_into().unwrap();
     iscript::set_as_bw_script(iscript);
     *Globals::get("init") = globals;
     iscript::rebuild_sprite_owners();
