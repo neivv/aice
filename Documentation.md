@@ -4,8 +4,16 @@ Aice is a iscript plugin which extends iscript with a few commands.
 
 Aice doesn't use `iscript.bin`, but instead requires a complete iscript in the file
 `scripts\iscript.txt` which will be compiled on startup. A starting `iscript.txt` can be generated
-from decompiling entire `iscript.bin` with IceCC. PyICE has not been verified to work, and it
-may have minor differences in its decompilation that makes Aice reject the text.
+from decompiling entire `iscript.bin` with IceCC.
+
+PyICE can be used to decompile the script too, but it has some differences in output that need
+to be corrected before it is accepted. Trying to load the script with Aice should give line
+numbers for following issues:
+1. Some labels have backslashes that need to be removed (`Longbolt\Halo\GeminiMissilesTrailInit`)
+2. Some twilight and desert tileset doodads get duplicate names, leading to conflicting labels.
+They have to be renamed to be unique. For example, there should be 2 different `DesertDoodad`
+images with same labels, other of them should be changed to use labels `DesertDoodad2Init` and
+`DesertDoodad2Local00` instead.
 
 ## Miscellaneous features
 
