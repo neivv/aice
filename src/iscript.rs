@@ -800,8 +800,11 @@ impl<'a> IscriptRunner<'a> {
                     let unit_id = eval_ctx.eval_int(&unit_id);
                     let x = eval_ctx.eval_int(&x);
                     let y = eval_ctx.eval_int(&y);
-                    let player = eval_ctx.eval_int(&player);
-                    let unit_id = UnitId(unit_id as u16);
+                    let player = eval_ctx.eval_int(&player).min(11).max(0);
+                    let unit_id = match u32::try_from(unit_id).ok().and_then(UnitId::optional) {
+                        Some(s) => s,
+                        None => continue,
+                    };
                     let pos = bw::Point {
                         x: x as i16,
                         y: y as i16,
