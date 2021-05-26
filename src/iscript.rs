@@ -826,7 +826,7 @@ impl<'a> IscriptRunner<'a> {
                         bw_print!(
                             "ERROR {}: Image 0x{:x} has only {} frames, tried to display \
                             frame {}",
-                            self.current_line(), (*image).image_id, value, limit,
+                            self.current_line(), (*image).image_id, limit, value,
                         );
                     }
                 }
