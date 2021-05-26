@@ -164,6 +164,11 @@ pub unsafe fn give_ai(unit: *mut bw::Unit) {
     (GIVE_AI.0.unwrap())(unit)
 }
 
+static mut IS_MULTIPLAYER: GlobalFunc<extern fn() -> u32> = GlobalFunc(None);
+pub fn is_multiplayer() -> bool {
+    unsafe { (IS_MULTIPLAYER.0.unwrap())() != 0 }
+}
+
 static mut UNIT_ARRAY_LEN: GlobalFunc<extern fn(*mut *mut bw::Unit, *mut usize)> = GlobalFunc(None);
 pub unsafe fn unit_array() -> (*mut bw::Unit, usize) {
     let mut arr = null_mut();
@@ -210,7 +215,7 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     bw_dat::set_is_scr(crate::is_scr());
-    let required_version = 31;
+    let required_version = 33;
     if (*api).version < required_version {
         fatal(&format!(
             "Newer samase is required. (Plugin API version {}, this plugin requires version {})",
@@ -275,6 +280,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     FINISH_UNIT_PRE.0 = Some(mem::transmute(((*api).finish_unit_pre)()));
     FINISH_UNIT_POST.0 = Some(mem::transmute(((*api).finish_unit_post)()));
     GIVE_AI.0 = Some(mem::transmute(((*api).give_ai)()));
+    IS_MULTIPLAYER.0 = Some(mem::transmute(((*api).is_multiplayer)()));
     UNIT_ARRAY_LEN.0 = Some(mem::transmute(((*api).unit_array_len)()));
     let result = ((*api).extend_save)(
         "aice\0".as_ptr(),

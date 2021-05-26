@@ -11,7 +11,7 @@ use serde_derive::{Serialize, Deserialize};
 use bw_dat::{Game, Unit, UnitId, UpgradeId, Sprite, TechId, Race};
 
 use crate::bw;
-use crate::globals::{Globals, SerializableSprite, SerializableImage};
+use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, SerializableImage};
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
     UnitVar, ImageVar, GameVar,
@@ -150,7 +150,7 @@ pub unsafe extern fn run_aice_script(
             image,
             dry_run != 0,
             game,
-            &globals.player_lobby_color_choices,
+            &mut globals.player_lobby_color_choices,
             &mut sprite_owner_map,
         );
         let result = runner.run_script();
@@ -363,9 +363,11 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             }
                             CustomScore => game.custom_score(player) as i32,
                             PlayerColorChoice => {
-                                self.parent.player_lobby_color_choices.get(player as usize)
-                                    .copied()
-                                    .unwrap_or(0x16) as i32
+                                if crate::samase::is_multiplayer() {
+                                    self.parent.player_lobby_color_choices.get(player) as i32
+                                } else {
+                                    0x17
+                                }
                             }
                             LocationLeft | LocationTop | LocationRight | LocationBottom => {
                                 let location = (vars[0]).min(254) as u8;
@@ -409,7 +411,7 @@ struct IscriptRunner<'a> {
     game: Game,
     unit: Option<Unit>,
     bullet: Option<*mut bw::Bullet>,
-    player_lobby_color_choices: [u8; 8],
+    player_lobby_color_choices: &'a mut PlayerColorChoices,
 }
 
 enum ScriptRunResult {
@@ -426,7 +428,7 @@ impl<'a> IscriptRunner<'a> {
         image: *mut bw::Image,
         dry_run: bool,
         game: Game,
-        player_lobby_color_choices: &[u8; 8],
+        player_lobby_color_choices: &'a mut PlayerColorChoices,
         sprite_owner_map: &'a mut SpriteOwnerMap,
     ) -> IscriptRunner<'a> {
         IscriptRunner {
@@ -443,7 +445,7 @@ impl<'a> IscriptRunner<'a> {
             in_aice_code: true,
             unit: None,
             bullet: None,
-            player_lobby_color_choices: *player_lobby_color_choices,
+            player_lobby_color_choices,
         }
     }
 

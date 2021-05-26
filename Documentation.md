@@ -380,6 +380,7 @@ player `p`.
     includes units that are currently alive? Making "total" similar to "produced?
 - `game.player_color_choice(p)` Color selected for player `p` in SC:R lobby. Not sure if the
     values are sensible when the map isn't configured to allow player select their color in lobby.
+    Returns always 23 for single player games.
     * This value cannot be modified.
     * Values:
         * `0` Red

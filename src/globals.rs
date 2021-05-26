@@ -1,4 +1,3 @@
-use std::convert::TryInto;
 use std::ptr::null_mut;
 use std::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,14 +20,61 @@ lazy_static! {
 pub struct Globals {
     pub iscript_state: iscript::IscriptState,
     /// This is reset on game init, so copy it as global
-    pub player_lobby_color_choices: [u8; 8],
+    pub player_lobby_color_choices: PlayerColorChoices,
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum PlayerColorChoices {
+    /// (color, storm id).
+    /// Index by player id but gets obsolete on game start randomization
+    BeforeRandomization([(u8, u32); 8]),
+    /// Index by player id.
+    /// Storm id dropped, may not be reliable after loading save?
+    AfterRandomization([u8; 8]),
+}
+
+impl PlayerColorChoices {
+    pub fn get(&mut self, player: u8) -> u8 {
+        self.fixup_post_random()
+            .get(player as usize)
+            .copied()
+            .unwrap_or(0x16)
+    }
+
+    fn fixup_post_random(&mut self) -> &[u8; 8] {
+        match self {
+            PlayerColorChoices::BeforeRandomization(arr) => unsafe {
+                let players = crate::samase::players();
+                // TODO: Ai players.
+                // Since they don't have anything that they can be uniquely identified
+                // before randomization, they should just check player_color_rgba
+                // and use that to match with picked colors.
+                let mut fixed = [0x16u8; 8];
+                for &(choice, storm_id) in arr.iter() {
+                    if storm_id != !0 {
+                        if let Some(player_id) =
+                            (0..8).find(|&x| (*players.add(x)).storm_id == storm_id)
+                        {
+                            fixed[player_id] = choice;
+                        }
+                    }
+                }
+                *self = PlayerColorChoices::AfterRandomization(fixed);
+                match self {
+                    PlayerColorChoices::AfterRandomization(arr) => arr,
+                    _ => &[0; 8],
+                }
+            }
+            PlayerColorChoices::AfterRandomization(arr) => arr,
+        }
+    }
 }
 
 impl Globals {
     fn new() -> Globals {
         Globals {
             iscript_state: iscript::IscriptState::default(),
-            player_lobby_color_choices: [0; 8],
+            player_lobby_color_choices: PlayerColorChoices::BeforeRandomization([(0, 0); 8]),
         }
     }
 
@@ -52,11 +98,17 @@ pub unsafe fn init_for_lobby_map_preview() -> crate::parse::Iscript {
 
 pub unsafe extern fn init_game() {
     let game = Game::from_ptr(bw::game());
+    let players = crate::samase::players();
     let mut globals = Globals::new();
     let iscript = iscript::load_iscript(true);
     globals.iscript_state = iscript::IscriptState::from_script(&iscript);
-    globals.player_lobby_color_choices = (&(**game).scr_player_color_preference[..8])
-        .try_into().unwrap();
+    let mut arr = [(0, 0); 8];
+    for i in 0..8 {
+        let choice = (**game).scr_player_color_preference[i];
+        let storm_id = (*players.add(i)).storm_id;
+        arr[i] = (choice, storm_id);
+    }
+    globals.player_lobby_color_choices = PlayerColorChoices::BeforeRandomization(arr);
     iscript::set_as_bw_script(iscript);
     *Globals::get("init") = globals;
     iscript::rebuild_sprite_owners();
@@ -64,7 +116,9 @@ pub unsafe extern fn init_game() {
 
 pub unsafe extern fn save(set_data: unsafe extern fn(*const u8, usize)) {
     init_sprite_save_load();
-    let globals = Globals::get("save");
+    let mut globals = Globals::get("save");
+    // Not sure if keeping net player ids in save is a good idea, so force fixup on save.
+    globals.player_lobby_color_choices.fixup_post_random();
     match bincode::serialize(&*globals) {
         Ok(o) => {
             set_data(o.as_ptr(), o.len());
