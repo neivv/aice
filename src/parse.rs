@@ -323,6 +323,7 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"unit.max_hitpoints", unit(MaxHitpoints)),
         (b"unit.max_shields", unit(MaxShields)),
         (b"unit.max_energy", unit(MaxEnergy)),
+        (b"unit.resources", unit(Resources)),
         (b"speed", flingy(Speed)),
         (b"player", flingy(Player)),
         (b"image.drawfunc", image(Drawfunc)),
@@ -1368,6 +1369,7 @@ pub enum UnitVar {
     MaxShields,
     Energy,
     MaxEnergy,
+    Resources,
 }
 
 #[repr(u8)]

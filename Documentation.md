@@ -312,6 +312,11 @@ looking at BW's code to understand the details is recommended.
     * This value cannot be modified.
 - `unit.max_energy` Max energy for unit (256 times displayed value).
     * This value cannot be modified.
+- `unit.resources` Amount of resources in a resource container unit, 0 if the unit isn't a resource.
+    * Modifying this value does not update the displayed frame of a mineral field, if that is
+    desired you'll have to add in the logic yourself.
+    * Modifying this value for an unit which is not a resource does nothing. (Trying to read it
+    back will still evaluate it to 0)
 - `image.frame` The latest frameset base that was specified with `playfram`, or copied from
     the primary overlay by using `followmaingraphic`, `engset`, or `engframe`.
     * This value cannot be modified with `set`, use `playfram <value>` instead.

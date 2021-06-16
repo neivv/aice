@@ -278,6 +278,10 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::MaxEnergy => {
                                 self.parent.game.max_energy(unit.player(), unit.id()) as i32
                             }
+                            UnitVar::Resources => match unit.id().is_resource_container() {
+                                true => unit.resource_amount() as i32,
+                                false => 0,
+                            },
                         }
                     },
                     Place::Image(ty) => unsafe {
@@ -678,6 +682,10 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::MaxHitpoints => bw_print!("Cannot set max hitpoints"),
                                 UnitVar::MaxShields => bw_print!("Cannot set max shields"),
                                 UnitVar::MaxEnergy => bw_print!("Cannot set max energy"),
+                                UnitVar::Resources => if unit.id().is_resource_container() {
+                                    *((**unit).unit_specific2.as_mut_ptr() as *mut u16) =
+                                        value as u16;
+                                },
                             }
                         },
                         Place::Image(ty) => {
