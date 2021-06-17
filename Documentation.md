@@ -143,6 +143,15 @@ Creates 2 broodlings at the current unit exists for the current unit's player, s
 of each other. Parentheses around x/y expressions would be optional, but the are likely nicer
 for readability
 
+### issue\_order
+
+```
+issue_order <order_id> <x> <y>
+```
+
+Issues order for the current unit. If the unit is currently dying, you cannot issue any new orders.
+The first argument must be a constant integer, `x` and `y` are [expressions][expr].
+
 ### call
 
 ```
@@ -329,6 +338,8 @@ looking at BW's code to understand the details is recommended.
     * This value cannot be modified.
     * Scarabs become detached from a reaver when launched, and aren't counted by this. (Or do they?
     Should verify.)
+- `unit.loaded_count` Amount of units the transport (or bunker) is carrying.
+    * This value cannot be modified.
 - `unit.current_upgrade` Upgrade ID of the upgrade that is being researched by a building, 61 if
     an upgrade isn't being researched.
     * This value cannot be modified.

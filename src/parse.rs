@@ -113,6 +113,7 @@ pub mod aice_op {
     pub const PLAY_FRAME: u8 = 0x0b;
     pub const SIGORDER: u8 = 0x0c;
     pub const ORDER_DONE: u8 = 0x0d;
+    pub const ISSUE_ORDER: u8 = 0x0e;
 }
 
 quick_error! {
@@ -123,6 +124,9 @@ quick_error! {
         }
         UnknownCommand(msg: BString) {
             display("Unknown command '{}'", msg)
+        }
+        CannotParse(msg: BString, as_what: &'static str) {
+            display("Cannot parse '{}' as {}", msg, as_what)
         }
         Dynamic(msg: String) {
             display("{}", msg)
@@ -264,6 +268,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"set", Set),
         (b"fireweapon", FireWeapon),
         (b"create_unit", CreateUnit),
+        (b"issue_order", IssueOrder),
     ]
 };
 
@@ -329,6 +334,7 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"unit.resources", unit(Resources)),
         (b"unit.hangar_count_inside", unit(HangarCountInside)),
         (b"unit.hangar_count_outside", unit(HangarCountOutside)),
+        (b"unit.loaded_count", unit(LoadedCount)),
         (b"unit.current_upgrade", unit(CurrentUpgrade)),
         (b"unit.current_tech", unit(CurrentTech)),
         (b"unit.build_queue", unit(BuildQueue)),
@@ -393,6 +399,7 @@ enum CommandPrototype {
     FireWeapon,
     GotoRepeatAttk,
     CreateUnit,
+    IssueOrder,
     Call,
     Return,
     PlayFram,
@@ -957,6 +964,23 @@ impl<'a> Parser<'a> {
                     compiler.aice_bytecode.write_u32::<LE>(player).unwrap();
                     Ok(())
                 }
+                CommandPrototype::IssueOrder => {
+                    let (order_id, rest) = parse_u8_rest(rest)?;
+                    let (x, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let (y, rest) = parse_int_expr(rest, self, &compiler)?;
+                    if !rest.is_empty() {
+                        return Err(
+                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
+                        );
+                    }
+                    let x = compiler.int_expr_id(x);
+                    let y = compiler.int_expr_id(y);
+                    compiler.add_aice_command(aice_op::ISSUE_ORDER);
+                    compiler.aice_bytecode.write_u8(order_id).unwrap();
+                    compiler.aice_bytecode.write_u32::<LE>(x).unwrap();
+                    compiler.aice_bytecode.write_u32::<LE>(y).unwrap();
+                    Ok(())
+                }
                 CommandPrototype::End => {
                     compiler.add_aice_command(aice_op::PRE_END);
                     compiler.flow_to_bw();
@@ -1249,6 +1273,22 @@ fn parse_u8(text: &[u8]) -> Option<u8> {
     u8::from_str_radix(text.to_str().ok()?, base).ok()
 }
 
+fn parse_u8_rest(text: &[u8]) -> Result<(u8, &[u8]), Error> {
+    let space = text.iter().position(|&x| x == b' ' || x == b'\t')
+        .unwrap_or(text.len());
+    let (text, rest) = text.split_at(space);
+    let rest_pos = rest.iter().position(|&x| x != b' ' && x != b'\t')
+        .unwrap_or(text.len());
+    let (base, text) = match text.starts_with(b"0x") {
+        true => (16, &text[2..]),
+        false => (10, text),
+    };
+    let val = text.to_str().ok()
+        .and_then(|x| u8::from_str_radix(x, base).ok())
+        .ok_or_else(|| Error::CannotParse(text.into(), "uint8"))?;
+    Ok((val, &rest[rest_pos..]))
+}
+
 /// Supports both u8 and i8 forms, so returns as u8
 fn parse_i8(text: &[u8]) -> Option<u8> {
     let (negative, text) = match text.starts_with(b"-") {
@@ -1385,6 +1425,7 @@ pub enum UnitVar {
     Resources,
     HangarCountInside,
     HangarCountOutside,
+    LoadedCount,
     CurrentUpgrade,
     CurrentTech,
     BuildQueue,
@@ -2456,5 +2497,43 @@ mod test {
         )));
         assert_eq!(*iscript.int_expressions[x].inner(), x_expr);
         assert_eq!(*iscript.int_expressions[y].inner(), y_expr);
+    }
+
+    #[test]
+    fn issue_order() {
+        let iscript = compile_success("issue_order.txt");
+        // The pos_to_line currently returns next aice line for any position
+        // that isn't inside the command start; search in reverse to find the actual
+        // line 47
+        let aice_pos = (0..0x40).rfind(|&i| {
+            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 47
+        }).unwrap() as usize;
+        assert_eq!(iscript.aice_data[aice_pos], aice_op::ISSUE_ORDER);
+        let order = iscript.aice_data[aice_pos + 1] as usize;
+        assert_eq!(order, 72);
+        let x = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 2)..]) as usize;
+        let y = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 6)..]) as usize;
+        let x_place = BW_PLACES.iter()
+            .find(|x| x.0 == b"flingy.position_x")
+            .map(|x| x.1)
+            .unwrap();
+        let y_place = BW_PLACES.iter()
+            .find(|x| x.0 == b"flingy.position_y")
+            .map(|x| x.1)
+            .unwrap();
+        let x_expr = IntExprTree::Custom(Int::Variable(x_place, [None, None, None, None]));
+        let y_expr = IntExprTree::Sub(Box::new((
+            IntExprTree::Custom(Int::Variable(y_place, [None, None, None, None])),
+            IntExprTree::Integer(9),
+        )));
+        assert_eq!(*iscript.int_expressions[x].inner(), x_expr);
+        assert_eq!(*iscript.int_expressions[y].inner(), y_expr);
+    }
+
+    #[test]
+    fn issue_order_nonconst() {
+        let mut errors = compile_err("issue_order_nonconst.txt");
+        find_error(&mut errors, "", 47);
+        assert!(errors.is_empty());
     }
 }

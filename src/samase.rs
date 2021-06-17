@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use libc::c_void;
 use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
 
+use bw_dat::{OrderId, UnitId};
 use samase_shim::PluginApi;
 
 use crate::bw;
@@ -177,6 +178,24 @@ pub unsafe fn unit_array() -> (*mut bw::Unit, usize) {
     (arr, len)
 }
 
+static mut ISSUE_ORDER: GlobalFunc<
+    unsafe extern fn(*mut bw::Unit, u32, u32, u32, *mut bw::Unit, u32),
+> = GlobalFunc(None);
+
+pub fn issue_order(
+    unit: *mut bw::Unit,
+    order: OrderId,
+    x: u32,
+    y: u32,
+    target: *mut bw::Unit,
+    fow_unit: UnitId,
+) {
+    assert!(x < 0x10000);
+    assert!(y < 0x10000);
+    assert!(unit != null_mut());
+    unsafe { ISSUE_ORDER.get()(unit, order.0 as u32, x, y, target, fow_unit.0 as u32) }
+}
+
 pub struct SamaseBox {
     data: NonNull<u8>,
     len: usize,
@@ -282,6 +301,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     GIVE_AI.0 = Some(mem::transmute(((*api).give_ai)()));
     IS_MULTIPLAYER.0 = Some(mem::transmute(((*api).is_multiplayer)()));
     UNIT_ARRAY_LEN.0 = Some(mem::transmute(((*api).unit_array_len)()));
+    ISSUE_ORDER.0 = Some(mem::transmute(((*api).issue_order)()));
     let result = ((*api).extend_save)(
         "aice\0".as_ptr(),
         Some(crate::globals::save),

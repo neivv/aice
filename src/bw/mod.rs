@@ -3,7 +3,7 @@
 
 use crate::samase;
 
-use bw_dat::{UnitId};
+use bw_dat::{OrderId, UnitId};
 
 pub use bw_dat::structs::*;
 
@@ -58,4 +58,14 @@ pub fn give_ai(unit: bw_dat::Unit) {
 
 pub fn unit_array() -> (*mut Unit, usize) {
     unsafe { samase::unit_array() }
+}
+
+pub unsafe fn issue_order(
+    unit: *mut Unit,
+    order: OrderId,
+    pos: Point,
+    target: *mut Unit,
+    fow_unit: UnitId,
+) {
+    samase::issue_order(unit, order, pos.x as u32, pos.y as u32, target, fow_unit)
 }

@@ -8,7 +8,7 @@ use lazy_static::lazy_static;
 use libc::c_void;
 use serde_derive::{Serialize, Deserialize};
 
-use bw_dat::{Game, Unit, UnitId, UpgradeId, Sprite, TechId, Race};
+use bw_dat::{Game, OrderId, Unit, UnitId, UpgradeId, Sprite, TechId, Race};
 
 use crate::bw;
 use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, SerializableImage};
@@ -167,6 +167,12 @@ pub unsafe extern fn run_aice_script(
                     bw::give_ai(unit);
                 }
             }
+            Ok(ScriptRunResult::IssueOrder(unit, order, pos)) => {
+                drop(globals_guard);
+                drop(sprite_owner_map);
+                drop(this_guard);
+                bw::issue_order(*unit, order, pos, null_mut(), bw_dat::unit::NONE);
+            }
             Err(pos) => {
                 invalid_aice_command(iscript, image, CodePos::Aice(pos));
                 return;
@@ -293,6 +299,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 true => (**unit).unit_specific[9] as i32,
                                 false => 0,
                             },
+                            UnitVar::LoadedCount => unit.cargo_count() as i32,
                             UnitVar::CurrentTech => unit.tech_in_progress()
                                 .unwrap_or(bw_dat::tech::NONE).0 as i32,
                             UnitVar::CurrentUpgrade => unit.upgrade_in_progress()
@@ -454,6 +461,7 @@ struct IscriptRunner<'a> {
 enum ScriptRunResult {
     Done,
     CreateUnit(UnitId, bw::Point, u8),
+    IssueOrder(Unit, OrderId, bw::Point),
 }
 
 impl<'a> IscriptRunner<'a> {
@@ -724,6 +732,7 @@ impl<'a> IscriptRunner<'a> {
                                 },
                                 UnitVar::HangarCountInside | UnitVar::HangarCountOutside =>
                                     bw_print!("Cannot set hangar count"),
+                                UnitVar::LoadedCount => bw_print!("Cannot set loaded count"),
                                 UnitVar::CurrentUpgrade =>
                                     bw_print!("Cannot set current upgrade"),
                                 UnitVar::CurrentTech => bw_print!("Cannot set current tech"),
@@ -804,13 +813,9 @@ impl<'a> IscriptRunner<'a> {
                         continue;
                     }
                     self.init_sprite_owner();
-                    let unit = match self.unit {
+                    let unit = match self.get_unit() {
                         Some(s) => s,
-                        None => {
-                            self.report_missing_parent("unit");
-                            show_unit_frame0_help();
-                            continue 'op_loop;
-                        }
+                        None => continue 'op_loop,
                     };
                     let sprite = (*self.image).parent;
                     let orders_dat_weapon = &bw::orders_dat()[0xd];
@@ -881,6 +886,25 @@ impl<'a> IscriptRunner<'a> {
                     let player = player as u8;
                     return Ok(ScriptRunResult::CreateUnit(unit_id, pos, player));
                 }
+                ISSUE_ORDER => {
+                    let order_id = OrderId(self.read_u8()?);
+                    let x_expr = self.read_u32()? as usize;
+                    let y_expr = self.read_u32()? as usize;
+                    let x = &self.iscript.int_expressions[x_expr];
+                    let y = &self.iscript.int_expressions[y_expr];
+                    let mut eval_ctx = self.eval_ctx();
+                    let x = eval_ctx.eval_int(&x);
+                    let y = eval_ctx.eval_int(&y);
+                    let pos = bw::Point {
+                        x: x as i16,
+                        y: y as i16,
+                    };
+                    let unit = match self.unit {
+                        Some(s) => s,
+                        None => continue 'op_loop,
+                    };
+                    return Ok(ScriptRunResult::IssueOrder(unit, order_id, pos));
+                }
                 PLAY_FRAME => {
                     let expr = self.read_u32()?;
                     if self.dry_run {
@@ -926,6 +950,18 @@ impl<'a> IscriptRunner<'a> {
             }
         }
         Ok(ScriptRunResult::Done)
+    }
+
+    fn get_unit(&mut self) -> Option<Unit> {
+        self.init_sprite_owner();
+        match self.unit {
+            Some(s) => Some(s),
+            None => {
+                self.report_missing_parent("unit");
+                show_unit_frame0_help();
+                None
+            }
+        }
     }
 
     fn get_flingy(&mut self) -> Option<*mut bw::Unit> {
