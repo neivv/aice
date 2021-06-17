@@ -278,10 +278,43 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::MaxEnergy => {
                                 self.parent.game.max_energy(unit.player(), unit.id()) as i32
                             }
+                            UnitVar::MineralCost => unit.id().mineral_cost() as i32,
+                            UnitVar::GasCost => unit.id().gas_cost() as i32,
+                            UnitVar::SupplyCost => unit.id().supply_cost() as i32,
                             UnitVar::Resources => match unit.id().is_resource_container() {
                                 true => unit.resource_amount() as i32,
                                 false => 0,
                             },
+                            UnitVar::HangarCountInside => match unit.uses_fighters() {
+                                true => (**unit).unit_specific[8] as i32,
+                                false => 0,
+                            },
+                            UnitVar::HangarCountOutside => match unit.uses_fighters() {
+                                true => (**unit).unit_specific[9] as i32,
+                                false => 0,
+                            },
+                            UnitVar::CurrentTech => unit.tech_in_progress()
+                                .unwrap_or(bw_dat::tech::NONE).0 as i32,
+                            UnitVar::CurrentUpgrade => unit.upgrade_in_progress()
+                                .unwrap_or(bw_dat::upgrade::NONE).0 as i32,
+                            UnitVar::BuildQueue => {
+                                let mut child_ctx = self.parent.eval_ctx();
+                                place_vars[0].as_ref()
+                                    .and_then(|x| u8::try_from(child_ctx.eval_int(x)).ok())
+                                    .and_then(|x| unit.nth_queued_unit(x))
+                                    .unwrap_or(bw_dat::unit::NONE).0 as i32
+                            }
+                            UnitVar::RemainingBuildTime => (**unit).remaining_build_time as i32,
+                            UnitVar::RemainingResearchTime => {
+                                if unit.tech_in_progress().is_some() ||
+                                    unit.upgrade_in_progress().is_some()
+                                {
+                                    *((**unit).unit_specific.as_mut_ptr().add(6) as *mut u16)
+                                        as i32
+                                } else {
+                                    0
+                                }
+                            }
                         }
                     },
                     Place::Image(ty) => unsafe {
@@ -682,10 +715,36 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::MaxHitpoints => bw_print!("Cannot set max hitpoints"),
                                 UnitVar::MaxShields => bw_print!("Cannot set max shields"),
                                 UnitVar::MaxEnergy => bw_print!("Cannot set max energy"),
+                                UnitVar::MineralCost => bw_print!("Cannot set mineral cost"),
+                                UnitVar::GasCost => bw_print!("Cannot set gas cost"),
+                                UnitVar::SupplyCost => bw_print!("Cannot set supply cost"),
                                 UnitVar::Resources => if unit.id().is_resource_container() {
                                     *((**unit).unit_specific2.as_mut_ptr() as *mut u16) =
                                         value as u16;
                                 },
+                                UnitVar::HangarCountInside | UnitVar::HangarCountOutside =>
+                                    bw_print!("Cannot set hangar count"),
+                                UnitVar::CurrentUpgrade =>
+                                    bw_print!("Cannot set current upgrade"),
+                                UnitVar::CurrentTech => bw_print!("Cannot set current tech"),
+                                UnitVar::BuildQueue => {
+                                    if vars[0] < 5 {
+                                        let index = ((**unit).current_build_slot as usize)
+                                            .wrapping_add(vars[0] as usize) % 5;
+                                        (**unit).build_queue[index] = value as u16;
+                                    }
+                                }
+                                UnitVar::RemainingBuildTime => {
+                                    (**unit).remaining_build_time = value as u16;
+                                }
+                                UnitVar::RemainingResearchTime => {
+                                    if unit.tech_in_progress().is_some() ||
+                                        unit.upgrade_in_progress().is_some()
+                                    {
+                                        *((**unit).unit_specific.as_mut_ptr().add(6) as *mut u16)
+                                            = value as u16;
+                                    }
+                                }
                             }
                         },
                         Place::Image(ty) => {

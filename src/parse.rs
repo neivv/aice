@@ -323,7 +323,17 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"unit.max_hitpoints", unit(MaxHitpoints)),
         (b"unit.max_shields", unit(MaxShields)),
         (b"unit.max_energy", unit(MaxEnergy)),
+        (b"unit.mineral_cost", unit(MineralCost)),
+        (b"unit.gas_cost", unit(GasCost)),
+        (b"unit.supply_cost", unit(SupplyCost)),
         (b"unit.resources", unit(Resources)),
+        (b"unit.hangar_count_inside", unit(HangarCountInside)),
+        (b"unit.hangar_count_outside", unit(HangarCountOutside)),
+        (b"unit.current_upgrade", unit(CurrentUpgrade)),
+        (b"unit.current_tech", unit(CurrentTech)),
+        (b"unit.build_queue", unit(BuildQueue)),
+        (b"unit.remaining_build_time", unit(RemainingBuildTime)),
+        (b"unit.remaining_research_time", unit(RemainingResearchTime)),
         (b"speed", flingy(Speed)),
         (b"player", flingy(Player)),
         (b"image.drawfunc", image(Drawfunc)),
@@ -1369,7 +1379,17 @@ pub enum UnitVar {
     MaxShields,
     Energy,
     MaxEnergy,
+    MineralCost,
+    GasCost,
+    SupplyCost,
     Resources,
+    HangarCountInside,
+    HangarCountOutside,
+    CurrentUpgrade,
+    CurrentTech,
+    BuildQueue,
+    RemainingBuildTime,
+    RemainingResearchTime,
 }
 
 #[repr(u8)]
@@ -1507,7 +1527,11 @@ impl Place {
                     BuildingsConstructed | BuildingsOwned | BuildingsLost | BuildingsRazed |
                     BuildingsScore | BuildingsRazedScore | FactoriesConstructed | FactoriesOwned |
                     FactoriesLost | FactoriesRazed | CustomScore | PlayerColorChoice => 1,
-            }
+            },
+            Place::Unit(var) => match var {
+                UnitVar::BuildQueue => 1,
+                _ => 0,
+            },
             _ => 0,
         }
     }

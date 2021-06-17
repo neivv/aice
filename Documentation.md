@@ -286,7 +286,7 @@ bullets accelerate one unit per frame.
 - `flingy.acceleration` Flingy's acceleration, starts equivalent to the flingy.dat value
 - `flingy.top_speed` Flingy's top speed, starts equivalent to the flingy.dat value
 - `flingy.speed` Flingy's current speed, valid also for iscript movement flingies
-- `bullet.weapon_id` Bullet's weapon id
+- `bullet.weapon_id` Bullet's weapon ID
 - `bullet.death_timer` Death timer for a bullet (frames). If BW decrements it to 0 the bullet
 automatically dies unless it a bouncing bullet.
 - `bullet.state` Bullet's state. Setting this can be used to script bullet's behaviour, but
@@ -312,11 +312,47 @@ looking at BW's code to understand the details is recommended.
     * This value cannot be modified.
 - `unit.max_energy` Max energy for unit (256 times displayed value).
     * This value cannot be modified.
+- `unit.mineral_cost` Mineral cost of the unit.
+    * This value cannot be modified.
+- `unit.gas_cost` Gas cost of the unit.
+    * This value cannot be modified.
+- `unit.supply_cost` Supply cost of the unit (2 times displayed value).
+    * This value cannot be modified.
 - `unit.resources` Amount of resources in a resource container unit, 0 if the unit isn't a resource.
     * Modifying this value does not update the displayed frame of a mineral field, if that is
     desired you'll have to add in the logic yourself.
     * Modifying this value for an unit which is not a resource does nothing. (Trying to read it
     back will still evaluate it to 0)
+- `unit.hangar_count_inside` Amount of fighters (Scarabs / Interceptors) *hidden inside* this unit.
+    * This value cannot be modified.
+- `unit.hangar_count_outside` Amount of Interceptors attached to this Carrier outside the Carrier.
+    * This value cannot be modified.
+    * Scarabs become detached from a reaver when launched, and aren't counted by this. (Or do they?
+    Should verify.)
+- `unit.current_upgrade` Upgrade ID of the upgrade that is being researched by a building, 61 if
+    an upgrade isn't being researched.
+    * This value cannot be modified.
+- `unit.current_tech` Tech ID of the tech that is being researched by a building, 44 if
+    a tech isn't being researched.
+    * This value cannot be modified.
+- `unit.build_queue(n)` Unit ID of nth unit that is currently being built by this unit. 228 when
+    the queue slot is not used.
+    * The index is 0-based, so `unit.build_queue(0)` returns the unit ID of the unit being
+    currently built (Or being queued once supply is available), `unit.build_queue(1)` is for
+    the second unit, up to `unit.build_queue(4)`.
+    * If the unit is currently morphing, the first slot of queue has the ID of the unit type being
+    morphed into.
+    * If the unit is building an addon, the first slot of the queue has addon's unit ID.
+    * A worker moving towards to construct a building has building's ID in the first slot of queue.
+        - However, the building ID will stay in queue if the worker is given another order,
+        so it alone should not be relied on to check that the unit is building something.
+    * This value can be modified, though it may cause instability if the first slot is changed
+    when an unit is being built.
+- `unit.remaining_build_time` Frames until *this unit* is complete.
+    * For flags, frames until the flag gets returned to flag beacon.
+    * This value can be modified, though it can cause unit to finish without full HP.
+- `unit.remaining_research_time` Frames until the upgrade/tech research is complete.
+    0 if no research is in progress.
 - `image.frame` The latest frameset base that was specified with `playfram`, or copied from
     the primary overlay by using `followmaingraphic`, `engset`, or `engframe`.
     * This value cannot be modified with `set`, use `playfram <value>` instead.
