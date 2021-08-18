@@ -66,6 +66,9 @@ The place to be assigned can be either [Bw-visible memory][bw-place] or a variab
 to Aice. Assigning to a bw place will truncate the variable if it is larger than the memory
 location being assigned to.
 
+If the place cannot be assigned to due to it being from [another unit][other-units] that
+does not exist, nothing happens.
+
 When assigning to a variable the variable's type must be declared; using different types
 with a single name will be a compile error. The variable types are
 
@@ -178,6 +181,10 @@ Comparision operators are `==` `!=` `<` `<=` `>` and `>=`, a result of a integer
 be a boolean.
 
 Booleans can be chained with `&&` and and `||` or, mixing them always requires parentheses.
+
+Additionally there is `default` operator, which is used for evaluating expressions that access
+potentially nonexistent unit.
+See [Default Expressions][opt-expr] for details.
 
 There are also several builtin expressions referring to current unit or bullet of the iscript.
 If an expressions refers to an object that the image doesn't have, an error will be printed and
@@ -295,6 +302,7 @@ bullets accelerate one unit per frame.
 - `flingy.acceleration` Flingy's acceleration, starts equivalent to the flingy.dat value
 - `flingy.top_speed` Flingy's top speed, starts equivalent to the flingy.dat value
 - `flingy.speed` Flingy's current speed, valid also for iscript movement flingies
+- `flingy.player` Flingy's player
 - `bullet.weapon_id` Bullet's weapon ID
 - `bullet.death_timer` Death timer for a bullet (frames). If BW decrements it to 0 the bullet
 automatically dies unless it a bouncing bullet.
@@ -479,5 +487,103 @@ but nothing has been confirmed.
 - `unit.death_timer` steps until the unit dies. 0 to not make unit die.
 - `unit.matrix_hitpoints` Current hitpoints for defensive matrix (256 times displayed value)
 
+### Other units
+
+In addition to just prefixing `unit.` or `flingy.` to access the current unit's variables,
+the following names can be used to access other unit's, such as the current target as
+`unit.target`.  Any objects accessible from `unit.` can be chained if wished, such as
+`bullet.target.target.addon`
+
+Note that any expression using these other units
+[needs to provide a default value][opt-expr] when the other unit is missing.
+
+The following units can be accesed.
+
+- `unit.target`
+    * Target unit for the current order being executed.
+- `unit.parent`
+    * For a Larva, the Hatchery.
+    * For a Nuke not being nuked, the Nuclear Silo it is in.
+        * Nuke being nuked is not linked to a Ghost, even if the Ghost is to the Nuke.
+    * For an addon, the main building.
+    * For a subunit turret, the base unit.
+    * For an Interceptor/Scarab, the parent Carrier/Reaver.
+    * For a powerup, the worker that is carrying it.
+- `unit.nuke`
+    * For a nuking Ghost, the Nuke.
+        * The nuke stays attached to ghost while it is flying out of the silo and being hidden,
+        but is no longer attached once it appears above the nuke dot.
+    * For a Nuclear Silo, the stored nuke once it's been completed.
+- `unit.currently_building`
+    * or a SCV, the building it is currently constructing.
+    * For any production building, the hidden unit that is being trained.
+    * For a Terran building constructing addon, the addon.
+    * For a nuke silo, the nuke that is being constructed.
+    * For a nydus canal building exit, the exit unit.
+- `unit.transport`
+    * For units inside a transport or Bunker, the said transport/Bunker.
+- `unit.addon`
+    * For Terran buildings, a completed addon that is attached to self.
+- `unit.subunit`
+    * The turret subunit for Tank/Goliath bases.
+- `unit.linked_nydus`
+    * The other side of a nydus canal link.
+- `unit.powerup`
+    * A carried powerup for a worker.
+- `unit.rally_target`
+    * The unit set as a rally point target.
+- `unit.irradiated_by`
+    * The Science Vessel that has used irradiate on self.
+- `bullet.parent`
+    * The unit which spawned this bullet.
+- `bullet.target`
+    * Target unit of a bullet.
+- `bullet.previous_bounce_target`
+    * The previous target that a bouncing bullet hit.
+
+### Default expressions
+
+When using other units in an expression, such as `unit.target.hitpoints + 256`, the expression is
+not possible to be evaluated if the unit currently has no target. Any such expressions need to
+provide a default value as a fallback to use when the units do not exist, using the special
+`default` operator.
+
+The syntax for specifying the default expression is `<expression> default <expression>`, where
+the expression on the left is tried to be evaluated, and the expression on the right will be 
+evaluated if the one on the left fails. The fallback expression may access potentially unavailable units,
+in which case an additional `default` has to be used to handle the case where the fallback expression
+cannot be evaluated either.
+
+Examples:
+* Read unit's target's hitpoints, or evaluate to 0 if target does not exist
+```
+unit.target.hitpoints default 0
+```
+* If parentheses are not used, default takes entire expression on the left and right; 
+    The following are equivalent.
+```
+5 + unit.target.hitpoints + unit.addon.hitpoints default 5 + 6 + 7
+(5 + unit.target.hitpoints + unit.addon.hitpoints) default (5 + 6 + 7)
+```
+* Check if unit's target has more than 100 HP, defaulting to false when there is no target.
+    Two different but equivalent ways.
+```
+(unit.target.hitpoints default 0) > 256 * 100
+unit.target.hitpoints > 256 * 100 default false
+```
+* Evaluates to `256 + hitpoints` for first of the following units that exists
+    1) Unit's target's addon
+    2) Unit's target
+    3) Unit itself
+```
+(unit.target.addon.hitpoints default unit.target.hitpoints default unit.hitpoints) + 256
+```
+* Similar to above, but only adds 256 for the first two cases and subtracts 256 in the third case
+```
+(unit.target.addon.hitpoints default unit.target.hitpoints) + 256 default unit.hitpoints - 256
+```
+
 [expr]: #expressions
 [bw-place]: #bw-visible-variables
+[other-units]: #other-units
+[opt-expr]: #default-expressions

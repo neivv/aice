@@ -70,7 +70,7 @@ dependencies = [
 [[package]]
 name = "bw_dat"
 version = "0.1.0"
-source = "git+https://github.com/neivv/aise?rev=fbe5c74ce2a2a24c0807c32c1b30fefd596c4ae1#fbe5c74ce2a2a24c0807c32c1b30fefd596c4ae1"
+source = "git+https://github.com/neivv/aise?rev=aeff0b9e979e16054479650a75a2beba326fbff9#aeff0b9e979e16054479650a75a2beba326fbff9"
 dependencies = [
  "bitflags",
  "byteorder",

@@ -14,7 +14,7 @@ use crate::bw;
 use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, SerializableImage};
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
-    UnitVar, ImageVar, GameVar,
+    UnitVar, ImageVar, GameVar, UnitRefId, UnitObject, UnitRefParts,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
@@ -189,20 +189,35 @@ struct CustomCtx<'a, 'b> {
     unit: Option<Unit>,
     bullet: Option<*mut bw::Bullet>,
     dry_run: bool,
+    evaluate_default: bool,
 }
 
 impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
     type State = parse::ExprState;
 
     fn eval_int(&mut self, val: &Int) -> i32 {
+        if self.evaluate_default {
+            // Early exit when this is defaulting anyway
+            return 0;
+        }
         match val {
             Int::Variable(id, place_vars) => {
                 match id.place() {
                     Place::Global(id) => self.parent.state.globals[id as usize],
                     Place::SpriteLocal(id) => self.parent.get_sprite_local(self.image, id),
-                    Place::Flingy(ty) => unsafe {
-                        let flingy = self.unit.map(|x| *x)
-                            .or_else(|| self.bullet.map(|x| x as *mut bw::Unit));
+                    Place::Flingy(unit_ref, ty) => unsafe {
+                        let flingy = if unit_ref.is_this() {
+                            self.unit.map(|x| *x)
+                                .or_else(|| self.bullet.map(|x| x as *mut bw::Unit))
+                        } else {
+                            match self.parent.resolve_unit_ref(unit_ref) {
+                                Some(s) => Some(*s),
+                                None => {
+                                    self.evaluate_default = true;
+                                    return 0;
+                                }
+                            }
+                        };
                         let flingy = match flingy {
                             Some(s) => s,
                             None => {
@@ -256,11 +271,15 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             BulletVar::OrderTargetY => (*bullet).order_target_pos.y as i32,
                         }
                     },
-                    Place::Unit(ty) => unsafe {
-                        let unit = match self.unit {
+                    Place::Unit(unit_ref, ty) => unsafe {
+                        let unit = match self.parent.resolve_unit_ref(unit_ref) {
                             Some(s) => s,
                             None => {
-                                self.parent.report_missing_parent("unit");
+                                if unit_ref.is_this() {
+                                    self.parent.report_missing_parent("unit");
+                                } else {
+                                    self.evaluate_default = true;
+                                }
                                 return i32::min_value();
                             }
                         };
@@ -306,10 +325,12 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 .unwrap_or(bw_dat::upgrade::NONE).0 as i32,
                             UnitVar::BuildQueue => {
                                 let mut child_ctx = self.parent.eval_ctx();
-                                place_vars[0].as_ref()
+                                let val = place_vars[0].as_ref()
                                     .and_then(|x| u8::try_from(child_ctx.eval_int(x)).ok())
                                     .and_then(|x| unit.nth_queued_unit(x))
-                                    .unwrap_or(bw_dat::unit::NONE).0 as i32
+                                    .unwrap_or(bw_dat::unit::NONE).0 as i32;
+                                self.evaluate_default = child_ctx.custom.evaluate_default;
+                                val
                             }
                             UnitVar::RemainingBuildTime => (**unit).remaining_build_time as i32,
                             UnitVar::RemainingResearchTime => {
@@ -340,6 +361,10 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                         for i in 0..place_vars.len() {
                             if let Some(ref expr) = place_vars[i] {
                                 vars[i] = child_ctx.eval_int(expr);
+                                if child_ctx.custom.evaluate_default {
+                                    self.evaluate_default = true;
+                                    return 0;
+                                }
                             }
                         }
                         let game = self.parent.game;
@@ -427,14 +452,38 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                     },
                 }
             }
+            Int::Default(ref pair) => {
+                let mut child_ctx = self.parent.eval_ctx();
+                let mut val = child_ctx.eval_int(&pair.0);
+                if child_ctx.custom.evaluate_default {
+                    child_ctx.custom.evaluate_default = false;
+                    val = child_ctx.eval_int(&pair.1);
+                    self.evaluate_default = child_ctx.custom.evaluate_default;
+                }
+                val
+            }
         }
     }
 
     fn eval_bool(&mut self, val: &Bool) -> bool {
+        if self.evaluate_default {
+            // Early exit when this is defaulting anyway
+            return false;
+        }
         match *val {
             Bool::HasFlingy => self.bullet.is_some() || self.unit.is_some(),
             Bool::HasBullet => self.bullet.is_some(),
             Bool::HasUnit => self.unit.is_some(),
+            Bool::Default(ref pair) => {
+                let mut child_ctx = self.parent.eval_ctx();
+                let mut val = child_ctx.eval_bool(&pair.0);
+                if child_ctx.custom.evaluate_default {
+                    child_ctx.custom.evaluate_default = false;
+                    val = child_ctx.eval_bool(&pair.1);
+                    self.evaluate_default = child_ctx.custom.evaluate_default;
+                }
+                val
+            }
         }
     }
 }
@@ -515,6 +564,7 @@ impl<'a> IscriptRunner<'a> {
                 unit: self.unit,
                 dry_run: self.dry_run,
                 parent: self,
+                evaluate_default: false,
             },
         }
     }
@@ -540,6 +590,95 @@ impl<'a> IscriptRunner<'a> {
                     self.current_line(), (*image).image_id,
                 );
                 i32::min_value()
+            }
+        }
+    }
+
+    fn resolve_unit_ref_part(
+        &self,
+        unit_obj: UnitObject,
+        unit: Option<Unit>,
+        bullet: Option<*mut bw::Bullet>,
+    ) -> Option<Unit> {
+        use crate::parse::UnitObject::*;
+        match unit_obj {
+            This => unit,
+            UnitParent => {
+                let unit = unit?;
+                let id = unit.id();
+                match id {
+                    bw_dat::unit::NUCLEAR_MISSILE | bw_dat::unit::LARVA => unit.related(),
+                    bw_dat::unit::INTERCEPTOR | bw_dat::unit::SCARAB => unit.fighter_parent(),
+                    _ => {
+                        if id.is_powerup() {
+                            unit.powerup_worker()
+                        } else if id.is_subunit() {
+                            unit.subunit_linked()
+                        } else if id.is_addon() {
+                            unit.related()
+                        } else {
+                            None
+                        }
+                    }
+                }
+            }
+            Nuke => {
+                let unit = unit?;
+                match unit.id() {
+                    bw_dat::unit::NUCLEAR_SILO => unit.silo_nuke(),
+                    bw_dat::unit::GHOST => unit.related(),
+                    _ => None,
+                }
+            }
+            CurrentlyBuilding => {
+                let unit = unit?;
+                if unit.id() == bw_dat::unit::SCV {
+                    if unit.order() == bw_dat::order::SCV_BUILD {
+                        unit.target()
+                    } else {
+                        None
+                    }
+                } else if unit.id() == bw_dat::unit::NYDUS_CANAL {
+                    unit.nydus_linked().filter(|x| !x.is_completed())
+                } else {
+                    unit.currently_building()
+                }
+            }
+            UnitTarget => unit?.target(),
+            Transport => {
+                let unit = unit?;
+                match unit.in_transport() {
+                    true => unit.related(),
+                    false => None,
+                }
+            }
+            Addon => unit?.addon(),
+            Subunit => unit.filter(|x| !x.id().is_subunit())?.subunit_linked(),
+            LinkedNydus => unit?.nydus_linked().filter(|x| x.is_completed()),
+            Powerup => unit?.powerup(),
+            RallyTarget => unit?.rally_unit(),
+            IrradiatedBy => unsafe { Unit::from_ptr((**unit?).irradiated_by) },
+            BulletParent => unsafe { Unit::from_ptr((*bullet?).parent) },
+            BulletTarget => unsafe { Unit::from_ptr((*bullet?).target) },
+            BulletPreviousBounceTarget => {
+                unsafe { Unit::from_ptr((*bullet?).previous_bounce_target) }
+            }
+            _Last => None,
+        }
+    }
+
+    fn resolve_unit_ref(&mut self, unit_ref: UnitRefId) -> Option<Unit> {
+        let mut unit = self.get_unit_silent();
+        let bullet = self.get_bullet_silent();
+        match self.iscript.unit_ref_object(unit_ref) {
+            UnitRefParts::Single(unit_obj) => {
+                self.resolve_unit_ref_part(unit_obj, unit, bullet)
+            }
+            UnitRefParts::Many(parts) => {
+                for &part in parts {
+                    unit = Some(self.resolve_unit_ref_part(part, unit, bullet)?);
+                }
+                unit
             }
         }
     }
@@ -659,16 +798,26 @@ impl<'a> IscriptRunner<'a> {
                         let expression = &self.iscript.int_expressions[expr as usize];
                         let mut eval_ctx = self.eval_ctx();
                         vars[i] = eval_ctx.eval_int(&expression);
+                        if eval_ctx.custom.evaluate_default {
+                            continue 'op_loop;
+                        }
                     }
                     match place {
                         Place::Global(id) => self.state.globals[id as usize] = value,
                         Place::SpriteLocal(id) => {
                             self.state.set_sprite_local((*self.image).parent, id, value);
                         }
-                        Place::Flingy(ty) => {
-                            let flingy = match self.get_flingy() {
-                                Some(s) => s,
-                                None => continue 'op_loop,
+                        Place::Flingy(unit_ref, ty) => {
+                            let flingy = if unit_ref.is_this() {
+                                match self.get_flingy() {
+                                    Some(s) => s,
+                                    None => continue 'op_loop,
+                                }
+                            } else {
+                                match self.resolve_unit_ref(unit_ref) {
+                                    Some(s) => *s,
+                                    None => continue 'op_loop,
+                                }
                             };
                             set_flingy_var(flingy, ty, value);
                         }
@@ -696,12 +845,14 @@ impl<'a> IscriptRunner<'a> {
                                 }
                             }
                         }
-                        Place::Unit(ty) => {
-                            let unit = match self.unit {
+                        Place::Unit(unit_ref, ty) => {
+                            let unit = match self.resolve_unit_ref(unit_ref) {
                                 Some(s) => s,
                                 None => {
-                                    self.report_missing_parent("unit");
-                                    show_unit_frame0_help();
+                                    if unit_ref.is_this() {
+                                        self.report_missing_parent("unit");
+                                        show_unit_frame0_help();
+                                    }
                                     continue 'op_loop;
                                 }
                             };
@@ -952,9 +1103,18 @@ impl<'a> IscriptRunner<'a> {
         Ok(ScriptRunResult::Done)
     }
 
-    fn get_unit(&mut self) -> Option<Unit> {
+    fn get_bullet_silent(&mut self) -> Option<*mut bw::Bullet> {
         self.init_sprite_owner();
-        match self.unit {
+        self.bullet
+    }
+
+    fn get_unit_silent(&mut self) -> Option<Unit> {
+        self.init_sprite_owner();
+        self.unit
+    }
+
+    fn get_unit(&mut self) -> Option<Unit> {
+        match self.get_unit_silent() {
             Some(s) => Some(s),
             None => {
                 self.report_missing_parent("unit");

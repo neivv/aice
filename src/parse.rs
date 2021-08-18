@@ -15,6 +15,8 @@
 //! in low byte, and that offsets 0x4550 and 0x4353 are reserved 0xcc AnimationInit. Fun working
 //! with that =)
 
+mod ref_builder;
+
 use std::collections::hash_map::Entry;
 use std::convert::TryFrom;
 use std::fmt;
@@ -27,10 +29,14 @@ use fxhash::{FxHashMap, FxHashSet};
 use quick_error::quick_error;
 use serde_derive::{Serialize, Deserialize};
 
-use bw_dat::expr::{self, CustomBoolExpr, CustomIntExpr};
+use bw_dat::expr::{self, Expr, CustomBoolExpr, CustomIntExpr};
+
+use ref_builder::UnitRefBuilder;
 
 pub type IntExpr = CustomIntExpr<ExprState>;
+pub type IntExprTree = bw_dat::expr::IntExprTree<ExprState>;
 pub type BoolExpr = CustomBoolExpr<ExprState>;
+pub type BoolExprTree = bw_dat::expr::BoolExprTree<ExprState>;
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct ExprState;
@@ -43,6 +49,7 @@ impl expr::CustomState for ExprState {
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub enum Int {
     Variable(PlaceId, [Option<Box<IntExpr>>; 4]),
+    Default(Box<(IntExpr, IntExpr)>),
 }
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -50,14 +57,15 @@ pub enum Bool {
     HasFlingy,
     HasUnit,
     HasBullet,
+    Default(Box<(BoolExpr, BoolExpr)>),
 }
 
-struct ExprParser<'a> {
-    compiler: &'a Compiler<'a>,
-    parser: &'a Parser<'a>,
+struct ExprParser<'a, 'b> {
+    compiler: &'b Compiler<'a>,
+    parser: &'b mut Parser<'a>,
 }
 
-impl<'b> expr::CustomParser for ExprParser<'b> {
+impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
     type State = ExprState;
     fn parse_int<'a>(&mut self, input: &'a [u8]) -> Option<(Int, &'a [u8])> {
         let word_end = input.iter().position(|&x| match x {
@@ -81,6 +89,44 @@ impl<'b> expr::CustomParser for ExprParser<'b> {
         None
     }
 
+    fn parse_operator<'a>(&mut self, input: &'a [u8]) -> Option<(u16, &'a [u8])> {
+        let compare = b"default ";
+        if input.starts_with(compare) {
+            Some((0, &input[compare.len()..]))
+        } else {
+            None
+        }
+    }
+
+    fn apply_operator(
+        &mut self,
+        left: Expr<Self::State>,
+        right: Expr<Self::State>,
+        _oper: u16,
+    ) -> Result<Expr<Self::State>, &'static str> {
+        match (left, right) {
+            (Expr::Int(a), Expr::Int(b)) => {
+                if !is_optional_expr(&a) {
+                    return Err("Left side of default must be an optional expression");
+                }
+                let a = IntExpr::from_tree(a);
+                let b = IntExpr::from_tree(b);
+                Ok(Expr::Int(IntExprTree::Custom(Int::Default(Box::new((a, b))))))
+            }
+            (Expr::Bool(a), Expr::Bool(b)) => {
+                if !is_optional_expr(&a) {
+                    return Err("Left side of default must be an optional expression");
+                }
+                let a = BoolExpr::from_tree(a);
+                let b = BoolExpr::from_tree(b);
+                Ok(Expr::Bool(BoolExprTree::Custom(Bool::Default(Box::new((a, b))))))
+            }
+            _ => {
+                Err("Default expression has different left/right side types")
+            }
+        }
+    }
+
     fn parse_bool<'a>(&mut self, input: &'a [u8]) -> Option<(Bool, &'a [u8])> {
         let word_end = input.iter().position(|&x| match x {
             b'a' ..= b'z' | b'A' ..= b'Z' | b'_' | b'.' | b'0' ..= b'9' => false,
@@ -93,6 +139,159 @@ impl<'b> expr::CustomParser for ExprParser<'b> {
             return Some((Bool::HasUnit, &input[word_end..]));
         } else if word == b"sprite.has_bullet" {
             return Some((Bool::HasBullet, &input[word_end..]));
+        }
+        None
+    }
+}
+
+fn is_optional_expr<T: ExprTree>(t: &T) -> bool {
+    t.walk(&mut |part| {
+        match part {
+            IntOrBool::Int(i) => match i {
+                IntExprTree::Custom(Int::Default(pair)) => {
+                    if is_optional_expr(pair.1.inner()) {
+                        WalkResult::Stop(true)
+                    } else {
+                        WalkResult::Skip
+                    }
+                }
+                IntExprTree::Custom(Int::Variable(place, _)) => {
+                    if place.is_optional_expr() {
+                        WalkResult::Stop(true)
+                    } else {
+                        WalkResult::Continue
+                    }
+                }
+                _ => WalkResult::Continue,
+            },
+            IntOrBool::Bool(i) => match i {
+                BoolExprTree::Custom(Bool::Default(pair)) => {
+                    if is_optional_expr(pair.1.inner()) {
+                        WalkResult::Stop(true)
+                    } else {
+                        WalkResult::Skip
+                    }
+                }
+                _ => WalkResult::Continue,
+            },
+        }
+    }).unwrap_or(false)
+}
+
+trait ExprTree {
+    fn walk<F: FnMut(IntOrBool) -> WalkResult<R>, R>(&self, func: &mut F) -> Option<R>;
+}
+
+enum WalkResult<R> {
+    Continue,
+    Skip,
+    Stop(R),
+}
+
+enum IntOrBool<'a> {
+    Int(&'a IntExprTree),
+    Bool(&'a BoolExprTree),
+}
+
+impl ExprTree for IntExprTree {
+    fn walk<F: FnMut(IntOrBool) -> WalkResult<R>, R>(&self, cb: &mut F) -> Option<R> {
+        let result = cb(IntOrBool::Int(self));
+        if let WalkResult::Skip = result {
+            return None;
+        }
+        if let WalkResult::Stop(s) = result {
+            return Some(s);
+        }
+        match *self {
+            IntExprTree::Add(ref pair) | IntExprTree::Sub(ref pair) |
+                IntExprTree::Mul(ref pair) | IntExprTree::Div(ref pair) |
+                IntExprTree::Modulo(ref pair) =>
+            {
+                for op in &[&pair.0, &pair.1] {
+                    if let Some(s) = op.walk(cb) {
+                        return Some(s);
+                    }
+                }
+            }
+            IntExprTree::Func(ref fun) => {
+                for arg in fun.args.iter() {
+                    if let Some(s) = arg.walk(cb) {
+                        return Some(s);
+                    }
+                }
+            }
+            IntExprTree::Custom(Int::Variable(_, ref args)) => {
+                for arg in args {
+                    if let Some(ref arg) = arg {
+                        if let Some(s) = arg.inner().walk(cb) {
+                            return Some(s);
+                        }
+                    }
+                }
+            }
+            IntExprTree::Custom(Int::Default(ref pair)) => {
+                for op in &[&pair.0, &pair.1] {
+                    if let Some(s) = op.inner().walk(cb) {
+                        return Some(s);
+                    }
+                }
+            }
+            IntExprTree::Integer(_) => (),
+        }
+        None
+    }
+}
+
+impl ExprTree for BoolExprTree {
+    fn walk<F: FnMut(IntOrBool) -> WalkResult<R>, R>(&self, cb: &mut F) -> Option<R> {
+        let result = cb(IntOrBool::Bool(self));
+        if let WalkResult::Skip = result {
+            return None;
+        }
+        if let WalkResult::Stop(s) = result {
+            return Some(s);
+        }
+        match *self {
+            BoolExprTree::And(ref pair) | BoolExprTree::Or(ref pair) |
+                BoolExprTree::EqualBool(ref pair) =>
+            {
+                for op in &[&pair.0, &pair.1] {
+                    if let Some(s) = op.walk(cb) {
+                        return Some(s);
+                    }
+                }
+            }
+            BoolExprTree::LessThan(ref pair) | BoolExprTree::LessOrEqual(ref pair) |
+                BoolExprTree::GreaterThan(ref pair) | BoolExprTree::GreaterOrEqual(ref pair) |
+                BoolExprTree::EqualInt(ref pair) =>
+            {
+                for op in &[&pair.0, &pair.1] {
+                    if let Some(s) = op.walk(cb) {
+                        return Some(s);
+                    }
+                }
+            }
+            BoolExprTree::Not(ref single) => {
+                if let Some(s) = single.walk(cb) {
+                    return Some(s);
+                }
+            }
+            BoolExprTree::Func(ref fun) => {
+                for arg in fun.args.iter() {
+                    if let Some(s) = arg.walk(cb) {
+                        return Some(s);
+                    }
+                }
+            }
+            BoolExprTree::Custom(Bool::HasFlingy) | BoolExprTree::Custom(Bool::HasUnit) |
+                BoolExprTree::Custom(Bool::HasBullet) => (),
+            BoolExprTree::Custom(Bool::Default(ref pair)) => {
+                for op in &[&pair.0, &pair.1] {
+                    if let Some(s) = op.inner().walk(cb) {
+                        return Some(s);
+                    }
+                }
+            }
         }
         None
     }
@@ -275,17 +474,13 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
 static BW_PLACES: &[(&[u8], PlaceId)] = {
     use self::FlingyVar::*;
     use self::BulletVar::*;
-    use self::UnitVar::*;
     use self::ImageVar::*;
     use self::GameVar::*;
     const fn flingy(x: FlingyVar) -> PlaceId {
-        PlaceId::new_flingy(x)
+        PlaceId::new_flingy(x, UnitRefId(UnitObject::This as u16))
     }
     const fn bullet(x: BulletVar) -> PlaceId {
         PlaceId::new_bullet(x)
-    }
-    const fn unit(x: UnitVar) -> PlaceId {
-        PlaceId::new_unit(x)
     }
     const fn image(x: ImageVar) -> PlaceId {
         PlaceId::new_image(x)
@@ -305,41 +500,13 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"flingy.acceleration", flingy(Acceleration)),
         (b"flingy.top_speed", flingy(TopSpeed)),
         (b"flingy.speed", flingy(Speed)),
+        (b"flingy.player", flingy(Player)),
         (b"bullet.weapon_id", bullet(WeaponId)),
         (b"bullet.death_timer", bullet(BulletVar::DeathTimer)),
         (b"bullet.state", bullet(State)),
         (b"bullet.bounces_remaining", bullet(BouncesRemaining)),
         (b"bullet.order_target_x", bullet(OrderTargetX)),
         (b"bullet.order_target_y", bullet(OrderTargetY)),
-        (b"unit.death_timer", unit(UnitVar::DeathTimer)),
-        (b"unit.matrix_timer", unit(MatrixTimer)),
-        (b"unit.matrix_hitpoints", unit(MatrixHp)),
-        (b"unit.stim_timer", unit(StimTimer)),
-        (b"unit.ensnare_timer", unit(EnsnareTimer)),
-        (b"unit.lockdown_timer", unit(LockdownTimer)),
-        (b"unit.irradiate_timer", unit(IrradiateTimer)),
-        (b"unit.stasis_timer", unit(StasisTimer)),
-        (b"unit.plague_timer", unit(PlagueTimer)),
-        (b"unit.maelstrom_timer", unit(MaelstormTimer)),
-        (b"unit.is_blind", unit(IsBlind)),
-        (b"unit.hitpoints", unit(Hitpoints)),
-        (b"unit.shields", unit(Shields)),
-        (b"unit.energy", unit(Energy)),
-        (b"unit.max_hitpoints", unit(MaxHitpoints)),
-        (b"unit.max_shields", unit(MaxShields)),
-        (b"unit.max_energy", unit(MaxEnergy)),
-        (b"unit.mineral_cost", unit(MineralCost)),
-        (b"unit.gas_cost", unit(GasCost)),
-        (b"unit.supply_cost", unit(SupplyCost)),
-        (b"unit.resources", unit(Resources)),
-        (b"unit.hangar_count_inside", unit(HangarCountInside)),
-        (b"unit.hangar_count_outside", unit(HangarCountOutside)),
-        (b"unit.loaded_count", unit(LoadedCount)),
-        (b"unit.current_upgrade", unit(CurrentUpgrade)),
-        (b"unit.current_tech", unit(CurrentTech)),
-        (b"unit.build_queue", unit(BuildQueue)),
-        (b"unit.remaining_build_time", unit(RemainingBuildTime)),
-        (b"unit.remaining_research_time", unit(RemainingResearchTime)),
         (b"speed", flingy(Speed)),
         (b"player", flingy(Player)),
         (b"image.drawfunc", image(Drawfunc)),
@@ -390,6 +557,59 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
     ]
 };
 
+static UNIT_VARS: &[(&[u8], UnitVar)] = {
+    use self::UnitVar::*;
+    &[
+        (b"death_timer", DeathTimer),
+        (b"matrix_timer", MatrixTimer),
+        (b"matrix_hitpoints", MatrixHp),
+        (b"stim_timer", StimTimer),
+        (b"ensnare_timer", EnsnareTimer),
+        (b"lockdown_timer", LockdownTimer),
+        (b"irradiate_timer", IrradiateTimer),
+        (b"stasis_timer", StasisTimer),
+        (b"plague_timer", PlagueTimer),
+        (b"maelstrom_timer", MaelstormTimer),
+        (b"is_blind", IsBlind),
+        (b"hitpoints", Hitpoints),
+        (b"shields", Shields),
+        (b"energy", Energy),
+        (b"max_hitpoints", MaxHitpoints),
+        (b"max_shields", MaxShields),
+        (b"max_energy", MaxEnergy),
+        (b"mineral_cost", MineralCost),
+        (b"gas_cost", GasCost),
+        (b"supply_cost", SupplyCost),
+        (b"resources", Resources),
+        (b"hangar_count_inside", HangarCountInside),
+        (b"hangar_count_outside", HangarCountOutside),
+        (b"loaded_count", LoadedCount),
+        (b"current_upgrade", CurrentUpgrade),
+        (b"current_tech", CurrentTech),
+        (b"build_queue", BuildQueue),
+        (b"remaining_build_time", RemainingBuildTime),
+        (b"remaining_research_time", RemainingResearchTime),
+    ]
+};
+
+static FLINGY_VARS: &[(&[u8], FlingyVar)] = {
+    use self::FlingyVar::*;
+    &[
+        (b"move_target_x", MoveTargetX),
+        (b"move_target_y", MoveTargetY),
+        (b"position_x", PositionX),
+        (b"position_y", PositionY),
+        (b"facing_direction", FacingDirection),
+        (b"movement_direction", MovementDirection),
+        (b"target_direction", TargetDirection),
+        (b"turn_speed", TurnSpeed),
+        (b"acceleration", Acceleration),
+        (b"top_speed", TopSpeed),
+        (b"speed", Speed),
+        (b"player", Player),
+    ]
+};
+
 #[derive(Copy, Clone)]
 enum CommandPrototype {
     BwCommand(u8, &'static [BwCommandParam], bool),
@@ -416,6 +636,24 @@ pub struct Iscript {
     pub int_expressions: Vec<Rc<IntExpr>>,
     pub global_count: u32,
     pub line_info: LineInfo,
+    unit_refs: Vec<Vec<UnitObject>>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum UnitRefParts<'a> {
+    Single(UnitObject),
+    Many(&'a [UnitObject]),
+}
+
+impl Iscript {
+    pub fn unit_ref_object(&self, unit: UnitRefId) -> UnitRefParts<'_> {
+        if unit.0 < UnitObject::_Last as u16 {
+            UnitRefParts::Single(unsafe { mem::transmute(unit.0 as u8) })
+        } else {
+            let index = (unit.0 - UnitObject::_Last as u16) as usize;
+            UnitRefParts::Many(&self.unit_refs[index])
+        }
+    }
 }
 
 pub struct LineInfo {
@@ -607,6 +845,9 @@ struct Parser<'a> {
     command_map: FxHashMap<&'static [u8], CommandPrototype>,
     variable_types: FxHashMap<&'a [u8], VariableType>,
     bw_places: FxHashMap<&'static [u8], PlaceId>,
+    unit_vars: FxHashMap<&'static [u8], UnitVar>,
+    flingy_vars: FxHashMap<&'static [u8], FlingyVar>,
+    unit_refs: UnitRefBuilder,
 }
 
 impl<'a> Parser<'a> {
@@ -621,6 +862,9 @@ impl<'a> Parser<'a> {
             command_map: COMMANDS.iter().cloned().collect(),
             variable_types: FxHashMap::with_capacity_and_hasher(32, Default::default()),
             bw_places: BW_PLACES.iter().cloned().collect(),
+            unit_vars: UNIT_VARS.iter().cloned().collect(),
+            flingy_vars: FLINGY_VARS.iter().cloned().collect(),
+            unit_refs: UnitRefBuilder::new(),
         }
     }
 
@@ -1007,7 +1251,7 @@ impl<'a> Parser<'a> {
     /// If `variables` is set, parses place variables `game.deaths(a, b)`, to there.
     /// Otherwise just skips over them.
     fn parse_set_place(
-        &self,
+        &mut self,
         text: &'a [u8],
         variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
         compiler: &Compiler<'a>,
@@ -1020,7 +1264,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_place_expr<'text>(
-        &self,
+        &mut self,
         text: &'text [u8],
         variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
         compiler: &Compiler<'a>,
@@ -1043,11 +1287,7 @@ impl<'a> Parser<'a> {
             .unwrap_or_else(|| (place, b""));
         // Params is b"param1, param2)", possibly also b"param1).left"
 
-        let mut bw = self.bw_places.get(place.as_bytes())
-            .copied()
-            .ok_or_else(|| {
-                Error::Dynamic(format!("Unknown variable type '{}'", place.as_bstr()))
-            })?;
+        let mut bw = self.parse_place_expr_pre_params(place)?;
         let var_count = bw.place().var_count();
         if var_count == 0 {
             if !params.is_empty() {
@@ -1059,7 +1299,7 @@ impl<'a> Parser<'a> {
             if let Some(var_out) = variables {
                 let mut params = params;
                 for i in 0..var_count {
-                    let (expr, rest) = parse_int_expr(params, self, &compiler)?;
+                    let (expr, rest) = parse_int_expr_allow_opt(params, self, &compiler)?;
                     if i != var_count - 1 {
                         let (_, rest) = split_first_token(rest)
                             .filter(|x| x.0 == b",")
@@ -1097,6 +1337,37 @@ impl<'a> Parser<'a> {
             }
         }
         Ok((ParsedPlace::Bw(bw), rest))
+    }
+
+    /// Parses `unit.hitpoints`, `unit.target.target.parent.hitpoints`, `game.deaths`, etc.
+    /// `place` must be already parsed to be just the text before () params of a place.
+    fn parse_place_expr_pre_params<'text>(
+        &mut self,
+        place: &'text [u8],
+    ) -> Result<PlaceId, Error> {
+        let error = || {
+            Error::Dynamic(format!("Unknown place/variable type '{}'", place.as_bstr()))
+        };
+
+        if let Some(&place) = self.bw_places.get(place.as_bytes()) {
+            return Ok(place);
+        }
+        // Split out the part before last .
+        let mut tokens = place.rsplitn(2, |&x| x == b'.');
+        let field = tokens.next().ok_or_else(error)?;
+        let obj = tokens.next().ok_or_else(error)?;
+
+        let unit_ref = self.unit_refs.parse(obj)?;
+        let place = self.unit_vars.get(field.as_bytes()).copied()
+            .map(|var| PlaceId::new_unit(var, unit_ref))
+            .or_else(|| {
+                self.flingy_vars.get(field.as_bytes()).copied()
+                    .map(|var| PlaceId::new_flingy(var, unit_ref))
+            })
+            .ok_or_else(|| {
+                Error::Dynamic(format!("Unknown unit variable '{}'", field.as_bstr()))
+            })?;
+        Ok(place)
     }
 }
 
@@ -1145,24 +1416,32 @@ fn split_first_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
     })
 }
 
-fn parse_bool_expr<'a>(
+fn parse_bool_expr<'a, 'b, 'c>(
     text: &'a [u8],
-    parser: &Parser<'a>,
-    compiler: &Compiler<'a>,
+    parser: &'c mut Parser<'b>,
+    compiler: &'c Compiler<'b>,
 ) -> Result<(BoolExpr, &'a [u8]), Error> {
     let mut parser = ExprParser {
         compiler,
         parser,
     };
-    CustomBoolExpr::parse_part_custom(text.as_ref(), &mut parser)
+    let (expr, rest) = CustomBoolExpr::parse_part_custom(text.as_ref(), &mut parser)
         .map(|(a, b)| (a, b))
-        .map_err(|e| e.into())
+        .map_err(|e| Error::from(e))?;
+    if is_optional_expr(expr.inner()) {
+        let expr_string_len = text.len() - rest.len();
+        let expr_string = &text[..expr_string_len];
+        return Err(Error::Dynamic(
+            format!("Expression '{}' needs `default`", expr_string.as_bstr())
+        ));
+    }
+    Ok((expr, rest))
 }
 
-fn parse_int_expr<'a, 'b>(
+fn parse_int_expr_allow_opt<'a, 'b, 'c>(
     text: &'a [u8],
-    parser: &Parser<'b>,
-    compiler: &Compiler<'b>,
+    parser: &'c mut Parser<'b>,
+    compiler: &'c Compiler<'b>,
 ) -> Result<(IntExpr, &'a [u8]), Error> {
     let mut parser = ExprParser {
         compiler,
@@ -1170,7 +1449,23 @@ fn parse_int_expr<'a, 'b>(
     };
     CustomIntExpr::parse_part_custom(text.as_ref(), &mut parser)
         .map(|(a, b)| (a, b))
-        .map_err(|e| e.into())
+        .map_err(|e| Error::from(e))
+}
+
+fn parse_int_expr<'a, 'b, 'c>(
+    text: &'a [u8],
+    parser: &'c mut Parser<'b>,
+    compiler: &'c Compiler<'b>,
+) -> Result<(IntExpr, &'a [u8]), Error> {
+    let (expr, rest) = parse_int_expr_allow_opt(text, parser, compiler)?;
+    if is_optional_expr(expr.inner()) {
+        let expr_string_len = text.len() - rest.len();
+        let expr_string = &text[..expr_string_len];
+        return Err(Error::Dynamic(
+            format!("Expression '{}' needs `default`", expr_string.as_bstr())
+        ));
+    }
+    Ok((expr, rest))
 }
 
 fn mark_required_bw_labels<'a>(
@@ -1434,6 +1729,27 @@ pub enum UnitVar {
 }
 
 #[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum UnitObject {
+    This,
+    UnitParent,
+    Nuke,
+    CurrentlyBuilding,
+    UnitTarget,
+    Transport,
+    Addon,
+    Subunit,
+    LinkedNydus,
+    Powerup,
+    RallyTarget,
+    IrradiatedBy,
+    BulletParent,
+    BulletTarget,
+    BulletPreviousBounceTarget,
+    _Last,
+}
+
+#[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ImageVar {
     Drawfunc,
@@ -1496,11 +1812,22 @@ pub enum GameVar {
 pub enum Place {
     Global(u32),
     SpriteLocal(u32),
-    Flingy(FlingyVar),
+    Flingy(UnitRefId, FlingyVar),
     Bullet(BulletVar),
-    Unit(UnitVar),
+    Unit(UnitRefId, UnitVar),
     Image(ImageVar),
     Game(GameVar),
+}
+
+/// Anything below `UnitObject::_Last` is just that without extra projection,
+/// otherwise iscript.unit_refs[x - UnitObject::_Last]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct UnitRefId(u16);
+
+impl UnitRefId {
+    pub fn is_this(self) -> bool {
+        self.0 == UnitObject::This as u16
+    }
 }
 
 impl PlaceId {
@@ -1508,9 +1835,9 @@ impl PlaceId {
         let (tag, id) = match place {
             Place::Global(id) => (0 << 3, id),
             Place::SpriteLocal(id) => (1 << 3, id),
-            Place::Flingy(id) => ((2 << 3), id as u32),
+            Place::Flingy(unit, id) => ((2 << 3), (id as u32) | ((unit.0 as u32) << 8)),
             Place::Bullet(id) => ((2 << 3) + 1, id as u32),
-            Place::Unit(id) => ((2 << 3) + 2, id as u32),
+            Place::Unit(unit, id) => ((2 << 3) + 2, (id as u32) | ((unit.0 as u32) << 8)),
             Place::Image(id) => ((2 << 3) + 3, id as u32),
             Place::Game(id) => ((2 << 3) + 4, id as u32),
         };
@@ -1519,14 +1846,14 @@ impl PlaceId {
         PlaceId(id | tag_shifted)
     }
 
-    const fn new_flingy(x: FlingyVar) -> PlaceId {
-        PlaceId((x as u32) | ((2 << 3) << 27))
+    const fn new_flingy(x: FlingyVar, unit: UnitRefId) -> PlaceId {
+        PlaceId((x as u32) | ((unit.0 as u32) << 8) | ((2 << 3) << 27))
     }
     const fn new_bullet(x: BulletVar) -> PlaceId {
         PlaceId((x as u32) | (((2 << 3) + 1) << 27))
     }
-    const fn new_unit(x: UnitVar) -> PlaceId {
-        PlaceId((x as u32) | (((2 << 3) + 2) << 27))
+    const fn new_unit(x: UnitVar, unit: UnitRefId) -> PlaceId {
+        PlaceId((x as u32) | ((unit.0 as u32) << 8) | (((2 << 3) + 2) << 27))
     }
     const fn new_image(x: ImageVar) -> PlaceId {
         PlaceId((x as u32) | (((2 << 3) + 3) << 27))
@@ -1541,13 +1868,24 @@ impl PlaceId {
             0 => Place::Global(id),
             1 => Place::SpriteLocal(id),
             2 | _ => match (self.0 >> 27) & 0x7 {
-                0 => Place::Flingy(unsafe { std::mem::transmute(id as u8) }),
+                0 => Place::Flingy(
+                    UnitRefId((id >> 8) as u16),
+                    unsafe { std::mem::transmute(id as u8) },
+                ),
                 1 => Place::Bullet(unsafe { std::mem::transmute(id as u8) }),
-                2 => Place::Unit(unsafe { std::mem::transmute(id as u8) }),
+                2 => Place::Unit(
+                    UnitRefId((id >> 8) as u16),
+                    unsafe { std::mem::transmute(id as u8) },
+                ),
                 3 => Place::Image(unsafe { std::mem::transmute(id as u8) }),
                 4 | _ => Place::Game(unsafe { std::mem::transmute(id as u8) }),
             },
         }
+    }
+
+    fn is_optional_expr(self) -> bool {
+        self.0 & 0xffff00 != 0 && (self.0 >> 30) == 2 &&
+            matches!((self.0 >> 27) & 0x7, 0 | 2)
     }
 }
 
@@ -1569,7 +1907,7 @@ impl Place {
                     BuildingsScore | BuildingsRazedScore | FactoriesConstructed | FactoriesOwned |
                     FactoriesLost | FactoriesRazed | CustomScore | PlayerColorChoice => 1,
             },
-            Place::Unit(var) => match var {
+            Place::Unit(_, var) => match var {
                 UnitVar::BuildQueue => 1,
                 _ => 0,
             },
@@ -1968,7 +2306,12 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn compile(mut self, blocks: &Blocks<'a>, headers: &[Header<'a>]) -> Result<Iscript, Error> {
+    fn compile(
+        mut self,
+        blocks: &Blocks<'a>,
+        headers: &[Header<'a>],
+        unit_refs: Vec<Vec<UnitObject>>,
+    ) -> Result<Iscript, Error> {
         self.fixup_missing_label_positions(blocks);
 
         if self.bw_bytecode.len() >= 0x10000 {
@@ -2076,6 +2419,7 @@ impl<'a> Compiler<'a> {
             headers,
             global_count: self.variable_counts[VariableType::Global as usize],
             line_info: self.line_info.finish(),
+            unit_refs,
         })
     }
 
@@ -2309,7 +2653,7 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     if !errors.is_empty() {
         return Err(errors);
     }
-    let script = match compiler.compile(&blocks, &parser.headers) {
+    let script = match compiler.compile(&blocks, &parser.headers, parser.unit_refs.finish()) {
         Ok(o) => o,
         Err(error) => {
             errors.push(ErrorWithLine {
@@ -2326,7 +2670,7 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
 mod test {
     use super::*;
 
-    use bw_dat::expr::{IntFunc, IntFuncType, BoolExprTree, IntExprTree};
+    use bw_dat::expr::{IntFunc, IntFuncType};
 
     fn read(filename: &str) -> Vec<u8> {
         std::fs::read(format!("test_scripts/{}", filename)).unwrap()
@@ -2380,6 +2724,36 @@ mod test {
                 println!("Errors: {:#?}", errors);
                 panic!("Couldn't find error '{}' @ line {}", substring, line);
             }
+        }
+    }
+
+    fn assert_place_obj(
+        iscript: &Iscript,
+        place: PlaceId,
+        var: UnitVar,
+        object: &[UnitObject],
+    ) {
+        match place.place() {
+            Place::Unit(unit, x) if x == var  => {
+                match iscript.unit_ref_object(unit) {
+                    UnitRefParts::Single(x) => {
+                        assert_eq!(&[x], object);
+                    }
+                    UnitRefParts::Many(x) => {
+                        assert_eq!(x, object);
+                    }
+                }
+            }
+            x => panic!("Wrong place {:?}", x),
+        }
+    }
+
+    fn unwrap_expr_default(expr: &IntExprTree) -> (&IntExprTree, &IntExprTree) {
+        match expr {
+            IntExprTree::Custom(Int::Default(ref pair)) => {
+                (pair.0.inner(), pair.1.inner())
+            }
+            x => panic!("Wrong expr {:?}", x),
         }
     }
 
@@ -2534,6 +2908,120 @@ mod test {
     fn issue_order_nonconst() {
         let mut errors = compile_err("issue_order_nonconst.txt");
         find_error(&mut errors, "", 47);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn unit_refs() {
+        let iscript = compile_success("unit_refs.txt");
+        // The pos_to_line currently returns next aice line for any position
+        // that isn't inside the command start; search in reverse to find the actual line
+
+        // Line 60 check `set unit.target.turn_speed = ..`
+        let aice_pos = (0..0x40).rfind(|&i| {
+            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 60
+        }).unwrap() as usize;
+        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
+        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
+        match place.place() {
+            Place::Flingy(unit, FlingyVar::TurnSpeed) => {
+                match iscript.unit_ref_object(unit) {
+                    UnitRefParts::Single(UnitObject::UnitTarget) => (),
+                    x => panic!("Wrong unit ref parts {:?}", x),
+                }
+            }
+            x => panic!("Wrong place {:?}", x),
+        }
+
+        // Line 61 check `set unit.target.hitpoints = unit.target.hitpoints - 10 default 0`
+        let aice_pos = (0..0x40).rfind(|&i| {
+            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 61
+        }).unwrap() as usize;
+        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
+        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
+        let expr = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]) as usize;
+        assert_place_obj(
+            &iscript,
+            place,
+            UnitVar::Hitpoints,
+            &[UnitObject::UnitTarget],
+        );
+        let (l, r) = unwrap_expr_default(iscript.int_expressions[expr].inner());
+        match l {
+            IntExprTree::Sub(ref pair) => {
+                match pair.0 {
+                    IntExprTree::Custom(Int::Variable(place, _)) => {
+                        assert_place_obj(
+                            &iscript,
+                            place,
+                            UnitVar::Hitpoints,
+                            &[UnitObject::UnitTarget],
+                        );
+                    }
+                    ref x => panic!("Wrong expr {:?}", x),
+                }
+                assert_eq!(pair.1, IntExprTree::Integer(10));
+            }
+            x => panic!("Wrong expr {:?}", x),
+        }
+        assert_eq!(r, &IntExprTree::Integer(0));
+
+        // Line 64 check `set .. = 5 + (unit.target.parent.hitpoints default unit.target.hitpoints default unit.hitpoints)`
+        let aice_pos = (0..0x80).rfind(|&i| {
+            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 64
+        }).unwrap() as usize;
+        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
+        let expr = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]) as usize;
+        match *iscript.int_expressions[expr].inner() {
+            IntExprTree::Add(ref pair) => {
+                assert_eq!(&pair.0, &IntExprTree::Integer(5));
+                let (l, r) = unwrap_expr_default(&pair.1);
+                let (l, m) = unwrap_expr_default(l);
+                match *l {
+                    IntExprTree::Custom(Int::Variable(place, _)) => {
+                        assert_place_obj(
+                            &iscript,
+                            place,
+                            UnitVar::Hitpoints,
+                            &[UnitObject::UnitTarget, UnitObject::UnitParent],
+                        );
+                    }
+                    ref x => panic!("Wrong expr {:?}", x),
+                }
+                match *m {
+                    IntExprTree::Custom(Int::Variable(place, _)) => {
+                        assert_place_obj(
+                            &iscript,
+                            place,
+                            UnitVar::Hitpoints,
+                            &[UnitObject::UnitTarget]
+                        );
+                    }
+                    ref x => panic!("Wrong expr {:?}", x),
+                }
+                match *r {
+                    IntExprTree::Custom(Int::Variable(place, _)) => {
+                        assert_place_obj(
+                            &iscript,
+                            place,
+                            UnitVar::Hitpoints,
+                            &[UnitObject::This]
+                        );
+                    }
+                    ref x => panic!("Wrong expr {:?}", x),
+                }
+            }
+            ref x => panic!("Wrong expr {:?}", x),
+        }
+    }
+
+    #[test]
+    fn unit_refs_err() {
+        let mut errors = compile_err("unit_refs_err.txt");
+        find_error(&mut errors, "needs `default`", 60);
+        find_error(&mut errors, "needs `default`", 61);
+        find_error(&mut errors, "needs `default`", 62);
+        find_error(&mut errors, "", 63); // TODO bad error
         assert!(errors.is_empty());
     }
 }
