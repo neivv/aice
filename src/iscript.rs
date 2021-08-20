@@ -306,6 +306,13 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::MineralCost => unit.id().mineral_cost() as i32,
                             UnitVar::GasCost => unit.id().gas_cost() as i32,
                             UnitVar::SupplyCost => unit.id().supply_cost() as i32,
+                            UnitVar::OverlaySize => {
+                                match unit.id().flags() {
+                                    x if x & 0x0200_0000 != 0 => 1,
+                                    x if x & 0x0400_0000 != 0 => 2,
+                                    _ => 0,
+                                }
+                            }
                             UnitVar::Resources => match unit.id().is_resource_container() {
                                 true => unit.resource_amount() as i32,
                                 false => 0,
@@ -877,6 +884,7 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::MineralCost => bw_print!("Cannot set mineral cost"),
                                 UnitVar::GasCost => bw_print!("Cannot set gas cost"),
                                 UnitVar::SupplyCost => bw_print!("Cannot set supply cost"),
+                                UnitVar::OverlaySize => bw_print!("Cannot set overlay size"),
                                 UnitVar::Resources => if unit.id().is_resource_container() {
                                     *((**unit).unit_specific2.as_mut_ptr() as *mut u16) =
                                         value as u16;

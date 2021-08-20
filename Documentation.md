@@ -338,6 +338,8 @@ looking at BW's code to understand the details is recommended.
     * This value cannot be modified.
 - `unit.supply_cost` Supply cost of the unit (2 times displayed value).
     * This value cannot be modified.
+- `unit.overlay_size` Overlay size specified in units.dat flags. 0 = Small, 1 = Medium, 2 = Large.
+    * This value cannot be modified.
 - `unit.resources` Amount of resources in a resource container unit, 0 if the unit isn't a resource.
     * Modifying this value does not update the displayed frame of a mineral field, if that is
     desired you'll have to add in the logic yourself.

@@ -623,6 +623,7 @@ static UNIT_VARS: &[(&[u8], UnitVar)] = {
         (b"build_queue", BuildQueue),
         (b"remaining_build_time", RemainingBuildTime),
         (b"remaining_research_time", RemainingResearchTime),
+        (b"overlay_size", OverlaySize),
     ]
 };
 
