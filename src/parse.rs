@@ -77,14 +77,20 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
         if let Some(&var_id) = self.compiler.variables.get(word) {
             return Some((Int::Variable(var_id, out), &input[word_end..]));
         }
-        if let Ok((place, rest)) =
-            self.parser.parse_place_expr(input, Some(&mut out), self.compiler)
-        {
-            let var_id = match place {
-                ParsedPlace::Variable(_ty, var_name) => *self.compiler.variables.get(var_name)?,
-                ParsedPlace::Bw(place) => place,
-            };
-            return Some((Int::Variable(var_id, out), rest));
+        match self.parser.parse_place_expr(input, Some(&mut out), self.compiler) {
+            Ok((place, rest)) => {
+                let var_id = match place {
+                    ParsedPlace::Variable(_ty, var_name) => {
+                        *self.compiler.variables.get(var_name)?
+                    }
+                    ParsedPlace::Bw(place) => place,
+                };
+                return Some((Int::Variable(var_id, out), rest));
+            }
+            Err(CanRecoverError::No(e)) => {
+                self.parser.set_current_error(e);
+            }
+            Err(CanRecoverError::Yes(_)) => (),
         }
         None
     }
@@ -336,6 +342,27 @@ quick_error! {
         Expr(e: bw_dat::expr::Error) {
             from()
             display("Couldn't parse expression: {}", e)
+        }
+    }
+}
+
+enum CanRecoverError {
+    /// The caller can try parsing something else
+    Yes(Error),
+    /// The caller should definitely just return this error
+    No(Error)
+}
+
+impl From<Error> for CanRecoverError {
+    fn from(error: Error) -> Self {
+        CanRecoverError::No(error)
+    }
+}
+
+impl From<CanRecoverError> for Error {
+    fn from(error: CanRecoverError) -> Self {
+        match error {
+            CanRecoverError::Yes(error) | CanRecoverError::No(error) => error,
         }
     }
 }
@@ -848,6 +875,7 @@ struct Parser<'a> {
     unit_vars: FxHashMap<&'static [u8], UnitVar>,
     flingy_vars: FxHashMap<&'static [u8], FlingyVar>,
     unit_refs: UnitRefBuilder,
+    current_error: Option<Error>,
 }
 
 impl<'a> Parser<'a> {
@@ -865,7 +893,16 @@ impl<'a> Parser<'a> {
             unit_vars: UNIT_VARS.iter().cloned().collect(),
             flingy_vars: FLINGY_VARS.iter().cloned().collect(),
             unit_refs: UnitRefBuilder::new(),
+            current_error: None,
         }
+    }
+
+    fn clear_current_error(&mut self) {
+        self.current_error = None;
+    }
+
+    fn set_current_error(&mut self, error: Error) {
+        self.current_error = Some(error);
     }
 
     /// Separates blocks out of the text, parses headers.
@@ -1268,9 +1305,9 @@ impl<'a> Parser<'a> {
         text: &'text [u8],
         variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
         compiler: &Compiler<'a>,
-    ) -> Result<(ParsedPlace<'text>, &'text [u8]), Error> {
+    ) -> Result<(ParsedPlace<'text>, &'text [u8]), CanRecoverError> {
         let (place, rest) = split_first_token_brace_aware(text)
-            .ok_or_else(|| Error::Msg("Expected place"))?;
+            .ok_or_else(|| CanRecoverError::Yes(Error::Msg("Expected place")))?;
         let ty = match place {
             x if x == b"global" => Some(VariableType::Global),
             x if x == b"spritelocal" => Some(VariableType::SpriteLocal),
@@ -1293,7 +1330,7 @@ impl<'a> Parser<'a> {
             if !params.is_empty() {
                 return Err(Error::Dynamic(
                     format!("Place '{}' does not accept parameters", place.as_bstr())
-                ));
+                ).into());
             }
         } else {
             if let Some(var_out) = variables {
@@ -1313,7 +1350,7 @@ impl<'a> Parser<'a> {
                 if params.get(0).copied() != Some(b')') {
                     return Err(Error::Dynamic(
                         format!("Too many parameters for place: '{}'", params.as_bstr())
-                    ));
+                    ).into());
                 }
                 params = &params[1..];
                 // Parse what location coord it actually is
@@ -1325,14 +1362,14 @@ impl<'a> Parser<'a> {
                         b".bottom" => PlaceId::new_game(GameVar::LocationBottom),
                         _ => return Err(Error::Dynamic(
                             format!("Invalid location coord '{}'", params.as_bstr())
-                        )),
+                        ).into()),
                     };
                     params = b"";
                 }
                 if !params.is_empty() {
                     return Err(Error::Dynamic(
                         format!("Trailing characters: '{}'", params.as_bstr())
-                    ));
+                    ).into());
                 }
             }
         }
@@ -1344,9 +1381,11 @@ impl<'a> Parser<'a> {
     fn parse_place_expr_pre_params<'text>(
         &mut self,
         place: &'text [u8],
-    ) -> Result<PlaceId, Error> {
+    ) -> Result<PlaceId, CanRecoverError> {
         let error = || {
-            Error::Dynamic(format!("Unknown place/variable type '{}'", place.as_bstr()))
+            CanRecoverError::Yes(
+                Error::Dynamic(format!("Unknown place/variable type '{}'", place.as_bstr()))
+            )
         };
 
         if let Some(&place) = self.bw_places.get(place.as_bytes()) {
@@ -2624,7 +2663,9 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     compiler.add_variables(&parser.variable_types);
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
+            parser.clear_current_error();
             if let Err(error) = parser.parse_line_add_label(line, &block, &mut compiler) {
+                let error = parser.current_error.take().unwrap_or(error);
                 errors.push(ErrorWithLine {
                     error,
                     line: Some(line.line_number),
@@ -2642,7 +2683,9 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
 
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
+            parser.clear_current_error();
             if let Err(error) = parser.parse_line_pass3(line, &block, &mut compiler, ctx) {
+                let error = parser.current_error.take().unwrap_or(error);
                 errors.push(ErrorWithLine {
                     error,
                     line: Some(line.line_number),
@@ -2907,7 +2950,7 @@ mod test {
     #[test]
     fn issue_order_nonconst() {
         let mut errors = compile_err("issue_order_nonconst.txt");
-        find_error(&mut errors, "", 47);
+        find_error(&mut errors, "Starting from + 1", 47);
         assert!(errors.is_empty());
     }
 
@@ -3021,7 +3064,7 @@ mod test {
         find_error(&mut errors, "needs `default`", 60);
         find_error(&mut errors, "needs `default`", 61);
         find_error(&mut errors, "needs `default`", 62);
-        find_error(&mut errors, "", 63); // TODO bad error
+        find_error(&mut errors, "needs `default`", 63);
         assert!(errors.is_empty());
     }
 }
