@@ -82,5 +82,6 @@ ScourgeLocal00:
 	goto           	ScourgeLocal00
 
 long00:
+    imgol_on unit.target 10 0 0
 	wait           	125
 	goto           	long00

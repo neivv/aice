@@ -326,6 +326,7 @@ pub mod aice_op {
     pub const SIGORDER: u8 = 0x0c;
     pub const ORDER_DONE: u8 = 0x0d;
     pub const ISSUE_ORDER: u8 = 0x0e;
+    pub const IMG_ON: u8 = 0x0f;
 }
 
 quick_error! {
@@ -502,6 +503,8 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"fireweapon", FireWeapon),
         (b"create_unit", CreateUnit),
         (b"issue_order", IssueOrder),
+        (b"imgul_on", ImgulOn),
+        (b"imgol_on", ImgolOn),
     ]
 };
 
@@ -660,6 +663,8 @@ enum CommandPrototype {
     PlayFram,
     Sigorder,
     OrderDone,
+    ImgulOn,
+    ImgolOn,
 }
 
 pub struct Iscript {
@@ -1288,9 +1293,86 @@ impl<'a> Parser<'a> {
                     compiler.add_set(&mut ctx.write_buffer, place, expr, &mut ctx.expr_buffer);
                     Ok(())
                 }
+                CommandPrototype::ImgulOn | CommandPrototype::ImgolOn => {
+                    // op, flags, target, image, x, y
+                    // Flags 0x1 = Imgol, 0x2 = image is u16 const, 0x4 = x is i8 const
+                    // 0x8 = y is i8 const
+                    // Otherwise u32 expressions
+                    let (unit_ref, rest) = self.parse_unit_ref_rest(rest)?;
+                    let (image, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let (x, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let (y, rest) = parse_int_expr(rest, self, &compiler)?;
+                    if !rest.is_empty() {
+                        return Err(
+                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
+                        );
+                    }
+
+                    let mut flags = match command {
+                        CommandPrototype::ImgulOn => 0,
+                        _ => 0x1,
+                    };
+                    let image = if let Some(c) = is_constant_expr(&image) {
+                        flags |= 0x2;
+                        u16::try_from(c)
+                            .map(|x| x as u32)
+                            .map_err(|_| Error::Msg("Image ID must be between 0 and 65535"))?
+                    } else {
+                        compiler.int_expr_id(image)
+                    };
+                    let x = if let Some(c) = is_constant_expr(&x) {
+                        flags |= 0x4;
+                        u8::try_from(c)
+                            .map(|x| x as u32)
+                            .or_else(|_| i8::try_from(c).map(|x| x as u32))
+                            .map_err(|_| Error::Msg("X must be between -128 and 255"))?
+                    } else {
+                        compiler.int_expr_id(x)
+                    };
+                    let y = if let Some(c) = is_constant_expr(&y) {
+                        flags |= 0x8;
+                        u8::try_from(c)
+                            .map(|x| x as u32)
+                            .or_else(|_| i8::try_from(c).map(|x| x as u32))
+                            .map_err(|_| Error::Msg("Y must be between -128 and 255"))?
+                    } else {
+                        compiler.int_expr_id(y)
+                    };
+
+                    compiler.add_aice_command(aice_op::IMG_ON);
+                    compiler.aice_bytecode.write_u8(flags).unwrap();
+                    compiler.aice_bytecode.write_u16::<LE>(unit_ref.0).unwrap();
+                    if flags & 0x2 == 0 {
+                        compiler.aice_bytecode.write_u32::<LE>(image).unwrap();
+                    } else {
+                        compiler.aice_bytecode.write_u16::<LE>(image as u16).unwrap();
+                    }
+                    if flags & 0x4 == 0 {
+                        compiler.aice_bytecode.write_u32::<LE>(x).unwrap();
+                    } else {
+                        compiler.aice_bytecode.write_u8(x as u8).unwrap();
+                    }
+                    if flags & 0x8 == 0 {
+                        compiler.aice_bytecode.write_u32::<LE>(y).unwrap();
+                    } else {
+                        compiler.aice_bytecode.write_u8(y as u8).unwrap();
+                    }
+                    Ok(())
+                }
             }
             _ => Ok(())
         }
+    }
+
+    fn parse_unit_ref_rest<'text>(
+        &mut self,
+        text: &'text [u8],
+    ) -> Result<(UnitRefId, &'text [u8]), Error> {
+        let space = text.iter().position(|&x| x == b' ' || x == b'\t')
+            .unwrap_or(text.len());
+        let (text, rest) = text.split_at(space);
+        let val = self.unit_refs.parse(text)?;
+        Ok((val, &rest[1..]))
     }
 
     /// If `variables` is set, parses place variables `game.deaths(a, b)`, to there.
@@ -1415,6 +1497,14 @@ impl<'a> Parser<'a> {
                 Error::Dynamic(format!("Unknown unit variable '{}'", field.as_bstr()))
             })?;
         Ok(place)
+    }
+}
+
+fn is_constant_expr(expr: &IntExpr) -> Option<i32> {
+    if let IntExprTree::Integer(c) = *expr.inner() {
+        Some(c)
+    } else {
+        None
     }
 }
 
@@ -1773,6 +1863,7 @@ pub enum UnitVar {
     BuildQueue,
     RemainingBuildTime,
     RemainingResearchTime,
+    OverlaySize,
 }
 
 #[repr(u8)]
@@ -1869,7 +1960,7 @@ pub enum Place {
 /// Anything below `UnitObject::_Last` is just that without extra projection,
 /// otherwise iscript.unit_refs[x - UnitObject::_Last]
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
-pub struct UnitRefId(u16);
+pub struct UnitRefId(pub u16);
 
 impl UnitRefId {
     pub fn this() -> UnitRefId {
@@ -3077,6 +3168,7 @@ mod test {
         find_error(&mut errors, "needs `default`", 61);
         find_error(&mut errors, "needs `default`", 62);
         find_error(&mut errors, "needs `default`", 63);
+        find_error(&mut errors, "X must be between", 78);
         assert!(errors.is_empty());
     }
 }

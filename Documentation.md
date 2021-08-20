@@ -166,6 +166,22 @@ Calls a subroutine. Use `return` inside subroutine to continue from a point afte
 Unlike `call` in vanilla BW, which only allows a single call that must be returned from before
 using `call` again, Aice allows nested calls up to 256 calls.
 
+### imgul\_on / imgol\_on
+
+```
+imgul_on <unit> <image_id> <x> <y>
+imgol_on <unit> <image_id> <x> <y>
+```
+
+Versions of `imgul` and `imgol` which spawn the overlay on [another unit][other-units].
+Additionally the image ID, x and y are can be any [expression][expr].
+
+Note that as a minor difference from regular `imgul` and `imgol`, which insert the overlay
+directly below or above the current image executing the command, `imgul_on` and `imgol_on`
+will spawn the overlay as the top/bottom overlay of the entire sprite.
+
+If the unit does not exist, this command will silently do nothing.
+
 ## Expressions
 
 There are two types of expressions: Integer (32-bit signed) and boolean expressions

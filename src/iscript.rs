@@ -8,7 +8,7 @@ use lazy_static::lazy_static;
 use libc::c_void;
 use serde_derive::{Serialize, Deserialize};
 
-use bw_dat::{Game, OrderId, Unit, UnitId, UpgradeId, Sprite, TechId, Race};
+use bw_dat::{Game, Image, ImageId, OrderId, Unit, UnitId, UpgradeId, Sprite, TechId, Race};
 
 use crate::bw;
 use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, SerializableImage};
@@ -172,6 +172,12 @@ pub unsafe extern fn run_aice_script(
                 drop(sprite_owner_map);
                 drop(this_guard);
                 bw::issue_order(*unit, order, pos, null_mut(), bw_dat::unit::NONE);
+            }
+            Ok(ScriptRunResult::AddOverlay(base, image_id, x, y, above)) => {
+                drop(globals_guard);
+                drop(sprite_owner_map);
+                drop(this_guard);
+                crate::samase::add_overlay_iscript(*base, image_id, x, y, above);
             }
             Err(pos) => {
                 invalid_aice_command(iscript, image, CodePos::Aice(pos));
@@ -518,6 +524,7 @@ enum ScriptRunResult {
     Done,
     CreateUnit(UnitId, bw::Point, u8),
     IssueOrder(Unit, OrderId, bw::Point),
+    AddOverlay(Image, ImageId, i8, i8, bool),
 }
 
 impl<'a> IscriptRunner<'a> {
@@ -1102,6 +1109,63 @@ impl<'a> IscriptRunner<'a> {
                         (*flingy).order_signal &= !flags;
                     }
                 }
+                IMG_ON => {
+                    let flags = self.read_u8()?;
+                    let unit_ref = UnitRefId(self.read_u16()?);
+                    let image_id = match flags & 0x2 == 0 {
+                        true => self.read_u32()?,
+                        false => self.read_u16()? as u32,
+                    };
+                    let x = match flags & 0x4 == 0 {
+                        true => self.read_u32()?,
+                        false => self.read_u8()? as u32,
+                    };
+                    let y = match flags & 0x8 == 0 {
+                        true => self.read_u32()?,
+                        false => self.read_u8()? as u32,
+                    };
+                    if self.dry_run {
+                        continue 'op_loop;
+                    }
+                    let sprite = match self.resolve_unit_ref(unit_ref).and_then(|x| x.sprite()) {
+                        Some(s) => s,
+                        None => continue 'op_loop,
+                    };
+                    let iscript = self.iscript;
+                    let mut eval_ctx = self.eval_ctx();
+                    let image_id = match flags & 0x2 == 0 {
+                        true => {
+                            let expr = &iscript.int_expressions[image_id as usize];
+                            clamp_i32_u16(eval_ctx.eval_int(expr))
+                        }
+                        false => image_id as u16,
+                    };
+                    let image_id = ImageId(image_id);
+                    let x = match flags & 0x4 == 0 {
+                        true => {
+                            let expr = &iscript.int_expressions[x as usize];
+                            clamp_i32_iu8(eval_ctx.eval_int(expr))
+                        }
+                        false => x as i8,
+                    };
+                    let y = match flags & 0x8 == 0 {
+                        true => {
+                            let expr = &iscript.int_expressions[y as usize];
+                            clamp_i32_iu8(eval_ctx.eval_int(expr))
+                        }
+                        false => y as i8,
+                    };
+                    let above = flags & 0x1 != 0;
+                    let base_image = match above {
+                        true => sprite.images().next(),
+                        // Ugh but lazy and pretty minor in the end
+                        false => sprite.images().last(),
+                    };
+
+                    if let Some(base_image) = base_image {
+                        return Ok(ScriptRunResult::AddOverlay(base_image, image_id, x, y, above));
+                    }
+                }
                 x => {
                     error!("Unknown opcode {:02x}", x);
                     return Err(opcode_pos);
@@ -1353,6 +1417,28 @@ impl<'a> IscriptRunner<'a> {
 
 fn clamp_i32_u16(val: i32) -> u16 {
     val.max(0).min(i32::from(u16::MAX)) as u16
+}
+
+fn clamp_i32_iu8(val: i32) -> i8 {
+    if val < 0 {
+        val.max(i8::MIN.into()) as i8
+    } else {
+        val.min(u8::MAX.into()) as u8 as i8
+    }
+}
+
+#[test]
+fn test_clamps() {
+    assert_eq!(clamp_i32_u16(-1), 0);
+    assert_eq!(clamp_i32_u16(-130), 0);
+    assert_eq!(clamp_i32_u16(130), 130);
+    assert_eq!(clamp_i32_u16(69094), 65535);
+    assert_eq!(clamp_i32_iu8(-1), -1);
+    assert_eq!(clamp_i32_iu8(-130), -128);
+    assert_eq!(clamp_i32_iu8(130), 130u8 as i8);
+    assert_eq!(clamp_i32_iu8(126), 126);
+    assert_eq!(clamp_i32_iu8(127), 127);
+    assert_eq!(clamp_i32_iu8(500), 255u8 as i8);
 }
 
 unsafe fn image_play_frame(image: *mut bw::Image, frameset: u16) -> Result<(), u16> {
