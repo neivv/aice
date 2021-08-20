@@ -220,7 +220,10 @@ The following are Aice-specific boolean expressions:
 - `sprite.has_flingy` true if the current image's parent sprite is linked to an unit or a
 bullet.
 - `sprite.has_bullet` true if the current image's parent sprite is linked to a bullet.
-- `sprite.has_unit` true if the current image's parent sprite is linked to an unit.
+- `sprite.has_unit` Equivalent to `has(unit)`
+- `has(unit_name)`
+    * The expression `has(unit_name)` where `unit_name` is an [unit][other-units] or simply `unit`
+    evaluates to `true` if the specified unit can be accessed.
 
 The following are builtin integer expressions (Available also in Mtl):
 - `matrix_hitpoints` Current hitpoints for defensive matrix (256 times displayed value), or 0
@@ -497,6 +500,9 @@ the following names can be used to access other unit's, such as the current targ
 Note that any expression using these other units
 [needs to provide a default value][opt-expr] when the other unit is missing.
 
+If you want to check if an unit exists, for example to jump depending on that,
+`has(unit_name)` boolean expression can be used.
+
 The following units can be accesed.
 
 - `unit.target`
@@ -549,7 +555,7 @@ provide a default value as a fallback to use when the units do not exist, using 
 `default` operator.
 
 The syntax for specifying the default expression is `<expression> default <expression>`, where
-the expression on the left is tried to be evaluated, and the expression on the right will be 
+the expression on the left is tried to be evaluated, and the expression on the right will be
 evaluated if the one on the left fails. The fallback expression may access potentially unavailable units,
 in which case an additional `default` has to be used to handle the case where the fallback expression
 cannot be evaluated either.
@@ -559,7 +565,7 @@ Examples:
 ```
 unit.target.hitpoints default 0
 ```
-* If parentheses are not used, default takes entire expression on the left and right; 
+* If parentheses are not used, default takes entire expression on the left and right;
     The following are equivalent.
 ```
 5 + unit.target.hitpoints + unit.addon.hitpoints default 5 + 6 + 7

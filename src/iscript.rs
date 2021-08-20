@@ -473,7 +473,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
         match *val {
             Bool::HasFlingy => self.bullet.is_some() || self.unit.is_some(),
             Bool::HasBullet => self.bullet.is_some(),
-            Bool::HasUnit => self.unit.is_some(),
+            Bool::Has(unit) => self.parent.resolve_unit_ref(unit).is_some(),
             Bool::Default(ref pair) => {
                 let mut child_ctx = self.parent.eval_ctx();
                 let mut val = child_ctx.eval_bool(&pair.0);

@@ -67,6 +67,7 @@ ScourgeWalking:
     if game.alliance(unit.player, unit.target.player) == 1 default false goto ScourgeLocal00
     set game.minerals(unit.player) = 5
     set game.minerals(unit.target.player) = 5
+    if !has(unit) || has(unit.target) goto ScourgeLocal00
 ScourgeLocal00:
 	playfram       	0x00	# frame set 0
 	wait           	2

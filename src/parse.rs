@@ -55,8 +55,8 @@ pub enum Int {
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub enum Bool {
     HasFlingy,
-    HasUnit,
     HasBullet,
+    Has(UnitRefId),
     Default(Box<(BoolExpr, BoolExpr)>),
 }
 
@@ -134,19 +134,26 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
     }
 
     fn parse_bool<'a>(&mut self, input: &'a [u8]) -> Option<(Bool, &'a [u8])> {
-        let word_end = input.iter().position(|&x| match x {
-            b'a' ..= b'z' | b'A' ..= b'Z' | b'_' | b'.' | b'0' ..= b'9' => false,
-            _ => true,
-        }).unwrap_or(input.len());
-        let word = &input[..word_end];
-        if word == b"sprite.has_flingy" {
-            return Some((Bool::HasFlingy, &input[word_end..]));
+        let (word, rest) = split_first_token_brace_aware(input)?;
+        if word.starts_with(b"has(") && word.ends_with(b")") {
+            let params = &word[4..word.len() - 1];
+            match self.parser.unit_refs.parse(params) {
+                Ok(ref_id) => Some((Bool::Has(ref_id), rest)),
+                Err(e) => {
+                    self.parser.set_current_error(e);
+                    None
+                }
+            }
+        } else if word == b"sprite.has_flingy" {
+            Some((Bool::HasFlingy, rest))
         } else if word == b"sprite.has_unit" {
-            return Some((Bool::HasUnit, &input[word_end..]));
+            let ref_id = UnitRefId::this();
+            Some((Bool::Has(ref_id), rest))
         } else if word == b"sprite.has_bullet" {
-            return Some((Bool::HasBullet, &input[word_end..]));
+            Some((Bool::HasBullet, rest))
+        } else {
+            None
         }
-        None
     }
 }
 
@@ -289,7 +296,7 @@ impl ExprTree for BoolExprTree {
                     }
                 }
             }
-            BoolExprTree::Custom(Bool::HasFlingy) | BoolExprTree::Custom(Bool::HasUnit) |
+            BoolExprTree::Custom(Bool::HasFlingy) | BoolExprTree::Custom(Bool::Has(..)) |
                 BoolExprTree::Custom(Bool::HasBullet) => (),
             BoolExprTree::Custom(Bool::Default(ref pair)) => {
                 for op in &[&pair.0, &pair.1] {
@@ -1860,10 +1867,14 @@ pub enum Place {
 
 /// Anything below `UnitObject::_Last` is just that without extra projection,
 /// otherwise iscript.unit_refs[x - UnitObject::_Last]
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct UnitRefId(u16);
 
 impl UnitRefId {
+    pub fn this() -> UnitRefId {
+        UnitRefId(0)
+    }
+
     pub fn is_this(self) -> bool {
         self.0 == UnitObject::This as u16
     }
