@@ -174,7 +174,7 @@ imgol_on <unit> <image_id> <x> <y>
 ```
 
 Versions of `imgul` and `imgol` which spawn the overlay on [another unit][other-units].
-Additionally the image ID, x and y are can be any [expression][expr].
+Additionally the image ID, x and y can be any [expression][expr].
 
 Note that as a minor difference from regular `imgul` and `imgol`, which insert the overlay
 directly below or above the current image executing the command, `imgul_on` and `imgol_on`
