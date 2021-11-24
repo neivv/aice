@@ -210,6 +210,14 @@ pub unsafe fn add_overlay_iscript(
     ADD_OVERLAY_ISCRIPT.get()(base_image, image.0 as u32, x as i32, y as i32, above as u32)
 }
 
+static mut STEP_ISCRIPT: GlobalFunc<
+    unsafe extern fn(*mut bw::Image, *mut bw::Iscript, u32, *mut u32)
+> = GlobalFunc(None);
+
+pub unsafe fn step_iscript(image: *mut bw::Image, iscript: *mut bw::Iscript, dry: bool) {
+    STEP_ISCRIPT.get()(image, iscript, dry as u32, null_mut());
+}
+
 pub struct SamaseBox {
     data: NonNull<u8>,
     len: usize,
@@ -317,6 +325,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     UNIT_ARRAY_LEN.0 = Some(mem::transmute(((*api).unit_array_len)()));
     ISSUE_ORDER.0 = Some(mem::transmute(((*api).issue_order)()));
     ADD_OVERLAY_ISCRIPT.0 = Some(mem::transmute(((*api).add_overlay_iscript)()));
+    STEP_ISCRIPT.0 = Some(mem::transmute(((*api).step_iscript)()));
     let result = ((*api).extend_save)(
         "aice\0".as_ptr(),
         Some(crate::globals::save),

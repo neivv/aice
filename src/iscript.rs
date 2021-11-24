@@ -1,5 +1,5 @@
 use std::convert::TryFrom;
-use std::ptr::null_mut;
+use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use byteorder::{ReadBytesExt, LE};
@@ -213,11 +213,11 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                     Place::SpriteLocal(id) => self.parent.get_sprite_local(self.image, id),
                     Place::Flingy(unit_ref, ty) => unsafe {
                         let flingy = if unit_ref.is_this() {
-                            self.unit.map(|x| *x)
-                                .or_else(|| self.bullet.map(|x| x as *mut bw::Unit))
+                            self.unit.map(|x| ptr::addr_of_mut!((**x).flingy))
+                                .or_else(|| self.bullet.map(|x| ptr::addr_of_mut!((*x).flingy)))
                         } else {
                             match self.parent.resolve_unit_ref(unit_ref) {
-                                Some(s) => Some(*s),
+                                Some(s) => Some(ptr::addr_of_mut!((**s).flingy)),
                                 None => {
                                     self.evaluate_default = true;
                                     return 0;
@@ -240,8 +240,8 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             }
                         };
                         match ty {
-                            FlingyVar::MoveTargetX => (*flingy).move_target.x as i32,
-                            FlingyVar::MoveTargetY => (*flingy).move_target.y as i32,
+                            FlingyVar::MoveTargetX => (*flingy).move_target.pos.x as i32,
+                            FlingyVar::MoveTargetY => (*flingy).move_target.pos.y as i32,
                             FlingyVar::FacingDirection => {
                                 bw_angle_to_degrees((*flingy).facing_direction) as i32
                             }
@@ -251,13 +251,13 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             FlingyVar::TargetDirection => {
                                 bw_angle_to_degrees((*flingy).target_direction) as i32
                             }
-                            FlingyVar::TurnSpeed => (*flingy).flingy_turn_speed as i32,
+                            FlingyVar::TurnSpeed => (*flingy).turn_speed as i32,
                             FlingyVar::Acceleration => (*flingy).acceleration as i32,
-                            FlingyVar::TopSpeed => (*flingy).flingy_top_speed as i32,
+                            FlingyVar::TopSpeed => (*flingy).top_speed as i32,
                             FlingyVar::Speed => (*flingy).current_speed as i32,
                             FlingyVar::PositionX => (*flingy).position.x as i32,
                             FlingyVar::PositionY => (*flingy).position.y as i32,
-                            FlingyVar::Player => (*flingy).player as i32,
+                            FlingyVar::Player => (*(flingy as *mut bw::Unit)).player as i32,
                         }
                     },
                     Place::Bullet(ty) => unsafe {
@@ -273,8 +273,8 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             BulletVar::WeaponId => (*bullet).weapon_id as i32,
                             BulletVar::BouncesRemaining => (*bullet).bounces_remaining as i32,
                             BulletVar::DeathTimer => (*bullet).death_timer as i32,
-                            BulletVar::OrderTargetX => (*bullet).order_target_pos.x as i32,
-                            BulletVar::OrderTargetY => (*bullet).order_target_pos.y as i32,
+                            BulletVar::OrderTargetX => (*bullet).target.pos.x as i32,
+                            BulletVar::OrderTargetY => (*bullet).target.pos.y as i32,
                         }
                     },
                     Place::Unit(unit_ref, ty) => unsafe {
@@ -324,11 +324,11 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 false => 0,
                             },
                             UnitVar::HangarCountInside => match unit.uses_fighters() {
-                                true => (**unit).unit_specific[8] as i32,
+                                true => (**unit).unit_specific.carrier.in_hangar_count as i32,
                                 false => 0,
                             },
                             UnitVar::HangarCountOutside => match unit.uses_fighters() {
-                                true => (**unit).unit_specific[9] as i32,
+                                true => (**unit).unit_specific.carrier.out_hangar_count as i32,
                                 false => 0,
                             },
                             UnitVar::LoadedCount => unit.cargo_count() as i32,
@@ -350,8 +350,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 if unit.tech_in_progress().is_some() ||
                                     unit.upgrade_in_progress().is_some()
                                 {
-                                    *((**unit).unit_specific.as_mut_ptr().add(6) as *mut u16)
-                                        as i32
+                                    (**unit).unit_specific.building.research_time_remaining as i32
                                 } else {
                                     0
                                 }
@@ -561,7 +560,20 @@ impl<'a> IscriptRunner<'a> {
         unsafe {
             if !self.owner_read {
                 self.owner_read = true;
-                self.unit = self.sprite_owner_map.get_unit((*self.image).parent);
+                self.unit = self.sprite_owner_map.get_unit((*self.image).parent)
+                    .or_else(|| {
+                        // Semi-hacky fallback to make pylon auras use parent unit as well
+                        // when stepping their frame.
+                        let step_order_unit = CURRENT_ORDER_UNIT.load(Ordering::Relaxed);
+                        if let Some(unit) = Unit::from_ptr(step_order_unit as *mut bw::Unit) {
+                            if let Some(aura) = unit.pylon_aura() {
+                                if *aura == (*self.image).parent {
+                                    return Some(unit);
+                                }
+                            }
+                        }
+                        None
+                    });
                 self.bullet = self.sprite_owner_map.get_bullet((*self.image).parent);
             }
         }
@@ -673,7 +685,7 @@ impl<'a> IscriptRunner<'a> {
             RallyTarget => unit?.rally_unit(),
             IrradiatedBy => unsafe { Unit::from_ptr((**unit?).irradiated_by) },
             BulletParent => unsafe { Unit::from_ptr((*bullet?).parent) },
-            BulletTarget => unsafe { Unit::from_ptr((*bullet?).target) },
+            BulletTarget => unsafe { Unit::from_ptr((*bullet?).target.unit) },
             BulletPreviousBounceTarget => {
                 unsafe { Unit::from_ptr((*bullet?).previous_bounce_target) }
             }
@@ -829,7 +841,7 @@ impl<'a> IscriptRunner<'a> {
                                 }
                             } else {
                                 match self.resolve_unit_ref(unit_ref) {
-                                    Some(s) => *s,
+                                    Some(s) => ptr::addr_of_mut!((**s).flingy),
                                     None => continue 'op_loop,
                                 }
                             };
@@ -852,10 +864,10 @@ impl<'a> IscriptRunner<'a> {
                                 }
                                 BulletVar::DeathTimer => (*bullet).death_timer = value as u8,
                                 BulletVar::OrderTargetX => {
-                                    (*bullet).order_target_pos.x = value as i16;
+                                    (*bullet).target.pos.x = value as i16;
                                 }
                                 BulletVar::OrderTargetY => {
-                                    (*bullet).order_target_pos.y = value as i16;
+                                    (*bullet).target.pos.y = value as i16;
                                 }
                             }
                         }
@@ -882,7 +894,7 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::PlagueTimer => (**unit).plague_timer = value as u8,
                                 UnitVar::MaelstormTimer => (**unit).maelstrom_timer = value as u8,
                                 UnitVar::IsBlind => (**unit).is_blind = value as u8,
-                                UnitVar::Hitpoints => (**unit).hitpoints = value,
+                                UnitVar::Hitpoints => (**unit).flingy.hitpoints = value,
                                 UnitVar::Shields => (**unit).shields = value,
                                 UnitVar::Energy => (**unit).energy = value as u16,
                                 UnitVar::MaxHitpoints => bw_print!("Cannot set max hitpoints"),
@@ -893,8 +905,7 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::SupplyCost => bw_print!("Cannot set supply cost"),
                                 UnitVar::OverlaySize => bw_print!("Cannot set overlay size"),
                                 UnitVar::Resources => if unit.id().is_resource_container() {
-                                    *((**unit).unit_specific2.as_mut_ptr() as *mut u16) =
-                                        value as u16;
+                                    (**unit).unit_specific2.resource.amount = value as u16;
                                 },
                                 UnitVar::HangarCountInside | UnitVar::HangarCountOutside =>
                                     bw_print!("Cannot set hangar count"),
@@ -916,8 +927,8 @@ impl<'a> IscriptRunner<'a> {
                                     if unit.tech_in_progress().is_some() ||
                                         unit.upgrade_in_progress().is_some()
                                     {
-                                        *((**unit).unit_specific.as_mut_ptr().add(6) as *mut u16)
-                                            = value as u16;
+                                        (**unit).unit_specific.building.research_time_remaining =
+                                            value as u16;
                                     }
                                 }
                             }
@@ -1024,7 +1035,7 @@ impl<'a> IscriptRunner<'a> {
                         Some(s) => s,
                         None => continue 'op_loop,
                     };
-                    (**unit).flingy_flags &= !0x8;
+                    (**unit).flingy.flingy_flags &= !0x8;
                     (**unit).order_wait = 0;
                 }
                 CREATE_UNIT => {
@@ -1095,7 +1106,7 @@ impl<'a> IscriptRunner<'a> {
                         continue;
                     }
                     let flingy = match self.get_flingy() {
-                        Some(s) => s,
+                        Some(s) => s as *mut bw::Unit,
                         None => {
                             // Global infloop
                             (*self.bw_script).pos = 0x5;
@@ -1196,10 +1207,12 @@ impl<'a> IscriptRunner<'a> {
         }
     }
 
-    fn get_flingy(&mut self) -> Option<*mut bw::Unit> {
+    fn get_flingy(&mut self) -> Option<*mut bw::Flingy> {
         self.init_sprite_owner();
-        let flingy = self.unit.map(|x| *x)
-            .or_else(|| self.bullet.map(|x| x as *mut bw::Unit));
+        let flingy = unsafe {
+            self.unit.map(|x| ptr::addr_of_mut!((**x).flingy))
+                .or_else(|| self.bullet.map(|x| ptr::addr_of_mut!((*x).flingy)))
+        };
         match flingy {
             Some(s) => Some(s),
             None => {
@@ -1480,15 +1493,15 @@ fn show_bullet_frame0_help() {
     }
 }
 
-unsafe fn set_flingy_var(flingy: *mut bw::Unit, ty: FlingyVar, value: i32) {
+unsafe fn set_flingy_var(flingy: *mut bw::Flingy, ty: FlingyVar, value: i32) {
     match ty {
         FlingyVar::MoveTargetX => {
-            (*flingy).move_target.x = value as i16;
+            (*flingy).move_target.pos.x = value as i16;
             (*flingy).next_move_waypoint.x = value as i16;
             (*flingy).unk_move_waypoint.x = value as i16;
         }
         FlingyVar::MoveTargetY => {
-            (*flingy).move_target.y = value as i16;
+            (*flingy).move_target.pos.y = value as i16;
             (*flingy).next_move_waypoint.y = value as i16;
             (*flingy).unk_move_waypoint.y = value as i16;
         }
@@ -1501,9 +1514,9 @@ unsafe fn set_flingy_var(flingy: *mut bw::Unit, ty: FlingyVar, value: i32) {
         FlingyVar::TargetDirection => {
             (*flingy).target_direction = degrees_to_bw_angle(value);
         }
-        FlingyVar::TurnSpeed => (*flingy).flingy_turn_speed = value as u8,
+        FlingyVar::TurnSpeed => (*flingy).turn_speed = value as u8,
         FlingyVar::Acceleration => (*flingy).acceleration = value as u16,
-        FlingyVar::TopSpeed => (*flingy).flingy_top_speed = value.max(0) as u32,
+        FlingyVar::TopSpeed => (*flingy).top_speed = value.max(0) as u32,
         FlingyVar::Speed => {
             (*flingy).current_speed = value;
             (*flingy).next_speed = value;
@@ -1561,7 +1574,7 @@ impl SpriteOwnerMap {
     pub fn get_unit(&self, sprite: *mut bw::Sprite) -> Option<Unit> {
         unsafe {
             if let Some(&unit) = self.unit_mapping.get(&sprite) {
-                if (*unit).sprite == sprite {
+                if (*unit).flingy.sprite == sprite {
                     return Unit::from_ptr(unit);
                 }
             }
@@ -1572,7 +1585,7 @@ impl SpriteOwnerMap {
     pub fn get_bullet(&self, sprite: *mut bw::Sprite) -> Option<*mut bw::Bullet> {
         unsafe {
             if let Some(&bullet) = self.bullet_mapping.get(&sprite) {
-                if (*bullet).sprite == sprite {
+                if (*bullet).flingy.sprite == sprite {
                     return Some(bullet);
                 }
             }
@@ -1589,18 +1602,18 @@ pub fn rebuild_sprite_owners() {
         let (units, len) = bw::unit_array();
         for i in 0..len {
             let unit = units.add(i);
-            let sprite = (*unit).sprite;
+            let sprite = (*unit).flingy.sprite;
             if !sprite.is_null() {
                 map.add_unit(Unit::from_ptr(unit).unwrap(), sprite);
             }
         }
         let mut bullet = bw::first_active_bullet();
         while !bullet.is_null() {
-            let sprite = (*bullet).sprite;
+            let sprite = (*bullet).flingy.sprite;
             if !sprite.is_null() {
                 map.add_bullet(bullet, sprite);
             }
-            bullet = (*bullet).next;
+            bullet = (*bullet).flingy.next as *mut bw::Bullet;
         }
     }
 }
@@ -1721,7 +1734,7 @@ pub unsafe extern fn create_unit_hook(
     let result = orig(id, x, y, player, skins);
     CREATING_UNIT.store(prev_creating, Ordering::Relaxed);
     if let Some(unit) = Unit::from_ptr(result as *mut bw::Unit) {
-        let sprite = (**unit).sprite;
+        let sprite = (**unit).flingy.sprite;
         if sprite.is_null() {
             bw_print!("ERROR: Unit {:x} was created without a sprite", id);
             return null_mut();
@@ -1729,7 +1742,7 @@ pub unsafe extern fn create_unit_hook(
             let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("create_unit_hook");
             sprite_owner_map.add_unit(unit, sprite);
             if let Some(subunit) = unit.subunit_linked() {
-                sprite_owner_map.add_unit(subunit, (**subunit).sprite);
+                sprite_owner_map.add_unit(subunit, (**subunit).flingy.sprite);
             }
         }
     }
@@ -1751,7 +1764,7 @@ pub unsafe extern fn create_bullet_hook(
     CREATING_BULLET.store(prev_creating, Ordering::Relaxed);
     if result.is_null() == false {
         let bullet = result as *mut bw::Bullet;
-        let sprite = (*bullet).sprite;
+        let sprite = (*bullet).flingy.sprite;
         if sprite.is_null() {
             bw_print!("ERROR: Bullet {:x} was created without a sprite", id);
             return null_mut();
@@ -1763,12 +1776,13 @@ pub unsafe extern fn create_bullet_hook(
     result
 }
 
-// Account for unit's sprite having changed due to transforming
-// by readding it to sprite_owner_map
-// (Probably a bit inefficient but unit can transform due to order (could be caught here),
-// but also player-sent command or even ai reacting to a hit)
 pub unsafe extern fn order_hook(u: *mut c_void, orig: unsafe extern fn(*mut c_void)) {
     let unit = Unit::from_ptr(u as *mut bw::Unit).unwrap();
+
+    // Account for unit's sprite having changed due to transforming
+    // by readding it to sprite_owner_map
+    // (Probably a bit inefficient but unit can transform due to order (could be caught here),
+    // but also player-sent command or even ai reacting to a hit)
     if let Some(sprite) = unit.sprite() {
         let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("order_hook");
         sprite_owner_map.add_unit(unit, *sprite);
@@ -1776,6 +1790,15 @@ pub unsafe extern fn order_hook(u: *mut c_void, orig: unsafe extern fn(*mut c_vo
     }
     CURRENT_ORDER_UNIT.store(u as usize, Ordering::Relaxed);
     orig(u);
+
+    // Make pylon auras run their iscript every frame, allowing them to be customized a bit
+    if let Some(aura) = unit.pylon_aura() {
+        for image in aura.images() {
+            let image = *image;
+            let iscript = ptr::addr_of_mut!((*image).iscript);
+            crate::samase::step_iscript(image, iscript, false);
+        }
+    }
     CURRENT_ORDER_UNIT.store(0, Ordering::Relaxed);
     CURRENT_ORDER_SPRITE.store(0, Ordering::Relaxed);
 }

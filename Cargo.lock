@@ -70,10 +70,9 @@ dependencies = [
 [[package]]
 name = "bw_dat"
 version = "0.1.0"
-source = "git+https://github.com/neivv/aise?rev=aeff0b9e979e16054479650a75a2beba326fbff9#aeff0b9e979e16054479650a75a2beba326fbff9"
+source = "git+https://github.com/neivv/aise?rev=e14ffaf62deb0d5f994e3f1ab60a971b810a2dfe#e14ffaf62deb0d5f994e3f1ab60a971b810a2dfe"
 dependencies = [
  "bitflags",
- "byteorder",
  "fxhash",
  "libc",
  "once_cell",
