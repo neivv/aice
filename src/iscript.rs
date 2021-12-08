@@ -1043,6 +1043,9 @@ impl<'a> IscriptRunner<'a> {
                     let x_expr = self.read_u32()? as usize;
                     let y_expr = self.read_u32()? as usize;
                     let player_expr = self.read_u32()? as usize;
+                    if self.dry_run {
+                        continue;
+                    }
                     let unit_id = &self.iscript.int_expressions[unit_id_expr];
                     let x = &self.iscript.int_expressions[x_expr];
                     let y = &self.iscript.int_expressions[y_expr];
@@ -1067,6 +1070,9 @@ impl<'a> IscriptRunner<'a> {
                     let order_id = OrderId(self.read_u8()?);
                     let x_expr = self.read_u32()? as usize;
                     let y_expr = self.read_u32()? as usize;
+                    if self.dry_run {
+                        continue;
+                    }
                     let x = &self.iscript.int_expressions[x_expr];
                     let y = &self.iscript.int_expressions[y_expr];
                     let mut eval_ctx = self.eval_ctx();
