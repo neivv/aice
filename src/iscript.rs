@@ -29,6 +29,7 @@ pub struct IscriptState {
     sprite_locals: FxHashMap<SerializableSprite, Vec<SpriteLocal>>,
     image_locals: FxHashMap<SerializableImage, FxHashMap<u32, u32>>,
     globals: Vec<i32>,
+    dry_run_call_stack: Vec<u32>,
 }
 
 const TEMP_LOCAL_ID: u32 = !0;
@@ -95,6 +96,7 @@ impl IscriptState {
             sprite_locals: FxHashMap::default(),
             image_locals: FxHashMap::default(),
             globals: vec![0; iscript.global_count as usize],
+            dry_run_call_stack: Vec::new(),
         }
     }
 }
@@ -727,12 +729,16 @@ impl<'a> IscriptRunner<'a> {
                 }
                 ANIMATION_START => {
                     // Avoid allocating imglocals if calls weren't used
-                    let needs_call_stack_reset = self.state
-                        .get_image_local(self.image, CALL_STACK_POS_ID)
-                        .filter(|&x| x != 0)
-                        .is_some();
-                    if needs_call_stack_reset {
-                        self.state.set_image_local(self.image, CALL_STACK_POS_ID, 0);
+                    if self.dry_run {
+                        self.state.dry_run_call_stack.clear();
+                    } else {
+                        let needs_call_stack_reset = self.state
+                            .get_image_local(self.image, CALL_STACK_POS_ID)
+                            .filter(|&x| x != 0)
+                            .is_some();
+                        if needs_call_stack_reset {
+                            self.state.set_image_local(self.image, CALL_STACK_POS_ID, 0);
+                        }
                     }
                     let header_index = ((*self.bw_script).header - 0x1c) / 8;
                     let animation = (*self.bw_script).animation;
@@ -768,34 +774,44 @@ impl<'a> IscriptRunner<'a> {
                     self.do_call(dest);
                 }
                 RETURN => {
-                    let call_stack_pos = self.state.get_image_local(self.image, CALL_STACK_POS_ID)
-                        .unwrap_or(0);
-                    if call_stack_pos == 0 {
-                        bw_print!(
-                            "Error {}: tried to return without using call",
-                            self.current_line(),
-                        );
-                        // Global infloop
-                        (*self.bw_script).pos = 0x5;
-                        self.in_aice_code = false;
+                    if self.dry_run {
+                        if let Some(ret) = self.state.dry_run_call_stack.pop() {
+                            self.jump_to(CodePosition::aice(ret));
+                        } else {
+                            (*self.bw_script).pos = 0x5;
+                            self.in_aice_code = false;
+                        }
                     } else {
-                        let return_pos = self.state.get_image_local(
-                            self.image,
-                            CALL_STACK_RETURN_POS_BASE + call_stack_pos - 1,
-                        );
-                        self.state.set_image_local(
-                            self.image,
-                            CALL_STACK_POS_ID,
-                            call_stack_pos - 1,
-                        );
-                        match return_pos {
-                            Some(return_pos) => {
-                                self.jump_to(CodePosition::aice(return_pos));
-                            }
-                            None => {
-                                warn!("Broken return");
-                                (*self.bw_script).pos = 0x5;
-                                self.in_aice_code = false;
+                        let call_stack_pos =
+                            self.state.get_image_local(self.image, CALL_STACK_POS_ID)
+                                .unwrap_or(0);
+                        if call_stack_pos == 0 {
+                            bw_print!(
+                                "Error {}: tried to return without using call",
+                                self.current_line(),
+                            );
+                            // Global infloop
+                            (*self.bw_script).pos = 0x5;
+                            self.in_aice_code = false;
+                        } else {
+                            let return_pos = self.state.get_image_local(
+                                self.image,
+                                CALL_STACK_RETURN_POS_BASE + call_stack_pos - 1,
+                            );
+                            self.state.set_image_local(
+                                self.image,
+                                CALL_STACK_POS_ID,
+                                call_stack_pos - 1,
+                            );
+                            match return_pos {
+                                Some(return_pos) => {
+                                    self.jump_to(CodePosition::aice(return_pos));
+                                }
+                                None => {
+                                    warn!("Broken return");
+                                    (*self.bw_script).pos = 0x5;
+                                    self.in_aice_code = false;
+                                }
                             }
                         }
                     }
@@ -1232,25 +1248,30 @@ impl<'a> IscriptRunner<'a> {
 
     fn do_call(&mut self, dest: CodePosition) {
         let return_pos = self.pos;
-        let call_stack_pos = self.state.get_image_local(self.image, CALL_STACK_POS_ID)
-            .unwrap_or(0);
-        if call_stack_pos >= CALL_STACK_LIMIT {
-            bw_print!(
-                "Error {}: call stack depth limit ({}) reached",
-                self.current_line(), CALL_STACK_LIMIT,
-            );
-        } else {
-            self.state.set_image_local(
-                self.image,
-                CALL_STACK_POS_ID,
-                call_stack_pos + 1,
-            );
-            self.state.set_image_local(
-                self.image,
-                CALL_STACK_RETURN_POS_BASE + call_stack_pos,
-                return_pos as u32,
-            );
+        if self.dry_run {
+            self.state.dry_run_call_stack.push(return_pos as u32);
             self.jump_to(dest);
+        } else {
+            let call_stack_pos = self.state.get_image_local(self.image, CALL_STACK_POS_ID)
+                .unwrap_or(0);
+            if call_stack_pos >= CALL_STACK_LIMIT {
+                bw_print!(
+                    "Error {}: call stack depth limit ({}) reached",
+                    self.current_line(), CALL_STACK_LIMIT,
+                );
+            } else {
+                self.state.set_image_local(
+                    self.image,
+                    CALL_STACK_POS_ID,
+                    call_stack_pos + 1,
+                );
+                self.state.set_image_local(
+                    self.image,
+                    CALL_STACK_RETURN_POS_BASE + call_stack_pos,
+                    return_pos as u32,
+                );
+                self.jump_to(dest);
+            }
         }
     }
 
