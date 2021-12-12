@@ -44,9 +44,9 @@ features = ["heapapi", "libloaderapi", "processthreadsapi", "winuser", "wingdi"]
 
 [dependencies.samase_shim]
 git = "https://github.com/neivv/samase_plugin"
-rev = "80a88f4a775a5c8b0a1efd2c2c9e1a3d369c9135"
+rev = "14a9629b02401d7f0e3af7bbc05a3bf39abfe9fe"
 
 [dependencies.bw_dat]
 git = "https://github.com/neivv/aise"
-rev = "e14ffaf62deb0d5f994e3f1ab60a971b810a2dfe"
+rev = "83c1c6482081aa01c6d93f4944d95798c72f8630"
 features = ["serde"]

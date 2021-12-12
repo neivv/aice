@@ -256,7 +256,7 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     bw_dat::set_is_scr(crate::is_scr());
-    let required_version = 33;
+    let required_version = 34;
     if (*api).version < required_version {
         fatal(&format!(
             "Newer samase is required. (Plugin API version {}, this plugin requires version {})",
@@ -356,6 +356,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     if result == 0 {
         fatal("Couldn't hook step_order");
     }
+    ((*api).hook_game_loop_start)(crate::globals::on_game_loop);
 
     crate::init();
 }

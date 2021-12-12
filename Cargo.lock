@@ -70,7 +70,7 @@ dependencies = [
 [[package]]
 name = "bw_dat"
 version = "0.1.0"
-source = "git+https://github.com/neivv/aise?rev=e14ffaf62deb0d5f994e3f1ab60a971b810a2dfe#e14ffaf62deb0d5f994e3f1ab60a971b810a2dfe"
+source = "git+https://github.com/neivv/aise?rev=83c1c6482081aa01c6d93f4944d95798c72f8630#83c1c6482081aa01c6d93f4944d95798c72f8630"
 dependencies = [
  "bitflags",
  "fxhash",
@@ -357,7 +357,7 @@ dependencies = [
 [[package]]
 name = "samase_plugin"
 version = "0.5.0"
-source = "git+https://github.com/neivv/samase_plugin?rev=80a88f4a775a5c8b0a1efd2c2c9e1a3d369c9135#80a88f4a775a5c8b0a1efd2c2c9e1a3d369c9135"
+source = "git+https://github.com/neivv/samase_plugin?rev=14a9629b02401d7f0e3af7bbc05a3bf39abfe9fe#14a9629b02401d7f0e3af7bbc05a3bf39abfe9fe"
 dependencies = [
  "byteorder",
  "flate2",
@@ -372,7 +372,7 @@ dependencies = [
 [[package]]
 name = "samase_shim"
 version = "0.5.0"
-source = "git+https://github.com/neivv/samase_plugin?rev=80a88f4a775a5c8b0a1efd2c2c9e1a3d369c9135#80a88f4a775a5c8b0a1efd2c2c9e1a3d369c9135"
+source = "git+https://github.com/neivv/samase_plugin?rev=14a9629b02401d7f0e3af7bbc05a3bf39abfe9fe#14a9629b02401d7f0e3af7bbc05a3bf39abfe9fe"
 dependencies = [
  "byteorder",
  "libc",
