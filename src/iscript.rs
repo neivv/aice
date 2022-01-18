@@ -126,6 +126,9 @@ pub unsafe extern fn run_aice_script(
         }
     };
     let game = Game::from_ptr(bw::game());
+    let (active_unit, active_bullet) = bw::active_iscript_objects();
+    let active_unit = Unit::from_ptr(active_unit);
+    let active_bullet = Some(active_bullet).filter(|x| !x.is_null());
 
     let step_order_unit = CURRENT_ORDER_UNIT.load(Ordering::Relaxed);
     if step_order_unit != 0 {
@@ -154,6 +157,8 @@ pub unsafe extern fn run_aice_script(
             game,
             &mut globals.player_lobby_color_choices,
             &mut sprite_owner_map,
+            active_unit,
+            active_bullet,
         );
         let result = runner.run_script();
         aice_offset = runner.pos;
@@ -196,7 +201,6 @@ struct CustomCtx<'a, 'b> {
     image: *mut bw::Image,
     unit: Option<Unit>,
     bullet: Option<*mut bw::Bullet>,
-    dry_run: bool,
     evaluate_default: bool,
 }
 
@@ -229,15 +233,9 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                         let flingy = match flingy {
                             Some(s) => s,
                             None => {
-                                // Don't error on dry run as bw runs movement
-                                // animation for a bit until before the unit
-                                // is even fully created.
-                                // Alternatively could get unit ptr from first_free_unit.
-                                if !self.dry_run {
-                                    self.parent.report_missing_parent("flingy");
-                                    show_unit_frame0_help();
-                                    show_bullet_frame0_help();
-                                }
+                                self.parent.report_missing_parent("flingy");
+                                show_unit_frame0_help();
+                                show_bullet_frame0_help();
                                 return i32::min_value();
                             }
                         };
@@ -519,6 +517,8 @@ struct IscriptRunner<'a> {
     unit: Option<Unit>,
     bullet: Option<*mut bw::Bullet>,
     player_lobby_color_choices: &'a mut PlayerColorChoices,
+    active_iscript_unit: Option<Unit>,
+    active_iscript_bullet: Option<*mut bw::Bullet>,
 }
 
 enum ScriptRunResult {
@@ -539,6 +539,8 @@ impl<'a> IscriptRunner<'a> {
         game: Game,
         player_lobby_color_choices: &'a mut PlayerColorChoices,
         sprite_owner_map: &'a mut SpriteOwnerMap,
+        active_iscript_unit: Option<Unit>,
+        active_iscript_bullet: Option<*mut bw::Bullet>,
     ) -> IscriptRunner<'a> {
         IscriptRunner {
             iscript,
@@ -555,28 +557,38 @@ impl<'a> IscriptRunner<'a> {
             unit: None,
             bullet: None,
             player_lobby_color_choices,
+            active_iscript_unit,
+            active_iscript_bullet,
         }
     }
 
     fn init_sprite_owner(&mut self) {
         unsafe {
             if !self.owner_read {
+                let sprite = (*self.image).parent;
                 self.owner_read = true;
-                self.unit = self.sprite_owner_map.get_unit((*self.image).parent)
+                self.unit = self.active_iscript_unit
+                    .filter(|x| match x.sprite() {
+                        Some(x) => *x == sprite,
+                        None => false,
+                    })
+                    .or_else(|| self.sprite_owner_map.get_unit(sprite))
                     .or_else(|| {
                         // Semi-hacky fallback to make pylon auras use parent unit as well
                         // when stepping their frame.
                         let step_order_unit = CURRENT_ORDER_UNIT.load(Ordering::Relaxed);
                         if let Some(unit) = Unit::from_ptr(step_order_unit as *mut bw::Unit) {
                             if let Some(aura) = unit.pylon_aura() {
-                                if *aura == (*self.image).parent {
+                                if *aura == sprite {
                                     return Some(unit);
                                 }
                             }
                         }
                         None
                     });
-                self.bullet = self.sprite_owner_map.get_bullet((*self.image).parent);
+                self.bullet = self.active_iscript_bullet
+                    .filter(|&x| (*x).flingy.sprite == sprite)
+                    .or_else(|| self.sprite_owner_map.get_bullet(sprite));
             }
         }
     }
@@ -590,7 +602,6 @@ impl<'a> IscriptRunner<'a> {
                 image: self.image,
                 bullet: self.bullet,
                 unit: self.unit,
-                dry_run: self.dry_run,
                 parent: self,
                 evaluate_default: false,
             },

@@ -165,6 +165,11 @@ pub fn is_multiplayer() -> bool {
     unsafe { (IS_MULTIPLAYER.0.unwrap())() != 0 }
 }
 
+static mut ISCRIPT_OBJECTS:
+    GlobalFunc<extern fn(*mut *mut c_void, *const *mut c_void)> = GlobalFunc(None);
+pub unsafe fn active_iscript_objects(read: *mut *mut c_void, write: *const *mut c_void) {
+    (ISCRIPT_OBJECTS.0.unwrap())(read, write)
+}
 
 static mut ISSUE_ORDER: GlobalFunc<
     unsafe extern fn(*mut bw::Unit, u32, u32, u32, *mut bw::Unit, u32),
@@ -244,7 +249,7 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     bw_dat::set_is_scr(crate::is_scr());
-    let required_version = 34;
+    let required_version = 35;
     if (*api).version < required_version {
         fatal(&format!(
             "Newer samase is required. (Plugin API version {}, this plugin requires version {})",
@@ -309,6 +314,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     ISSUE_ORDER.0 = Some(mem::transmute(((*api).issue_order)()));
     ADD_OVERLAY_ISCRIPT.0 = Some(mem::transmute(((*api).add_overlay_iscript)()));
     STEP_ISCRIPT.0 = Some(mem::transmute(((*api).step_iscript)()));
+    ISCRIPT_OBJECTS.0 = Some(mem::transmute(((*api).active_iscript_objects)()));
     let result = ((*api).extend_save)(
         "aice\0".as_ptr(),
         Some(crate::globals::save),
