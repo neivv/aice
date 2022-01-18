@@ -1625,24 +1625,6 @@ pub fn rebuild_sprite_owners() {
     let mut map = SPRITE_OWNER_MAP.lock("rebuild_sprite_owners");
     map.unit_mapping.clear();
     map.bullet_mapping.clear();
-    unsafe {
-        let (units, len) = bw::unit_array();
-        for i in 0..len {
-            let unit = units.add(i);
-            let sprite = (*unit).flingy.sprite;
-            if !sprite.is_null() {
-                map.add_unit(Unit::from_ptr(unit).unwrap(), sprite);
-            }
-        }
-        let mut bullet = bw::first_active_bullet();
-        while !bullet.is_null() {
-            let sprite = (*bullet).flingy.sprite;
-            if !sprite.is_null() {
-                map.add_bullet(bullet, sprite);
-            }
-            bullet = (*bullet).flingy.next as *mut bw::Bullet;
-        }
-    }
 }
 
 unsafe fn invalid_aice_command(iscript: *mut bw::Iscript, image: *mut bw::Image, offset: CodePos) {
