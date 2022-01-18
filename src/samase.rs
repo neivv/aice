@@ -71,11 +71,6 @@ pub fn first_hidden_unit() -> *mut bw::Unit {
     unsafe { FIRST_HIDDEN_UNIT.0.map(|x| x()).unwrap_or(null_mut()) }
 }
 
-static mut FIRST_ACTIVE_BULLET: GlobalFunc<extern fn() -> *mut bw::Bullet> = GlobalFunc(None);
-pub fn first_active_bullet() -> *mut bw::Bullet {
-    unsafe { FIRST_ACTIVE_BULLET.0.map(|x| x()).unwrap_or(null_mut()) }
-}
-
 static mut FIRST_FOW_SPRITE: GlobalFunc<extern fn() -> *mut bw::LoneSprite> = GlobalFunc(None);
 pub fn first_fow_sprite() -> *mut bw::LoneSprite {
     unsafe { FIRST_FOW_SPRITE.0.map(|x| x()).unwrap_or(null_mut()) }
@@ -170,13 +165,6 @@ pub fn is_multiplayer() -> bool {
     unsafe { (IS_MULTIPLAYER.0.unwrap())() != 0 }
 }
 
-static mut UNIT_ARRAY_LEN: GlobalFunc<extern fn(*mut *mut bw::Unit, *mut usize)> = GlobalFunc(None);
-pub unsafe fn unit_array() -> (*mut bw::Unit, usize) {
-    let mut arr = null_mut();
-    let mut len = 0;
-    (UNIT_ARRAY_LEN.0.unwrap())(&mut arr, &mut len);
-    (arr, len)
-}
 
 static mut ISSUE_ORDER: GlobalFunc<
     unsafe extern fn(*mut bw::Unit, u32, u32, u32, *mut bw::Unit, u32),
@@ -283,10 +271,6 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         ((*api).first_active_unit)().map(|x| mem::transmute(x)),
         "first active unit",
     );
-    FIRST_ACTIVE_BULLET.init(
-        ((*api).first_active_bullet)().map(|x| mem::transmute(x)),
-        "first active bullet",
-    );
     FIRST_HIDDEN_UNIT.init(
         ((*api).first_hidden_unit)().map(|x| mem::transmute(x)),
         "first hidden unit",
@@ -322,7 +306,6 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     FINISH_UNIT_POST.0 = Some(mem::transmute(((*api).finish_unit_post)()));
     GIVE_AI.0 = Some(mem::transmute(((*api).give_ai)()));
     IS_MULTIPLAYER.0 = Some(mem::transmute(((*api).is_multiplayer)()));
-    UNIT_ARRAY_LEN.0 = Some(mem::transmute(((*api).unit_array_len)()));
     ISSUE_ORDER.0 = Some(mem::transmute(((*api).issue_order)()));
     ADD_OVERLAY_ISCRIPT.0 = Some(mem::transmute(((*api).add_overlay_iscript)()));
     STEP_ISCRIPT.0 = Some(mem::transmute(((*api).step_iscript)()));

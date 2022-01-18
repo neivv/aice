@@ -18,10 +18,6 @@ pub fn game() -> *mut Game {
     samase::game()
 }
 
-pub fn first_active_bullet() -> *mut Bullet {
-    samase::first_active_bullet()
-}
-
 pub fn first_lone_sprite() -> *mut LoneSprite {
     samase::first_lone_sprite()
 }
@@ -54,10 +50,6 @@ pub fn finish_unit_post(unit: bw_dat::Unit) {
 
 pub fn give_ai(unit: bw_dat::Unit) {
     unsafe { samase::give_ai(*unit) }
-}
-
-pub fn unit_array() -> (*mut Unit, usize) {
-    unsafe { samase::unit_array() }
 }
 
 pub unsafe fn issue_order(
