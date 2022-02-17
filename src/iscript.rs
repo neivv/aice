@@ -1505,6 +1505,7 @@ unsafe fn image_play_frame(image: *mut bw::Image, frameset: u16) -> Result<(), u
         }
         (*image).frameset = frameset;
         (*image).frame = frame;
+        (*image).flags |= 0x1;
     }
     Ok(())
 }
