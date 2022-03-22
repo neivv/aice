@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use byteorder::{ReadBytesExt, LE};
+use byteorder::{ByteOrder, LittleEndian};
 use fxhash::FxHashMap;
 use lazy_static::lazy_static;
 use libc::c_void;
@@ -998,6 +998,10 @@ impl<'a> IscriptRunner<'a> {
                                     self.current_line(), (*bullet).weapon_id,
                                 );
                             }
+                            // Don't keep dangling bullets in sprite_owner_map
+                            // to be compatible with bullet limit extenders that free bullet
+                            // memory on deletion.
+                            self.sprite_owner_map.remove_bullet(*sprite);
                         } else if let Some(unit) = self.unit {
                             if unit.order() != bw_dat::order::DIE {
                                 bw_print!(
@@ -1438,7 +1442,7 @@ impl<'a> IscriptRunner<'a> {
     fn read_u8(&mut self) -> Result<u8, u32> {
         match self.iscript.aice_data.get(self.pos) {
             Some(&s) => {
-                self.pos += 1;
+                self.pos = self.pos.wrapping_add(1);
                 Ok(s)
             }
             None => Err(self.pos as u32),
@@ -1446,20 +1450,20 @@ impl<'a> IscriptRunner<'a> {
     }
 
     fn read_u16(&mut self) -> Result<u16, u32> {
-        match self.iscript.aice_data.get(self.pos..).and_then(|mut x| x.read_u16::<LE>().ok()) {
+        match self.iscript.aice_data.get(self.pos..).and_then(|x| x.get(..2)) {
             Some(s) => {
-                self.pos += 2;
-                Ok(s)
+                self.pos = self.pos.wrapping_add(2);
+                Ok(LittleEndian::read_u16(s))
             }
             None => Err(self.pos as u32),
         }
     }
 
     fn read_u32(&mut self) -> Result<u32, u32> {
-        match self.iscript.aice_data.get(self.pos..).and_then(|mut x| x.read_u32::<LE>().ok()) {
+        match self.iscript.aice_data.get(self.pos..).and_then(|x| x.get(..4)) {
             Some(s) => {
-                self.pos += 4;
-                Ok(s)
+                self.pos = self.pos.wrapping_add(4);
+                Ok(LittleEndian::read_u32(s))
             }
             None => Err(self.pos as u32),
         }
@@ -1630,6 +1634,10 @@ impl SpriteOwnerMap {
             }
             None
         }
+    }
+
+    pub fn remove_bullet(&mut self, sprite: *mut bw::Sprite) {
+        self.bullet_mapping.remove(&sprite);
     }
 }
 
