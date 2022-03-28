@@ -322,7 +322,9 @@ bullets accelerate one unit per frame.
 - `flingy.top_speed` Flingy's top speed, starts equivalent to the flingy.dat value
 - `flingy.speed` Flingy's current speed, valid also for iscript movement flingies
 - `flingy.player` Flingy's player
-- `bullet.weapon_id` Bullet's weapon ID
+- `flingy.flingy_id` Flingy's flingy.dat ID
+    * This value can be modified, though exact effects are not known.
+- `bullet.weapon_id` Bullet's weapons.dat ID
 - `bullet.death_timer` Death timer for a bullet (frames). If BW decrements it to 0 the bullet
 automatically dies unless it a bouncing bullet.
 - `bullet.state` Bullet's state. Setting this can be used to script bullet's behaviour, but
@@ -336,6 +338,19 @@ looking at BW's code to understand the details is recommended.
     * `6` Bullet is moving near an unit (Valkyrie attack)
 - `bullet.bounces_remaining` Amount of bounces remaining. Only used if `bullet.state` is 3
 - `bullet.order_target_x` and `bullet.order_target_y` The point which bullet is targeting
+- `unit.kills` How many kills the unit has
+- `unit.carried_resource_amount` How many resources a worker is carrying (That is, usually 8, 2, or 0)
+- `unit.ground_cooldown` How many frames of cooldown are remaining before the unit can attack again
+with its ground weapon
+- `unit.air_cooldown` How many frames of cooldown are remaining before the unit can attack again
+with its air weapon
+- `unit.spell_cooldown` How many frames of cooldown are remaining before the unit can cast another
+spell
+- `unit.speed` The unit's current speed, in flingy.dat units but also applicable to units using iscript
+movement
+variables instead)
+- `unit.unit_id` Unit's units.dat ID
+    * This value cannot be modified.
 - `unit.hitpoints` Current hitpoints of the unit (256 times displayed value).
     * Setting hitpoints above maximum value makes the game freeze when damaging a building with
     damage overlays.
@@ -393,6 +408,16 @@ looking at BW's code to understand the details is recommended.
     * This value can be modified, though it can cause unit to finish without full HP.
 - `unit.remaining_research_time` Frames until the upgrade/tech research is complete.
     0 if no research is in progress.
+- `unit.order` Unit's current order ID
+    * This value cannot be modified. `issue_order` can be used instead.
+- `unit.order_state` Value that may change depending on what part of the order unit is.
+    For example, some spell orders use 0 for first frame, 1 for "moving to range" part,
+    and 2 for casting the spell.
+- `unit.order_timer` Timer value that current order may use. Meaning depends on current order.
+- `unit.rank_increase` Allows increasing (Maybe also decreasing?) unit's rank from units.dat value.
+    This seems to be unused functionality that may still work.
+- `unit.mine_amount` Spider mines remaining for vulture units. Note that if the tech isn't usable,
+    reading this value returns 0, but writing this value sets mine amount once tech becomes usable.
 - `image.frame` The latest frameset base that was specified with `playfram`, or copied from
     the primary overlay by using `followmaingraphic`, `engset`, or `engframe`.
     * This value cannot be modified with `set`, use `playfram <value>` instead.

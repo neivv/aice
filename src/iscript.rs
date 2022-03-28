@@ -258,6 +258,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             FlingyVar::PositionX => (*flingy).position.x as i32,
                             FlingyVar::PositionY => (*flingy).position.y as i32,
                             FlingyVar::Player => (*(flingy as *mut bw::Unit)).player as i32,
+                            FlingyVar::FlingyId => (*flingy).flingy_id as i32,
                         }
                     },
                     Place::Bullet(ty) => unsafe {
@@ -355,6 +356,18 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                     0
                                 }
                             }
+                            UnitVar::UnitId => unit.id().0 as i32,
+                            UnitVar::Kills => unit.kills() as i32,
+                            UnitVar::CarriedResourceAmount =>
+                                unit.carried_resource_amount() as i32,
+                            UnitVar::GroundCooldown => (**unit).ground_cooldown as i32,
+                            UnitVar::AirCooldown => (**unit).air_cooldown as i32,
+                            UnitVar::SpellCooldown => (**unit).spell_cooldown as i32,
+                            UnitVar::Order => unit.order().0 as i32,
+                            UnitVar::OrderTimer => (**unit).order_timer as i32,
+                            UnitVar::OrderState => (**unit).order_state as i32,
+                            UnitVar::RankIncrease => (**unit).rank as i32,
+                            UnitVar::MineAmount => unit.mine_amount(self.parent.game) as i32,
                         }
                     },
                     Place::Image(ty) => unsafe {
@@ -909,21 +922,23 @@ impl<'a> IscriptRunner<'a> {
                                     continue 'op_loop;
                                 }
                             };
+                            let val_u16 = clamp_i32_u16(value);
+                            let val_u8 = clamp_i32_u8(value);
                             match ty {
-                                UnitVar::DeathTimer => (**unit).death_timer = value as u16,
-                                UnitVar::MatrixTimer => (**unit).matrix_timer = value as u8,
-                                UnitVar::MatrixHp => (**unit).defensive_matrix_dmg = value as u16,
-                                UnitVar::StimTimer => (**unit).stim_timer = value as u8,
-                                UnitVar::EnsnareTimer => (**unit).ensnare_timer = value as u8,
-                                UnitVar::LockdownTimer => (**unit).lockdown_timer = value as u8,
-                                UnitVar::IrradiateTimer => (**unit).irradiate_timer = value as u8,
-                                UnitVar::StasisTimer => (**unit).stasis_timer = value as u8,
-                                UnitVar::PlagueTimer => (**unit).plague_timer = value as u8,
-                                UnitVar::MaelstormTimer => (**unit).maelstrom_timer = value as u8,
-                                UnitVar::IsBlind => (**unit).is_blind = value as u8,
+                                UnitVar::DeathTimer => (**unit).death_timer = val_u16,
+                                UnitVar::MatrixTimer => (**unit).matrix_timer = val_u8,
+                                UnitVar::MatrixHp => (**unit).defensive_matrix_dmg = val_u16,
+                                UnitVar::StimTimer => (**unit).stim_timer = val_u8,
+                                UnitVar::EnsnareTimer => (**unit).ensnare_timer = val_u8,
+                                UnitVar::LockdownTimer => (**unit).lockdown_timer = val_u8,
+                                UnitVar::IrradiateTimer => (**unit).irradiate_timer = val_u8,
+                                UnitVar::StasisTimer => (**unit).stasis_timer = val_u8,
+                                UnitVar::PlagueTimer => (**unit).plague_timer = val_u8,
+                                UnitVar::MaelstormTimer => (**unit).maelstrom_timer = val_u8,
+                                UnitVar::IsBlind => (**unit).is_blind = val_u8,
                                 UnitVar::Hitpoints => (**unit).flingy.hitpoints = value,
                                 UnitVar::Shields => (**unit).shields = value,
-                                UnitVar::Energy => (**unit).energy = value as u16,
+                                UnitVar::Energy => (**unit).energy = val_u16,
                                 UnitVar::MaxHitpoints => bw_print!("Cannot set max hitpoints"),
                                 UnitVar::MaxShields => bw_print!("Cannot set max shields"),
                                 UnitVar::MaxEnergy => bw_print!("Cannot set max energy"),
@@ -932,7 +947,7 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::SupplyCost => bw_print!("Cannot set supply cost"),
                                 UnitVar::OverlaySize => bw_print!("Cannot set overlay size"),
                                 UnitVar::Resources => if unit.id().is_resource_container() {
-                                    (**unit).unit_specific2.resource.amount = value as u16;
+                                    (**unit).unit_specific2.resource.amount = val_u16;
                                 },
                                 UnitVar::HangarCountInside | UnitVar::HangarCountOutside =>
                                     bw_print!("Cannot set hangar count"),
@@ -944,18 +959,43 @@ impl<'a> IscriptRunner<'a> {
                                     if vars[0] < 5 {
                                         let index = ((**unit).current_build_slot as usize)
                                             .wrapping_add(vars[0] as usize) % 5;
-                                        (**unit).build_queue[index] = value as u16;
+                                        (**unit).build_queue[index] = val_u16;
                                     }
                                 }
                                 UnitVar::RemainingBuildTime => {
-                                    (**unit).remaining_build_time = value as u16;
+                                    (**unit).remaining_build_time = val_u16;
                                 }
                                 UnitVar::RemainingResearchTime => {
                                     if unit.tech_in_progress().is_some() ||
                                         unit.upgrade_in_progress().is_some()
                                     {
                                         (**unit).unit_specific.building.research_time_remaining =
-                                            value as u16;
+                                            val_u16;
+                                    }
+                                }
+                                UnitVar::UnitId => bw_print!("Cannot set unit id"),
+                                UnitVar::Kills => (**unit).kills = val_u8,
+                                UnitVar::CarriedResourceAmount => {
+                                    if unit.id().is_worker() {
+                                        (**unit).unit_specific.worker.carried_resource_count =
+                                            val_u8;
+                                    }
+                                }
+                                UnitVar::GroundCooldown => (**unit).ground_cooldown = val_u8,
+                                UnitVar::AirCooldown => (**unit).air_cooldown = val_u8,
+                                UnitVar::SpellCooldown => (**unit).spell_cooldown = val_u8,
+                                UnitVar::Order => bw_print!("Cannot set order"),
+                                UnitVar::OrderTimer => (**unit).order_timer = val_u8,
+                                UnitVar::OrderState => (**unit).order_state = val_u8,
+                                UnitVar::RankIncrease => (**unit).rank =
+                                    clamp_i32_iu8(value) as u8,
+                                UnitVar::MineAmount => {
+                                    if matches!(
+                                        unit.id(),
+                                        bw_dat::unit::VULTURE |
+                                        bw_dat::unit::JIM_RAYNOR_VULTURE
+                                    ) {
+                                        (**unit).unit_specific.vulture.mines = val_u8;
                                     }
                                 }
                             }
@@ -997,6 +1037,10 @@ impl<'a> IscriptRunner<'a> {
                                     without bullet being in death state (bullet.state = 5)",
                                     self.current_line(), (*bullet).weapon_id,
                                 );
+                                // Global infloop
+                                (*self.bw_script).pos = 0x5;
+                                self.in_aice_code = false;
+                                continue;
                             }
                             // Don't keep dangling bullets in sprite_owner_map
                             // to be compatible with bullet limit extenders that free bullet
@@ -1009,6 +1053,10 @@ impl<'a> IscriptRunner<'a> {
                                     while the unit is still alive",
                                     self.current_line(), unit.id().0,
                                 );
+                                // Global infloop
+                                (*self.bw_script).pos = 0x5;
+                                self.in_aice_code = false;
+                                continue;
                             }
                         }
                     }
@@ -1474,6 +1522,10 @@ fn clamp_i32_u16(val: i32) -> u16 {
     val.max(0).min(i32::from(u16::MAX)) as u16
 }
 
+fn clamp_i32_u8(val: i32) -> u8 {
+    val.max(0).min(i32::from(u8::MAX)) as u8
+}
+
 fn clamp_i32_iu8(val: i32) -> i8 {
     if val < 0 {
         val.max(i8::MIN.into()) as i8
@@ -1558,7 +1610,7 @@ unsafe fn set_flingy_var(flingy: *mut bw::Flingy, ty: FlingyVar, value: i32) {
             (*flingy).target_direction = degrees_to_bw_angle(value);
         }
         FlingyVar::TurnSpeed => (*flingy).turn_speed = value as u8,
-        FlingyVar::Acceleration => (*flingy).acceleration = value as u16,
+        FlingyVar::Acceleration => (*flingy).acceleration = clamp_i32_u16(value),
         FlingyVar::TopSpeed => (*flingy).top_speed = value.max(0) as u32,
         FlingyVar::Speed => {
             (*flingy).current_speed = value;
@@ -1568,6 +1620,7 @@ unsafe fn set_flingy_var(flingy: *mut bw::Flingy, ty: FlingyVar, value: i32) {
         FlingyVar::PositionX => bw_print!("Cannot set flingy pos"),
         FlingyVar::PositionY => bw_print!("Cannot set flingy pos"),
         FlingyVar::Player => bw_print!("Cannot set player"),
+        FlingyVar::FlingyId => (*flingy).flingy_id = clamp_i32_u16(value),
     }
 }
 

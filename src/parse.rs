@@ -538,6 +538,7 @@ static BW_PLACES: &[(&[u8], PlaceId)] = {
         (b"flingy.top_speed", flingy(TopSpeed)),
         (b"flingy.speed", flingy(Speed)),
         (b"flingy.player", flingy(Player)),
+        (b"flingy.flingy_id", flingy(FlingyId)),
         (b"bullet.weapon_id", bullet(WeaponId)),
         (b"bullet.death_timer", bullet(BulletVar::DeathTimer)),
         (b"bullet.state", bullet(State)),
@@ -627,6 +628,17 @@ static UNIT_VARS: &[(&[u8], UnitVar)] = {
         (b"remaining_build_time", RemainingBuildTime),
         (b"remaining_research_time", RemainingResearchTime),
         (b"overlay_size", OverlaySize),
+        (b"unit_id", UnitId),
+        (b"kills", Kills),
+        (b"carried_resource_amount", CarriedResourceAmount),
+        (b"ground_cooldown", GroundCooldown),
+        (b"air_cooldown", AirCooldown),
+        (b"spell_cooldown", SpellCooldown),
+        (b"order", Order),
+        (b"order_timer", OrderTimer),
+        (b"order_state", OrderState),
+        (b"rank_increase", RankIncrease),
+        (b"mine_amount", MineAmount),
     ]
 };
 
@@ -645,6 +657,7 @@ static FLINGY_VARS: &[(&[u8], FlingyVar)] = {
         (b"top_speed", TopSpeed),
         (b"speed", Speed),
         (b"player", Player),
+        (b"flingy_id", FlingyId),
     ]
 };
 
@@ -1818,6 +1831,7 @@ pub enum FlingyVar {
     Speed,
     // Not really a flingy var but too lazy to implement entity just for this
     Player,
+    FlingyId,
 }
 
 #[repr(u8)]
@@ -1864,6 +1878,17 @@ pub enum UnitVar {
     RemainingBuildTime,
     RemainingResearchTime,
     OverlaySize,
+    UnitId,
+    Kills,
+    CarriedResourceAmount,
+    GroundCooldown,
+    AirCooldown,
+    SpellCooldown,
+    Order,
+    OrderTimer,
+    OrderState,
+    RankIncrease,
+    MineAmount,
 }
 
 #[repr(u8)]
