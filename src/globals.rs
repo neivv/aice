@@ -94,6 +94,7 @@ pub unsafe fn init_for_lobby_map_preview() -> crate::parse::Iscript {
     let iscript = iscript::load_iscript(true);
     globals.iscript_state = iscript::IscriptState::from_script(&iscript);
     *Globals::get("init") = globals;
+    bw::init_game_start_vars();
     iscript
 }
 
@@ -107,6 +108,7 @@ pub unsafe extern fn init_game() {
     globals.player_lobby_color_choices = PlayerColorChoices::init(&colors, players);
     *Globals::get("init") = globals;
     iscript::rebuild_sprite_owners();
+    bw::init_game_start_vars();
 }
 
 pub unsafe extern fn on_game_loop() {

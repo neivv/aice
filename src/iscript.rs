@@ -528,6 +528,7 @@ struct IscriptRunner<'a> {
     owner_read: bool,
     game: Game,
     unit: Option<Unit>,
+    map_tile_flags: Option<*mut u32>,
     bullet: Option<*mut bw::Bullet>,
     player_lobby_color_choices: &'a mut PlayerColorChoices,
     active_iscript_unit: Option<Unit>,
@@ -569,6 +570,7 @@ impl<'a> IscriptRunner<'a> {
             in_aice_code: true,
             unit: None,
             bullet: None,
+            map_tile_flags: None,
             player_lobby_color_choices,
             active_iscript_unit,
             active_iscript_bullet,
@@ -611,6 +613,8 @@ impl<'a> IscriptRunner<'a> {
         bw_dat::expr::EvalCtx {
             game: Some(self.game),
             unit: self.unit,
+            map_tile_flags:
+                Some(*self.map_tile_flags.get_or_insert_with(|| bw::map_tile_flags())),
             custom: CustomCtx {
                 image: self.image,
                 bullet: self.bullet,

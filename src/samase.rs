@@ -96,6 +96,11 @@ pub fn players() -> *mut bw::Player {
     unsafe { PLAYERS.get()() }
 }
 
+static mut MAP_TILE_FLAGS: GlobalFunc<extern fn() -> *mut u32> = GlobalFunc(None);
+pub fn map_tile_flags() -> *mut u32 {
+    unsafe { MAP_TILE_FLAGS.get()() }
+}
+
 static mut GET_ISCRIPT_BIN: GlobalFunc<extern fn() -> *mut u8> = GlobalFunc(None);
 pub fn get_iscript_bin() -> *mut u8 {
     unsafe { GET_ISCRIPT_BIN.get()() }
@@ -283,6 +288,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     FIRST_LONE_SPRITE.try_init(((*api).first_lone_sprite)().map(|x| mem::transmute(x)));
     FIRST_FOW_SPRITE.try_init(((*api).first_fow_sprite)().map(|x| mem::transmute(x)));
     PLAYERS.init(((*api).players)().map(|x| mem::transmute(x)), "players");
+    MAP_TILE_FLAGS.init(((*api).map_tile_flags)().map(|x| mem::transmute(x)), "map_tile_flags");
     let read_file = ((*api).read_file)();
     READ_FILE.0 = Some(mem::transmute(read_file));
     let mut dat_len = 0usize;

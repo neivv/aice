@@ -1,6 +1,8 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::samase;
 
 use bw_dat::{OrderId, UnitId};
@@ -12,6 +14,12 @@ pub fn orders_dat() -> &'static [DatTable] {
         let dat = samase::orders_dat() as *const DatTable;
         std::slice::from_raw_parts(dat, 0x10)
     }
+}
+
+static MAP_TILE_FLAGS: AtomicUsize = AtomicUsize::new(0);
+
+pub unsafe fn init_game_start_vars() {
+    MAP_TILE_FLAGS.store(0, Ordering::Relaxed);
 }
 
 pub fn game() -> *mut Game {
@@ -68,4 +76,13 @@ pub fn active_iscript_objects() -> (*mut Unit, *mut Bullet) {
         samase::active_iscript_objects(buf.as_mut_ptr(), std::ptr::null());
         (buf[1] as *mut Unit, buf[2] as *mut Bullet)
     }
+}
+
+pub fn map_tile_flags() -> *mut u32 {
+    let mut val = MAP_TILE_FLAGS.load(Ordering::Relaxed);
+    if val == 0 {
+        val = samase::map_tile_flags() as usize;
+        MAP_TILE_FLAGS.store(val, Ordering::Relaxed);
+    }
+    val as *mut u32
 }

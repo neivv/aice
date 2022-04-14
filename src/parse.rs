@@ -218,12 +218,19 @@ impl ExprTree for IntExprTree {
         match *self {
             IntExprTree::Add(ref pair) | IntExprTree::Sub(ref pair) |
                 IntExprTree::Mul(ref pair) | IntExprTree::Div(ref pair) |
-                IntExprTree::Modulo(ref pair) =>
+                IntExprTree::Modulo(ref pair) | IntExprTree::BitXor(ref pair) |
+                IntExprTree::BitAnd(ref pair) | IntExprTree::BitOr(ref pair) |
+                IntExprTree::LeftShift(ref pair) | IntExprTree::RightShift(ref pair) =>
             {
                 for op in &[&pair.0, &pair.1] {
                     if let Some(s) = op.walk(cb) {
                         return Some(s);
                     }
+                }
+            }
+            IntExprTree::Not(ref expr) => {
+                if let Some(s) = expr.walk(cb) {
+                    return Some(s);
                 }
             }
             IntExprTree::Func(ref fun) => {

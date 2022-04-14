@@ -193,6 +193,9 @@ at largest/smallest possible 32-bit integer values, dividing by a expression eva
 *does not fail, but returns maxmimum 32-bit integer* (This may be changed in the future, please
 don't rely on this), dividing by a constant zero is a compile-time error.
 
+There are also bitwise operators `&` `|` `^` `<<` `>>` that can be used with integers.
+Right shift is logical, not arithmetic (Shifting negative values right clears the sign bit)
+
 Comparision operators are `==` `!=` `<` `<=` `>` and `>=`, a result of a integer comparision will
 be a boolean.
 
@@ -231,6 +234,9 @@ in units.dat
 - `under_dweb` true if the unit is under a Disruption Web
 - `hallucination` true if the unit is an hallucination
 - `tech(int player, int tech_id)` true if `player` has reseached `tech_id`
+- `on_creep` true if the unit's center is currently on a creep tile
+- `on_unbuildable` true if the unit's center is currently on a unbuildable tile
+- `terrain_protection` true if the unit's center is on a tile giving protection (Tree doodads)
 
 The following are Aice-specific boolean expressions:
 - `sprite.has_flingy` true if the current image's parent sprite is linked to an unit or a
@@ -277,9 +283,42 @@ variables instead)
 `unit_id` for `player`
 - `unit_count_completed(int player, int unit_id)` Unit count of only completed units of `unit_id`
 for `player`
-- `sin(int angle_degrees`) and `cos(int angle_degrees)` Calculates sin/cos for an angle of degrees,
-returning a value between -256 and 256. Note that the angle is a mathematical angle,
-e.g angle 0 is towards right and angle 180 is towards left.
+- `sin(int angle_degrees`), `cos(int angle_degrees)`, `tan(int angle_degrees)`
+    * Calculates sin/cos/tan for an angle of degrees.
+    Since the value returned for sin/cos is between -1 and 1, and these
+    expressions cannot represent that non-integers, the returned value is multiplied by 256,
+    giving a value between -256 and 256. The returned value of `tan(x)` is similarly multiplied
+    by 256, though it can obviously go excessively high as angle approaches 90.
+    Note that the angle is a mathematical angle,
+    e.g angle 0 is towards right and angle 180 is towards left.
+- `asin(int x)`, `acos(int x)`, `atan(int x)`
+    * Inverse functions of `sin(x)`, `cos(x)`, `tan(x)`. Input has to be again multiplied by
+    256 since decimal numbers aren't supported. `asin(x)` returns degrees between -90 to 90,
+    `acos(x)` and `atan(x)` return degrees between 0 to 180.
+- `min(int a, int b)` Returns smaller of `a` and `b`
+- `max(int a, int b)` Returns greater of `a` and `b`
+- `clamp(int min, int x, int max)` Returns `x` if `min < x < max`, otherwise if returns `min` if
+    `x` is less than `min`, and returns `max` if `x` is greater than `max`.
+- `tile_height` The terrain height of tile the unit is on (0 = low, 1 = middle, 2 = high).
+    * This is slightly inaccurate for ramp tiles which have mixed height.
+- `dat(int table, int field, int entry)` Reads a value from .dat files.
+    * The first argument `table` selects the dat table:
+        - `0` `units.dat`
+        - `1` `weapons.dat`
+        - `2` `flingy.dat`
+        - `3` `sprites.dat`
+        - `4` `images.dat`
+        - `5` `orders.dat`
+        - `6` `upgrades.dat`
+        - `7` `techdata.dat`
+        - `8` `sfxdata.dat`
+        - `9` `portdata.dat`
+        - `10` `buttons.dat`
+    * The second argument `field` selects the stat, see [Dat table fields][dat-fields] for
+        list of most of the values
+    * The third argument `entry` selects the unit/weapon/sprite/etc. index to be read.
+    * For example, to check if current unit is mechanical, use:
+        `dat(0, 0x16, unit_id) & 0x40000000 != 0`.
 
 The following integer expressions work, but are (currently) incompatible with the Mtl plugin's
 timer customization functionality.
@@ -632,7 +671,215 @@ unit.target.hitpoints > 256 * 100 default false
 (unit.target.addon.hitpoints default unit.target.hitpoints) + 256 default unit.hitpoints - 256
 ```
 
+### Dat table fields
+
+```
+Units.dat:
+- 0x00 Flingy
+- 0x01 Subunit
+- 0x02 Subunit 2
+- 0x03 Infestation
+- 0x04 Construction image
+- 0x05 Direction
+- 0x06 Has shields
+- 0x07 Shields
+- 0x08 Hitpoints
+- 0x09 Elevation level
+- 0x0a Floating
+- 0x0b Rank
+- 0x0c Ai idle order
+- 0x0d Human idle order
+- 0x0e Return to idle order
+- 0x0f Attack unit order
+- 0x10 Attack move order
+- 0x11 Ground weapon
+- 0x12 Ground weapon hits
+- 0x13 Air weapon
+- 0x14 Air weapon hits
+- 0x15 AI flags
+- 0x16 Flags
+    0x1 Building
+    0x2 Addon
+    0x4 Flyer
+    0x8 Worker
+    0x10 Subunit
+    0x20 Flying Building
+    0x40 Hero
+    0x80 Regenerate
+    0x100 Clickable Overlays
+    0x200 Cloakable
+    0x400 2 Units in 1 Egg
+    0x800 Powerup
+    0x1000 Resource Depot
+    0x2000 Resource Container
+    0x4000 Robotic
+    0x8000 Detector
+    0x00010000 Organic
+    0x00020000 Requires Creep
+    0x00040000 Unknown 18
+    0x00080000 Requires Psi
+    0x00100000 Burrowable
+    0x00200000 Spellcaster
+    0x00400000 Permanent Cloak
+    0x00800000 Unknown 23
+    0x01000000 Ignore Supply Check
+    0x02000000 Use Medium Overlays
+    0x04000000 Use Large Overlays
+    0x08000000 Intelligent
+    0x10000000 Full Auto-Attack
+    0x20000000 Invincible
+    0x40000000 Mechanical
+    0x80000000 Unknown 31
+- 0x17 Target acquisition range
+- 0x18 Sight range
+- 0x19 Armor upgrade
+- 0x1a Armor type
+- 0x1b Armor
+- 0x1c Rclick action
+- 0x1d Ready sound
+- 0x1e First what sound
+- 0x1f Last what sound
+- 0x20 First annoyed sound
+- 0x21 Last annoyed sound
+- 0x22 First yes sound
+- 0x23 Last yes sound
+- 0x24 Placement box
+- 0x25 Addon position
+- 0x26 Dimension box
+- 0x27 Portrait
+- 0x28 Mineral cost
+- 0x29 Gas cost
+- 0x2a Build time
+- 0x2b Datreq offset
+- 0x2c Group flags
+- 0x2d Supply provided
+- 0x2e Supply cost
+- 0x2f Space required
+- 0x30 Space provided
+- 0x31 Build score
+- 0x32 Kill score
+- 0x33 Map label
+- 0x34 ???
+- 0x35 Misc flags
+
+Weapons.dat:
+- 0x00 Label
+- 0x01 Flingy
+- 0x02 ???
+- 0x03 Flags
+- 0x04 Min range
+- 0x05 Max range
+- 0x06 Upgrade
+- 0x07 Damage type
+- 0x08 Behaviour
+- 0x09 Death time
+- 0x0a Effect
+- 0x0b Inner splash
+- 0x0c Middle splash
+- 0x0d Outer splash
+- 0x0e Damage
+- 0x0f Upgrade bonus
+- 0x10 Cooldown
+- 0x11 Factor
+- 0x12 Attack angle
+- 0x13 Launch spin
+- 0x14 X offset
+- 0x15 Y offset
+- 0x16 Error msg
+- 0x17 Icon
+
+Flingy.dat:
+- 0x00 Sprite ID
+- 0x01 Top speed
+- 0x02 Acceleration
+- 0x03 Halt distance
+- 0x04 Turn speed
+- 0x05 Unused
+- 0x06 Movement type
+
+Sprites.dat:
+- 0x00 Image
+- 0x01 Healthbar
+- 0x02 Unknown2
+- 0x03 Start as visible
+- 0x04 Selection circle
+- 0x05 Image pos
+
+Images.dat:
+- 0x00 Grp
+- 0x01 Can turn
+- 0x02 Clickable
+- 0x03 Full iscript
+- 0x04 Draw if cloaked
+- 0x05 Drawfunc
+- 0x06 Remapping
+- 0x07 Iscript header
+- 0x08 Overlay
+- 0x09 Overlay
+- 0x0a Damage Overlay
+- 0x0b Special Overlay
+- 0x0c Landing Overlay
+- 0x0d Liftoff Overlay
+
+Upgrades.dat:
+- 0x00 Mineral cost
+- 0x01 Mineral factor
+- 0x02 Gas cost
+- 0x03 Gas factor
+- 0x04 Time cost
+- 0x05 Time factor
+- 0x06 Dat req offset
+- 0x07 Icon
+- 0x08 Label
+- 0x09 Race
+- 0x0a Repeat count
+- 0x0b Brood war
+
+Techdata.dat:
+- 0x00 Mineral cost
+- 0x01 Gas cost
+- 0x02 Time cost
+- 0x03 Energy cost
+- 0x04 Dat req research offset
+- 0x05 Dat req use offset
+- 0x06 Icon
+- 0x07 Label
+- 0x08 Unk?
+- 0x09 Misc?
+- 0x0a Brood War
+
+Portdata.dat:
+- 0x00 Idle path
+- 0x01 Talking path
+- 0x02 Idle SMK change
+- 0x03 Talking SMK change
+- 0x04 Idle unknown
+- 0x05 Talking unknown
+
+Orders.dat:
+- 0x00 Label
+- 0x01 Use weapon targeting
+- 0x02 Secondary order (unused)
+- 0x03 Non-subunit (unused)
+- 0x04 Subunit inherits
+- 0x05 Subunit can use (unused)
+- 0x06 Interruptable
+- 0x07 Stop moving before next queued
+- 0x08 Can be queued
+- 0x09 Keep target while disabled
+- 0x0a Clip to walkable terrain
+- 0x0b Fleeable
+- 0x0c Requires moving (unused)
+- 0x0d Order weapon
+- 0x0e Order tech
+- 0x0f Animation
+- 0x10 Icon
+- 0x11 Requirement offset
+- 0x12 Obscured order
+```
+
 [expr]: #expressions
 [bw-place]: #bw-visible-variables
 [other-units]: #other-units
 [opt-expr]: #default-expressions
+[dat-fields]: #dat-table-fields
