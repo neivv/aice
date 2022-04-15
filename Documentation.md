@@ -752,6 +752,14 @@ Units.dat:
 - 0x2a Build time
 - 0x2b Datreq offset
 - 0x2c Group flags
+    0x1 Zerg
+    0x2 Terran
+    0x4 Protoss
+    0x8 Men
+    0x10 Building
+    0x20 Factory
+    0x40 Independent
+    0x80 Neutral
 - 0x2d Supply provided
 - 0x2e Supply cost
 - 0x2f Space required
