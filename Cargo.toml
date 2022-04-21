@@ -30,7 +30,7 @@ fxhash = "0.2.1"
 lazy_static = "1.0"
 libc = "0.2"
 log = "0.4"
-parking_lot = "0.11"
+parking_lot = "0.12"
 quick-error = "2.0"
 rand = "0.8"
 scopeguard = "1.0"
@@ -42,9 +42,13 @@ smallvec = "1.0"
 version = "0.3.3"
 features = ["heapapi", "libloaderapi", "processthreadsapi", "winuser", "wingdi"]
 
-[dependencies.samase_shim]
+[target.'cfg(target_arch = "x86")'.dependencies.samase_shim]
 git = "https://github.com/neivv/samase_plugin"
-rev = "a14af87c353eb82841f77caabd82d5bdf2cc5c4b"
+rev = "d19a090253b5b419ba1573fbb4c1f6ef2125cd7f"
+
+[dependencies.samase_plugin]
+git = "https://github.com/neivv/samase_plugin"
+rev = "d19a090253b5b419ba1573fbb4c1f6ef2125cd7f"
 
 [dependencies.bw_dat]
 git = "https://github.com/neivv/aise"

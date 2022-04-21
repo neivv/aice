@@ -6,7 +6,7 @@ use libc::c_void;
 use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
 
 use bw_dat::{OrderId, UnitId, ImageId};
-use samase_shim::PluginApi;
+use samase_plugin::PluginApi;
 
 use crate::bw;
 use crate::iscript;
