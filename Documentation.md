@@ -190,13 +190,13 @@ combine them, while booleans can only be compared with `==` and `!=`.
 
 Arithmetic operators are `+` `-` `*` `/` and `%` (modulo), addition and subtraction will saturate
 at largest/smallest possible 32-bit integer values, dividing by a expression evaluating to zero
-*does not fail, but returns maxmimum 32-bit integer* (This may be changed in the future, please
+*does not fail, but returns maximum 32-bit integer* (This may be changed in the future, please
 don't rely on this), dividing by a constant zero is a compile-time error.
 
 There are also bitwise operators `&` `|` `^` `<<` `>>` that can be used with integers.
 Right shift is logical, not arithmetic (Shifting negative values right clears the sign bit)
 
-Comparision operators are `==` `!=` `<` `<=` `>` and `>=`, a result of a integer comparision will
+Comparison operators are `==` `!=` `<` `<=` `>` and `>=`, a result of a integer comparison will
 be a boolean.
 
 Booleans can be chained with `&&` and and `||` or, mixing them always requires parentheses.
@@ -227,7 +227,7 @@ their units, and to SCVs constructing a building.
 - `disabled` true if the unit is disabled, either by a trigger, from being an unpowered Protoss
 building, or being hit by a lockdown/stasis/maelstrom
 - `completed` true if the unit is completed
-- `self_cloaked` true if the unit is using a cloak order. False for units using permament cloak
+- `self_cloaked` true if the unit is using a cloak order. False for units using permanent cloak
 in units.dat
 - `arbiter_cloaked` true for unburrowed units under an Arbiter.
 - `cloaked` true for any unburrowed unit that is cloaked
@@ -263,7 +263,7 @@ if the unit is not matrixed
 - `frame_count` How many frames (Game logic steps) the game has lasted
 - `tileset` Integer ID of the current map's tileset
 - `minerals` Mineral count of the current unit's player (Does not work with bullets)
-- `gas` Mineral count of the current unit's player (Does not work with bullets)
+- `gas` Vespene gas count of the current unit's player (Does not work with bullets)
 - `ground_cooldown` How many frames of cooldown are remaining before the unit can attack again
 with its ground weapon
 - `air_cooldown` How many frames of cooldown are remaining before the unit can attack again
@@ -339,7 +339,7 @@ expression.
 
 These variables have a slightly different syntax from other integer expressions, and most of them
 can be assigned with `set`. The unassignable ones aren't really different from the "builtin"
-expressions, other than them being only in Aice an not Mtl.
+expressions, other than them being only in Aice and not Mtl.
 Variables under `game` take 1 or 2 parameters for specifying affected player and/or relevant
 ids. Those parameters can be arbitrary expressions that are evaluated every time to determine
 which variable will be accessed.
