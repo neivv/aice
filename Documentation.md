@@ -57,6 +57,7 @@ expression, see [Expressions][expr] for the syntax on expressions.
 ```
 set <bw_place> = <expression>
 set spritelocal <var> = <expression>
+set if_uninit spritelocal <var> = <expression>
 set global <var> = <expression>
 ```
 
@@ -73,6 +74,9 @@ When assigning to a variable the variable's type must be declared; using differe
 with a single name will be a compile error. The variable types are
 
 - `spritelocal` A variable that is shared between images of a single sprite.
+- `if_uninit spritelocal` Only sets the spritelocal variable if it has not already been set
+    somewhere else. This can be useful to set a default value if a variable may not have been
+    initialized yet.
 - `global` A global variable, shared between iscript of all images, regardless of player.
 `global` can be useful when wanting to move data to a child image that a following command
 creates, as the first frame of the child's iscript will execute immediately before execution

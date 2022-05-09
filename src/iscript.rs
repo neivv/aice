@@ -63,10 +63,14 @@ impl IscriptState {
             .map(|x| x.value)
     }
 
-    fn set_sprite_local(&mut self, sprite: *mut bw::Sprite, id: u32, value: i32) {
+    fn set_sprite_local(&mut self, sprite: *mut bw::Sprite, id: u32, value: i32, if_uninit: bool) {
         let locals = self.get_sprite_locals_mut(sprite);
         match locals.iter().position(|x| x.id == id) {
-            Some(s) => locals[s].value = value,
+            Some(s) => {
+                if !if_uninit {
+                    locals[s].value = value;
+                }
+            }
             None => locals.push(SpriteLocal {
                 value,
                 id,
@@ -845,9 +849,9 @@ impl<'a> IscriptRunner<'a> {
                     }
                 }
                 SET => {
-                    let place = PlaceId(self.read_u32()?);
+                    let place_id = PlaceId(self.read_u32()?);
                     let expr = self.read_u32()?;
-                    let place = place.place();
+                    let place = place_id.place();
                     let mut var_exprs = [0u32; 4];
                     let var_count = place.var_count() as usize;
                     for i in 0..var_count {
@@ -875,7 +879,8 @@ impl<'a> IscriptRunner<'a> {
                     match place {
                         Place::Global(id) => self.state.globals[id as usize] = value,
                         Place::SpriteLocal(id) => {
-                            self.state.set_sprite_local((*self.image).parent, id, value);
+                            let uninit = place_id.if_uninit();
+                            self.state.set_sprite_local((*self.image).parent, id, value, uninit);
                         }
                         Place::Flingy(unit_ref, ty) => {
                             let flingy = if unit_ref.is_this() {
@@ -1091,7 +1096,7 @@ impl<'a> IscriptRunner<'a> {
                             4 => *(orders_dat_weapon.data as *mut u32).add(order),
                             _ => 0,
                         };
-                        self.state.set_sprite_local(sprite, TEMP_LOCAL_ID, old as i32);
+                        self.state.set_sprite_local(sprite, TEMP_LOCAL_ID, old as i32, false);
                         new_value = value;
                     } else {
                         new_value = self.get_sprite_local(self.image, TEMP_LOCAL_ID);

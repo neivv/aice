@@ -1108,7 +1108,8 @@ impl<'a> Parser<'a> {
                         ctx.is_continuing_commands = false;
                     }
                     CommandPrototype::Set => {
-                        let (place, _rest) = self.parse_set_place(rest, None, compiler)?;
+                        let (place, _if_uninit, _rest) =
+                            self.parse_set_place(rest, None, compiler)?;
                         if let ParsedPlace::Variable(ty, var_name) = place {
                             self.add_set_decl(var_name, ty)?;
                         }
@@ -1302,7 +1303,7 @@ impl<'a> Parser<'a> {
                 }
                 CommandPrototype::Set => {
                     ctx.expr_buffer[0] = None;
-                    let (place, rest) =
+                    let (place, if_uninit, rest) =
                         self.parse_set_place(rest, Some(&mut ctx.expr_buffer), compiler)?;
                     let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
                     if !rest.is_empty() {
@@ -1310,7 +1311,13 @@ impl<'a> Parser<'a> {
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
                         );
                     }
-                    compiler.add_set(&mut ctx.write_buffer, place, expr, &mut ctx.expr_buffer);
+                    compiler.add_set(
+                        &mut ctx.write_buffer,
+                        place,
+                        if_uninit,
+                        expr,
+                        &mut ctx.expr_buffer,
+                    );
                     Ok(())
                 }
                 CommandPrototype::ImgulOn | CommandPrototype::ImgolOn => {
@@ -1397,17 +1404,33 @@ impl<'a> Parser<'a> {
 
     /// If `variables` is set, parses place variables `game.deaths(a, b)`, to there.
     /// Otherwise just skips over them.
+    /// Returns (place, if_uninit, rest)
     fn parse_set_place(
         &mut self,
-        text: &'a [u8],
+        mut text: &'a [u8],
         variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
         compiler: &Compiler<'a>,
-    ) -> Result<(ParsedPlace<'a>, &'a [u8]), Error> {
+    ) -> Result<(ParsedPlace<'a>, bool, &'a [u8]), Error> {
+        let mut uninit = false;
+        if let Some((first, rest)) = split_first_token(text) {
+            if first == b"if_uninit" {
+                text = rest;
+                uninit = true;
+            }
+        }
         let (expr, rest) = self.parse_place_expr(text, variables, compiler)?;
         let (_, rest) = split_first_token(rest)
             .filter(|x| x.0 == b"=")
             .ok_or_else(|| Error::Msg("Expected '='"))?;
-        Ok((expr, rest))
+        if uninit {
+            match expr {
+                ParsedPlace::Variable(VariableType::SpriteLocal, _) => (),
+                _ => return Err(
+                    Error::Msg("`if_uninit` can only be used for spritelocal variables")
+                ),
+            }
+        }
+        Ok((expr, uninit, rest))
     }
 
     fn parse_place_expr<'text>(
@@ -1808,6 +1831,8 @@ impl<'a> BwRequiredLabels<'a> {
 }
 
 /// 0xc000_0000 == tag
+/// tag 0 = global, 1 = spritelocal, 2 = bw
+/// Spritelocal 0x2000_0000 = set if_uninit
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
 pub struct PlaceId(pub u32);
 
@@ -2040,7 +2065,7 @@ impl PlaceId {
         let id = self.0 & !0xc000_0000;
         match self.0 >> 30 {
             0 => Place::Global(id),
-            1 => Place::SpriteLocal(id),
+            1 => Place::SpriteLocal(id & !0x2000_0000),
             2 | _ => match (self.0 >> 27) & 0x7 {
                 0 => Place::Flingy(
                     UnitRefId((id >> 8) as u16),
@@ -2055,6 +2080,10 @@ impl PlaceId {
                 4 | _ => Place::Game(unsafe { std::mem::transmute(id as u8) }),
             },
         }
+    }
+
+    pub fn if_uninit(self) -> bool {
+        self.0 & 0xe000_0000 == 0x6000_0000
     }
 
     fn is_optional_expr(self) -> bool {
@@ -2297,18 +2326,26 @@ impl<'a> Compiler<'a> {
         &mut self,
         write_buffer: &mut Vec<u8>,
         place: ParsedPlace,
+        if_uninit: bool,
         value: IntExpr,
         place_vars: &mut [Option<Box<IntExpr>>; 4],
     ) {
         self.add_flow_to_aice();
         let index = self.int_expr_id(value);
         let var_id = match place {
-            ParsedPlace::Variable(_ty, var_name) => *self.variables.get(var_name).unwrap(),
-            ParsedPlace::Bw(place) => place,
+            ParsedPlace::Variable(_ty, var_name) => {
+                let val = *self.variables.get(var_name).unwrap();
+                if if_uninit {
+                    val.0 | 0x2000_0000
+                } else {
+                    val.0
+                }
+            }
+            ParsedPlace::Bw(place) => place.0,
         };
         write_buffer.clear();
         write_buffer.push(aice_op::SET);
-        write_buffer.write_u32::<LE>(var_id.0).unwrap();
+        write_buffer.write_u32::<LE>(var_id).unwrap();
         write_buffer.write_u32::<LE>(index as u32).unwrap();
         for var in place_vars.iter_mut().take_while(|x| x.is_some()).filter_map(|x| x.take()) {
             let index = self.int_expr_id(*var);
@@ -3201,6 +3238,34 @@ mod test {
         find_error(&mut errors, "needs `default`", 62);
         find_error(&mut errors, "needs `default`", 63);
         find_error(&mut errors, "X must be between", 78);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn if_uninit() {
+        let iscript = compile_success("if_uninit.txt");
+        // The pos_to_line currently returns next aice line for any position
+        // that isn't inside the command start; search in reverse to find the actual line
+
+        // Line 25 check `set if_uninit spritelocal`
+        let aice_pos = (0..0x40).rfind(|&i| {
+            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 25
+        }).unwrap() as usize;
+        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
+        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
+        assert!(place.if_uninit());
+        match place.place() {
+            Place::SpriteLocal(..) => {
+            }
+            x => panic!("Wrong place {:?}", x),
+        }
+    }
+
+    #[test]
+    fn if_uninit_err() {
+        let mut errors = compile_err("if_uninit_err.txt");
+        find_error(&mut errors, "if_uninit", 25);
+        find_error(&mut errors, "if_uninit", 26);
         assert!(errors.is_empty());
     }
 }
