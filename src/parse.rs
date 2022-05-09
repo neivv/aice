@@ -61,7 +61,7 @@ pub enum Bool {
 }
 
 struct ExprParser<'a, 'b> {
-    compiler: &'b Compiler<'a>,
+    variables: &'b CompilerVariables<'a>,
     parser: &'b mut Parser<'a>,
 }
 
@@ -74,14 +74,14 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
         }).unwrap_or(input.len());
         let word = &input[..word_end];
         let mut out = [None, None, None, None];
-        if let Some(&var_id) = self.compiler.variables.get(word) {
+        if let Some(&var_id) = self.variables.variables.get(word) {
             return Some((Int::Variable(var_id, out), &input[word_end..]));
         }
-        match self.parser.parse_place_expr(input, Some(&mut out), self.compiler) {
+        match self.parser.parse_place_expr(input, Some(&mut out), self.variables) {
             Ok((place, rest)) => {
                 let var_id = match place {
                     ParsedPlace::Variable(_ty, var_name) => {
-                        *self.compiler.variables.get(var_name)?
+                        *self.variables.variables.get(var_name)?
                     }
                     ParsedPlace::Bw(place) => place,
                 };
@@ -364,6 +364,9 @@ quick_error! {
         }
         Overflow {
             display("Integer overflow")
+        }
+        Expected(text: BString, what: &'static [u8]) {
+            display("Expected '{}', got '{}'", what.as_bstr(), text)
         }
     }
 }
@@ -713,8 +716,9 @@ struct VecOfVecs<Key, T> {
     key: std::marker::PhantomData<*const Key>,
 }
 
-trait VecIndex {
+trait VecIndex: Sized {
     fn index(&self) -> Option<usize>;
+    fn from_index(index: u32) -> Option<Self>;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -755,6 +759,22 @@ impl<Key: VecIndex, T> VecOfVecs<Key, T> {
         } else {
             &[]
         }
+    }
+
+    fn build<F: FnMut() -> Result<Option<T>, Error>>(&mut self, mut cb: F) -> Result<Key, Error> {
+        let start = u32::try_from(self.data.len())
+            .map_err(|_| Error::Overflow)?;
+        let id = u32::try_from(self.offsets_lens.len())
+            .ok()
+            .and_then(|x| Key::from_index(x as u32))
+            .ok_or_else(|| Error::Overflow)?;
+        let mut len = 0u32;
+        while let Some(data) = cb()? {
+            self.data.push(data);
+            len = len.checked_add(1).ok_or_else(|| Error::Overflow)?;
+        }
+        self.offsets_lens.push((start, len));
+        Ok(id)
     }
 }
 
@@ -1146,7 +1166,7 @@ impl<'a> Parser<'a> {
                     }
                     CommandPrototype::Set => {
                         let (place, _if_uninit, _rest) =
-                            self.parse_set_place(rest, None, compiler)?;
+                            self.parse_set_place(rest, None, &compiler.variables)?;
                         if let ParsedPlace::Variable(ty, var_name) = place {
                             add_set_decl(&mut stage1.variable_types, var_name, ty)?;
                         }
@@ -1161,9 +1181,7 @@ impl<'a> Parser<'a> {
                                 let (name, rest) = split_first_token(text)
                                     .ok_or_else(|| Error::Msg("Expected var name"))?;
                                 // Checking this early for better errors
-                                let (_, _) = split_first_token(rest)
-                                    .filter(|x| x.0 == b"=")
-                                    .ok_or_else(|| Error::Msg("Expected '='"))?;
+                                let _ = expect_token(rest, b"=")?;
                                 add_set_decl(
                                     &mut stage1.variable_types,
                                     name,
@@ -1191,24 +1209,19 @@ impl<'a> Parser<'a> {
         stage1: &mut ParseStage1<'a>,
         ctx: &mut TextParseContext<'a>,
     ) -> Result<SpriteLocalSetId, Error> {
-        let start = u32::try_from(stage1.sprite_local_sets.data.len())
-            .map_err(|_| Error::Overflow)?;
-        let id = u32::try_from(stage1.sprite_local_sets.offsets_lens.len())
-            .ok()
-            .and_then(|x| x.checked_add(1))
-            .ok_or_else(|| Error::Overflow)?;
         let start_line = ctx.error_line_number;
-        let mut len = 0u32;
-        while let Some(line) = ctx.next_line() {
-            if line == b"}" {
-                stage1.sprite_local_sets.offsets_lens.push((start, len));
-                return Ok(SpriteLocalSetId(id));
+        stage1.sprite_local_sets.build(|| {
+            if let Some(line) = ctx.next_line() {
+                if line == b"}" {
+                    Ok(None)
+                } else {
+                    Ok(Some((line, ctx.line_number)))
+                }
+            } else {
+                ctx.error_line_number = start_line;
+                Err(Error::Msg("Unterminated {"))
             }
-            len = len.checked_add(1).ok_or_else(|| Error::Overflow)?;
-            stage1.sprite_local_sets.data.push((line, ctx.line_number));
-        }
-        ctx.error_line_number = start_line;
-        Err(Error::Msg("Unterminated {"))
+        })
     }
 
     fn parse_line_add_label(
@@ -1254,7 +1267,7 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::If => {
-                    let (condition, rest) = parse_bool_expr(rest, self, &compiler)?;
+                    let (condition, rest) = parse_bool_expr(rest, self, &compiler.variables)?;
                     let mut tokens = rest.fields();
                     let next = tokens.next();
                     let is_call = match next {
@@ -1283,9 +1296,9 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::FireWeapon => {
-                    let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let (expr, rest) = parse_int_expr(rest, self, &compiler.variables)?;
                     let spritelocals = parse_with(rest, self, stage1, compiler, ctx, linked)?;
-                    let id = compiler.int_expr_id(expr);
+                    let id = compiler.expressions.int_expr_id(expr);
                     compiler.add_aice_command(aice_op::FIRE_WEAPON);
                     compiler.aice_bytecode.write_u32::<LE>(id).unwrap();
                     compiler.aice_bytecode.write_u32::<LE>(spritelocals.0).unwrap();
@@ -1295,13 +1308,13 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::PlayFram => {
-                    let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let (expr, rest) = parse_int_expr(rest, self, &compiler.variables)?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
                         );
                     }
-                    let id = compiler.int_expr_id(expr);
+                    let id = compiler.expressions.int_expr_id(expr);
                     compiler.add_aice_command_u32(aice_op::PLAY_FRAME, id);
                     Ok(())
                 }
@@ -1327,15 +1340,17 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::CreateUnit => {
-                    let (unit_id, rest) = parse_int_expr(rest, self, compiler)?;
-                    let (x, rest) = parse_int_expr(rest, self, compiler)?;
-                    let (y, rest) = parse_int_expr(rest, self, compiler)?;
-                    let (player, rest) = parse_int_expr(rest, self, compiler)?;
+                    let vars = &compiler.variables;
+                    let (unit_id, rest) = parse_int_expr(rest, self, vars)?;
+                    let (x, rest) = parse_int_expr(rest, self, vars)?;
+                    let (y, rest) = parse_int_expr(rest, self, vars)?;
+                    let (player, rest) = parse_int_expr(rest, self, vars)?;
                     let spritelocals = parse_with(rest, self, stage1, compiler, ctx, linked)?;
-                    let unit_id = compiler.int_expr_id(unit_id);
-                    let x = compiler.int_expr_id(x);
-                    let y = compiler.int_expr_id(y);
-                    let player = compiler.int_expr_id(player);
+                    let expr = &mut compiler.expressions;
+                    let unit_id = expr.int_expr_id(unit_id);
+                    let x = expr.int_expr_id(x);
+                    let y = expr.int_expr_id(y);
+                    let player = expr.int_expr_id(player);
                     compiler.add_aice_command(aice_op::CREATE_UNIT);
                     compiler.aice_bytecode.write_u32::<LE>(unit_id).unwrap();
                     compiler.aice_bytecode.write_u32::<LE>(x).unwrap();
@@ -1346,15 +1361,17 @@ impl<'a> Parser<'a> {
                 }
                 CommandPrototype::IssueOrder => {
                     let (order_id, rest) = parse_u8_rest(rest)?;
-                    let (x, rest) = parse_int_expr(rest, self, &compiler)?;
-                    let (y, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let vars = &compiler.variables;
+                    let (x, rest) = parse_int_expr(rest, self, vars)?;
+                    let (y, rest) = parse_int_expr(rest, self, vars)?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
                         );
                     }
-                    let x = compiler.int_expr_id(x);
-                    let y = compiler.int_expr_id(y);
+                    let expr = &mut compiler.expressions;
+                    let x = expr.int_expr_id(x);
+                    let y = expr.int_expr_id(y);
                     compiler.add_aice_command(aice_op::ISSUE_ORDER);
                     compiler.aice_bytecode.write_u8(order_id).unwrap();
                     compiler.aice_bytecode.write_u32::<LE>(x).unwrap();
@@ -1368,9 +1385,10 @@ impl<'a> Parser<'a> {
                 }
                 CommandPrototype::Set => {
                     ctx.expr_buffer[0] = None;
+                    let vars = &compiler.variables;
                     let (place, if_uninit, rest) =
-                        self.parse_set_place(rest, Some(&mut ctx.expr_buffer), compiler)?;
-                    let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
+                        self.parse_set_place(rest, Some(&mut ctx.expr_buffer), vars)?;
+                    let (expr, rest) = parse_int_expr(rest, self, vars)?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
@@ -1391,9 +1409,10 @@ impl<'a> Parser<'a> {
                     // 0x8 = y is i8 const
                     // Otherwise u32 expressions
                     let (unit_ref, rest) = self.parse_unit_ref_rest(rest)?;
-                    let (image, rest) = parse_int_expr(rest, self, &compiler)?;
-                    let (x, rest) = parse_int_expr(rest, self, &compiler)?;
-                    let (y, rest) = parse_int_expr(rest, self, &compiler)?;
+                    let vars = &compiler.variables;
+                    let (image, rest) = parse_int_expr(rest, self, vars)?;
+                    let (x, rest) = parse_int_expr(rest, self, vars)?;
+                    let (y, rest) = parse_int_expr(rest, self, vars)?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
@@ -1404,13 +1423,14 @@ impl<'a> Parser<'a> {
                         CommandPrototype::ImgulOn => 0,
                         _ => 0x1,
                     };
+                    let exprs = &mut compiler.expressions;
                     let image = if let Some(c) = is_constant_expr(&image) {
                         flags |= 0x2;
                         u16::try_from(c)
                             .map(|x| x as u32)
                             .map_err(|_| Error::Msg("Image ID must be between 0 and 65535"))?
                     } else {
-                        compiler.int_expr_id(image)
+                        exprs.int_expr_id(image)
                     };
                     let x = if let Some(c) = is_constant_expr(&x) {
                         flags |= 0x4;
@@ -1419,7 +1439,7 @@ impl<'a> Parser<'a> {
                             .or_else(|_| i8::try_from(c).map(|x| x as u32))
                             .map_err(|_| Error::Msg("X must be between -128 and 255"))?
                     } else {
-                        compiler.int_expr_id(x)
+                        exprs.int_expr_id(x)
                     };
                     let y = if let Some(c) = is_constant_expr(&y) {
                         flags |= 0x8;
@@ -1428,7 +1448,7 @@ impl<'a> Parser<'a> {
                             .or_else(|_| i8::try_from(c).map(|x| x as u32))
                             .map_err(|_| Error::Msg("Y must be between -128 and 255"))?
                     } else {
-                        compiler.int_expr_id(y)
+                        exprs.int_expr_id(y)
                     };
 
                     compiler.add_aice_command(aice_op::IMG_ON);
@@ -1467,14 +1487,14 @@ impl<'a> Parser<'a> {
         Ok((val, &rest[1..]))
     }
 
-    /// If `variables` is set, parses place variables `game.deaths(a, b)`, to there.
+    /// If `result_variables` is set, parses place variables `game.deaths(a, b)`, to there.
     /// Otherwise just skips over them.
     /// Returns (place, if_uninit, rest)
     fn parse_set_place(
         &mut self,
         mut text: &'a [u8],
-        variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
-        compiler: &Compiler<'a>,
+        result_variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
+        variable_decls: &CompilerVariables<'a>,
     ) -> Result<(ParsedPlace<'a>, bool, &'a [u8]), Error> {
         let mut uninit = false;
         if let Some((first, rest)) = split_first_token(text) {
@@ -1483,10 +1503,8 @@ impl<'a> Parser<'a> {
                 uninit = true;
             }
         }
-        let (expr, rest) = self.parse_place_expr(text, variables, compiler)?;
-        let (_, rest) = split_first_token(rest)
-            .filter(|x| x.0 == b"=")
-            .ok_or_else(|| Error::Msg("Expected '='"))?;
+        let (expr, rest) = self.parse_place_expr(text, result_variables, variable_decls)?;
+        let rest = expect_token(rest, b"=")?;
         if uninit {
             match expr {
                 ParsedPlace::Variable(VariableType::SpriteLocal, _) => (),
@@ -1502,7 +1520,7 @@ impl<'a> Parser<'a> {
         &mut self,
         text: &'text [u8],
         variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
-        compiler: &Compiler<'a>,
+        variable_decls: &CompilerVariables<'a>,
     ) -> Result<(ParsedPlace<'text>, &'text [u8]), CanRecoverError> {
         let (place, rest) = split_first_token_brace_aware(text)
             .ok_or_else(|| CanRecoverError::Yes(Error::Msg("Expected place")))?;
@@ -1534,11 +1552,9 @@ impl<'a> Parser<'a> {
             if let Some(var_out) = variables {
                 let mut params = params;
                 for i in 0..var_count {
-                    let (expr, rest) = parse_int_expr_allow_opt(params, self, &compiler)?;
+                    let (expr, rest) = parse_int_expr_allow_opt(params, self, variable_decls)?;
                     if i != var_count - 1 {
-                        let (_, rest) = split_first_token(rest)
-                            .filter(|x| x.0 == b",")
-                            .ok_or_else(|| Error::Msg("Expected ','"))?;
+                        let rest = expect_token(rest, b",")?;
                         params = rest;
                     } else {
                         params = rest;
@@ -1689,6 +1705,13 @@ fn split_first_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
     })
 }
 
+fn expect_token<'a>(text: &'a [u8], token: &'static [u8]) -> Result<&'a [u8], Error> {
+    split_first_token(text)
+        .filter(|x| x.0 == token)
+        .map(|x| x.1)
+        .ok_or_else(|| Error::Expected(text.into(), token))
+}
+
 fn split_last_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
     debug_assert!(text.trim().len() == text.len(), "Untrimmed input {}", text.as_bstr());
     let rev_start = 0;
@@ -1719,10 +1742,10 @@ fn ends_with_tokens(mut text: &[u8], tokens: &[&[u8]]) -> bool {
 fn parse_bool_expr<'a, 'b, 'c>(
     text: &'a [u8],
     parser: &'c mut Parser<'b>,
-    compiler: &'c Compiler<'b>,
+    variable_decls: &'c CompilerVariables<'b>,
 ) -> Result<(BoolExpr, &'a [u8]), Error> {
     let mut parser = ExprParser {
-        compiler,
+        variables: variable_decls,
         parser,
     };
     let (expr, rest) = CustomBoolExpr::parse_part_custom(text.as_ref(), &mut parser)
@@ -1741,10 +1764,10 @@ fn parse_bool_expr<'a, 'b, 'c>(
 fn parse_int_expr_allow_opt<'a, 'b, 'c>(
     text: &'a [u8],
     parser: &'c mut Parser<'b>,
-    compiler: &'c Compiler<'b>,
+    variable_decls: &'c CompilerVariables<'b>,
 ) -> Result<(IntExpr, &'a [u8]), Error> {
     let mut parser = ExprParser {
-        compiler,
+        variables: variable_decls,
         parser,
     };
     CustomIntExpr::parse_part_custom(text.as_ref(), &mut parser)
@@ -1755,9 +1778,9 @@ fn parse_int_expr_allow_opt<'a, 'b, 'c>(
 fn parse_int_expr<'a, 'b, 'c>(
     text: &'a [u8],
     parser: &'c mut Parser<'b>,
-    compiler: &'c Compiler<'b>,
+    variable_decls: &'c CompilerVariables<'b>,
 ) -> Result<(IntExpr, &'a [u8]), Error> {
-    let (expr, rest) = parse_int_expr_allow_opt(text, parser, compiler)?;
+    let (expr, rest) = parse_int_expr_allow_opt(text, parser, variable_decls)?;
     if is_optional_expr(expr.inner()) {
         let expr_string_len = text.len() - rest.len();
         let expr_string = &text[..expr_string_len];
@@ -1791,45 +1814,40 @@ fn parse_with<'a, 'b, 'c>(
         .ok_or_else(|| {
             Error::Dynamic(format!("Expected 'with' or end of line; got '{}'", text.as_bstr()))
         })?;
-    let (_, rest) = split_first_token(rest)
-        .filter(|x| x.0 == b"{")
-        .ok_or_else(|| Error::Msg("Expected '{'"))?;
+    let rest = expect_token(rest, b"{")?;
     if !rest.is_empty() {
         return Err(Error::Trailing(rest.into()));
     }
 
     let prev_line = ctx.error_line;
-    let start = u32::try_from(compiler.sprite_local_sets.data.len())
-        .map_err(|_| Error::Overflow)?;
-    let id = u32::try_from(compiler.sprite_local_sets.offsets_lens.len())
-        .ok()
-        .and_then(|x| x.checked_add(1))
-        .ok_or_else(|| Error::Overflow)?;
-    let mut len = 0u32;
-    for &(text, line_no) in stage1.sprite_local_sets.get_or_empty(parser_id) {
+    let mut input_sets = stage1.sprite_local_sets.get_or_empty(parser_id);
+    let vars = &compiler.variables;
+    let exprs = &mut compiler.expressions;
+    let id = compiler.sprite_local_sets.build(|| {
+        let (&(text, line_no), rest) = match input_sets.split_first() {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        input_sets = rest;
         ctx.error_line = line_no;
         let (var_name, rest) = split_first_token(text)
             .ok_or_else(|| Error::Msg("Expected variable name"))?;
-        let (_, rest) = split_first_token(rest)
-            .filter(|x| x.0 == b"=")
-            .ok_or_else(|| Error::Msg("Expected '='"))?;
-        let (expr, rest) = parse_int_expr(rest, parser, compiler)?;
+        let rest = expect_token(rest, b"=")?;
+        let (expr, rest) = parse_int_expr(rest, parser, vars)?;
         if !rest.is_empty() {
             return Err(Error::Trailing(rest.into()));
         }
-        let expr = compiler.int_expr_id(expr);
-        let var = compiler.variables.get(var_name)
+        let expr = exprs.int_expr_id(expr);
+        let var = vars.variables.get(var_name)
             .and_then(|x| match x.place() {
                 Place::SpriteLocal(x) => Some(x),
                 _ => None,
             })
             .ok_or_else(|| Error::Internal("Var not added"))?;
-        compiler.sprite_local_sets.data.push((var, expr));
-        len = len.checked_add(1).ok_or_else(|| Error::Overflow)?;
-    }
-    compiler.sprite_local_sets.offsets_lens.push((start, len));
+        Ok(Some((var, expr)))
+    })?;
     ctx.error_line = prev_line;
-    Ok(SpriteLocalSetId(id))
+    Ok(id)
 }
 
 fn mark_required_bw_labels<'a>(
@@ -1983,16 +2001,24 @@ struct Compiler<'a> {
     needed_label_positions: Vec<(CodePosition, Label<'a>, BlockId)>,
     bw_required_labels: BwRequiredLabels<'a>,
     bw_aice_cmd_offsets: Vec<(u16, u32)>,
+    sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, u32)>,
+    expressions: CompilerExprs,
+    variables: CompilerVariables<'a>,
+    flow_in_bw: bool,
+    current_line: u32,
+    line_info: LineInfoBuilder,
+}
+
+struct CompilerVariables<'a> {
+    variables: FxHashMap<&'a [u8], PlaceId>,
+    variable_counts: [u32; 2],
+}
+
+struct CompilerExprs {
     conditions: Vec<Rc<BoolExpr>>,
     existing_conditions: FxHashMap<Rc<BoolExpr>, u32>,
     int_expressions: Vec<Rc<IntExpr>>,
     existing_int_expressions: FxHashMap<Rc<IntExpr>, u32>,
-    sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, u32)>,
-    variables: FxHashMap<&'a [u8], PlaceId>,
-    variable_counts: [u32; 2],
-    flow_in_bw: bool,
-    current_line: u32,
-    line_info: LineInfoBuilder,
 }
 
 /// Reusable buffers
@@ -2368,13 +2394,19 @@ impl<'a> Compiler<'a> {
             bw_required_labels: BwRequiredLabels {
                 set: FxHashSet::with_capacity_and_hasher(1024, Default::default()),
             },
-            conditions: Vec::with_capacity(16),
-            existing_conditions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
-            int_expressions: Vec::with_capacity(16),
-            existing_int_expressions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
+            expressions: CompilerExprs {
+                conditions: Vec::with_capacity(16),
+                existing_conditions:
+                    FxHashMap::with_capacity_and_hasher(16, Default::default()),
+                int_expressions: Vec::with_capacity(16),
+                existing_int_expressions:
+                    FxHashMap::with_capacity_and_hasher(16, Default::default()),
+            },
             sprite_local_sets: VecOfVecs::new(),
-            variables: FxHashMap::default(),
-            variable_counts: [0; 2],
+            variables: CompilerVariables {
+                variables: FxHashMap::default(),
+                variable_counts: [0; 2],
+            },
             flow_in_bw: true,
             current_line: 0,
             line_info: LineInfoBuilder::new(),
@@ -2394,11 +2426,12 @@ impl<'a> Compiler<'a> {
     }
 
     fn add_variables(&mut self, variables: &FxHashMap<&'a [u8], VariableType>) {
-        self.variables.reserve(variables.len());
+        let vars = &mut self.variables;
+        vars.variables.reserve(variables.len());
         for (&name, &ty) in variables {
-            let id = self.variable_counts[ty as usize] as u32;
-            self.variable_counts[ty as usize] += 1;
-            self.variables.insert(name, match ty {
+            let id = vars.variable_counts[ty as usize] as u32;
+            vars.variable_counts[ty as usize] += 1;
+            vars.variables.insert(name, match ty {
                 VariableType::Global => PlaceId::new(Place::Global(id)),
                 VariableType::SpriteLocal => PlaceId::new(Place::SpriteLocal(id)),
             });
@@ -2496,19 +2529,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn int_expr_id(&mut self, value: IntExpr) -> u32 {
-        match self.existing_int_expressions.get(&value).cloned() {
-            Some(s) => s,
-            None => {
-                let index = self.int_expressions.len() as u32;
-                let rc = Rc::new(value);
-                self.int_expressions.push(rc.clone());
-                self.existing_int_expressions.insert(rc, index);
-                index
-            }
-        }
-    }
-
     fn add_set(
         &mut self,
         write_buffer: &mut Vec<u8>,
@@ -2518,10 +2538,10 @@ impl<'a> Compiler<'a> {
         place_vars: &mut [Option<Box<IntExpr>>; 4],
     ) {
         self.add_flow_to_aice();
-        let index = self.int_expr_id(value);
+        let index = self.expressions.int_expr_id(value);
         let var_id = match place {
             ParsedPlace::Variable(_ty, var_name) => {
-                let val = *self.variables.get(var_name).unwrap();
+                let val = *self.variables.variables.get(var_name).unwrap();
                 if if_uninit {
                     val.0 | 0x2000_0000
                 } else {
@@ -2535,7 +2555,7 @@ impl<'a> Compiler<'a> {
         write_buffer.write_u32::<LE>(var_id).unwrap();
         write_buffer.write_u32::<LE>(index as u32).unwrap();
         for var in place_vars.iter_mut().take_while(|x| x.is_some()).filter_map(|x| x.take()) {
-            let index = self.int_expr_id(*var);
+            let index = self.expressions.int_expr_id(*var);
             write_buffer.write_u32::<LE>(index as u32).unwrap();
         }
         self.add_aice_code(&write_buffer);
@@ -2549,13 +2569,14 @@ impl<'a> Compiler<'a> {
         is_call: bool,
     ) -> Result<(), Error> {
         self.add_flow_to_aice();
-        let index = match self.existing_conditions.get(&condition).cloned() {
+        let exprs = &mut self.expressions;
+        let index = match exprs.existing_conditions.get(&condition).cloned() {
             Some(s) => s,
             None => {
-                let index = self.conditions.len() as u32;
+                let index = exprs.conditions.len() as u32;
                 let rc = Rc::new(condition);
-                self.conditions.push(rc.clone());
-                self.existing_conditions.insert(rc, index);
+                exprs.conditions.push(rc.clone());
+                exprs.existing_conditions.insert(rc, index);
                 index
             }
         };
@@ -2811,12 +2832,12 @@ impl<'a> Compiler<'a> {
         Ok(Iscript {
             bw_data: bw_data.into_boxed_slice(),
             aice_data: self.aice_bytecode,
-            conditions: self.conditions,
-            int_expressions: self.int_expressions,
+            conditions: self.expressions.conditions,
+            int_expressions: self.expressions.int_expressions,
             sprite_local_sets: self.sprite_local_sets,
             bw_aice_cmd_offsets,
             headers,
-            global_count: self.variable_counts[VariableType::Global as usize],
+            global_count: self.variables.variable_counts[VariableType::Global as usize],
             line_info: self.line_info.finish(),
             unit_refs,
         })
@@ -2865,6 +2886,21 @@ impl<'a> Compiler<'a> {
         }
         self.bw_code_parts.push((out.len() as u16, write_length as u16));
         out.extend_from_slice(&self.bw_bytecode[start..start + write_length]);
+    }
+}
+
+impl CompilerExprs {
+    fn int_expr_id(&mut self, value: IntExpr) -> u32 {
+        match self.existing_int_expressions.get(&value).cloned() {
+            Some(s) => s,
+            None => {
+                let index = self.int_expressions.len() as u32;
+                let rc = Rc::new(value);
+                self.int_expressions.push(rc.clone());
+                self.existing_int_expressions.insert(rc, index);
+                index
+            }
+        }
     }
 }
 
@@ -2957,6 +2993,11 @@ impl VecIndex for SpriteLocalSetId {
     #[inline(always)]
     fn index(&self) -> Option<usize> {
         (self.0 as usize).checked_sub(1)
+    }
+
+    #[inline(always)]
+    fn from_index(index: u32) -> Option<Self> {
+        index.checked_add(1).map(SpriteLocalSetId)
     }
 }
 
