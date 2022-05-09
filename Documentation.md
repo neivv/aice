@@ -134,10 +134,17 @@ game, bringing them to what `weapons.dat` specified.
 
 ```
 create_unit <unit_id> <x> <y> <player>
+create_unit <unit_id> <x> <y> <player> with {
+    spritelocal1 = <value>
+    [...]
+}
 ```
 
 Creates an unit for player. The unit will be spawned at the specified position, even if a ground
 unit would not fit there or the area is unwalkable. All four arguments are [expressions][expr].
+
+Spritelocal variables can be set to the newly created unit `with { }` block containing spritelocal
+names and expressions to set them to.
 
 #### Example
 
@@ -146,9 +153,29 @@ create_unit 40 (flingy.position_x + 3) (flingy.position_y + 3) player
 create_unit 40 (flingy.position_x - 3) (flingy.position_y - 3) player
 ```
 
-Creates 2 broodlings at the current unit exists for the current unit's player, slightly on top
+Creates 2 broodlings where the current unit exists for the current unit's player, slightly on top
 of each other. Parentheses around x/y expressions would be optional, but the are likely nicer
 for readability
+
+```
+create_unit 1 flingy.position_x flingy.position_y player with {
+    something1 = 400
+    # Creating unit's hitpoints
+    something2 = hitpoints
+    # Current player's ghost deaths divided by 4
+    third_variable = game.deaths(player, 1) / 4
+}
+```
+
+Creates ghost for current player, setting 3 variables to be accessed by the ghost's iscript.
+(As if `set spritelocal something1 = 400` had been run immediately on ghost's iscript start)
+Note that the expressions are evaluated in current image's context: Value of `something2` is going
+to be set to hitpoints of what the unit creating the ghost is.
+
+Since spritelocal variables need to be written before they are accessed by any expressions, if
+ghosts can be created through other ways which don't init these three variables, it is recommended
+to use `set if_uninit spritelocal something = 0` to initialize the variables in ghost's init
+animation.
 
 ### issue\_order
 

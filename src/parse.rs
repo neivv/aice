@@ -354,9 +354,15 @@ quick_error! {
         Msg(msg: &'static str) {
             display("{}", msg)
         }
+        Internal(msg: &'static str) {
+            display("Internal error; {}", msg)
+        }
         Expr(e: bw_dat::expr::Error) {
             from()
             display("Couldn't parse expression: {}", e)
+        }
+        Overflow {
+            display("Integer overflow")
         }
     }
 }
@@ -697,6 +703,17 @@ pub struct Iscript {
     pub global_count: u32,
     pub line_info: LineInfo,
     unit_refs: Vec<Vec<UnitObject>>,
+    sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, u32)>,
+}
+
+struct VecOfVecs<Key, T> {
+    data: Vec<T>,
+    offsets_lens: Vec<(u32, u32)>,
+    key: std::marker::PhantomData<*const Key>,
+}
+
+trait VecIndex {
+    fn index(&self) -> Option<usize>;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -712,6 +729,30 @@ impl Iscript {
         } else {
             let index = (unit.0 - UnitObject::_Last as u16) as usize;
             UnitRefParts::Many(&self.unit_refs[index])
+        }
+    }
+
+    /// Returns list of `(spritelocal id, int expr id)`
+    pub fn sprite_local_set(&self, id: SpriteLocalSetId) -> &[(u32, u32)] {
+        self.sprite_local_sets.get_or_empty(id)
+    }
+}
+
+impl<Key: VecIndex, T> VecOfVecs<Key, T> {
+    fn new() -> VecOfVecs<Key, T> {
+        VecOfVecs {
+            data: Vec::new(),
+            offsets_lens: Vec::new(),
+            key: Default::default(),
+        }
+    }
+
+    fn get_or_empty(&self, id: Key) -> &[T] {
+        if let Some(idx) = id.index() {
+            let (offset, len) = self.offsets_lens[idx];
+            &self.data[(offset as usize)..][..(len as usize)]
+        } else {
+            &[]
         }
     }
 }
@@ -903,7 +944,6 @@ struct Parser<'a> {
     // true if the previous command didn't force end execution
     animation_name_to_index: FxHashMap<&'static [u8], u8>,
     command_map: FxHashMap<&'static [u8], CommandPrototype>,
-    variable_types: FxHashMap<&'a [u8], VariableType>,
     bw_places: FxHashMap<&'static [u8], PlaceId>,
     unit_vars: FxHashMap<&'static [u8], UnitVar>,
     flingy_vars: FxHashMap<&'static [u8], FlingyVar>,
@@ -921,7 +961,6 @@ impl<'a> Parser<'a> {
                 .map(|x| (x.0.as_bytes(), x.1))
                 .collect(),
             command_map: COMMANDS.iter().cloned().collect(),
-            variable_types: FxHashMap::with_capacity_and_hasher(32, Default::default()),
             bw_places: BW_PLACES.iter().cloned().collect(),
             unit_vars: UNIT_VARS.iter().cloned().collect(),
             flingy_vars: FLINGY_VARS.iter().cloned().collect(),
@@ -943,12 +982,13 @@ impl<'a> Parser<'a> {
         &mut self,
         text: &'a [u8],
         compiler: &mut Compiler<'a>,
-    ) -> Result<Blocks<'a>, Vec<ErrorWithLine>> {
+    ) -> Result<ParseStage1<'a>, Vec<ErrorWithLine>> {
         let mut errors = Vec::new();
         let mut ctx = TextParseContext {
             text,
             block_stack: Vec::with_capacity(4),
             line_number: 0,
+            error_line_number: 0,
             current_block: (Block {
                 lines: Vec::with_capacity(32000),
                 parent: BlockId(!0),
@@ -956,26 +996,19 @@ impl<'a> Parser<'a> {
             }, BlockId(0), 1),
             is_continuing_commands: false,
         };
-        let mut blocks = Blocks {
-            blocks: vec![Block::dummy()],
-            root_blocks: vec![BlockId(0)],
+        let mut stage1 = ParseStage1 {
+            blocks: Blocks {
+                blocks: vec![Block::dummy()],
+                root_blocks: vec![BlockId(0)],
+            },
+            sprite_local_sets: VecOfVecs::new(),
+            variable_types: FxHashMap::with_capacity_and_hasher(32, Default::default()),
         };
-        while !ctx.text.is_empty() {
-            ctx.line_number += 1;
-            let line_end = ctx.text.find_byte(b'\n').unwrap_or_else(|| ctx.text.len());
-            let mut line = &ctx.text[..line_end];
-            ctx.text = ctx.text.get(line_end + 1..).unwrap_or_else(|| b"");
-            // Comment
-            if let Some(comment_start) = line.find_byte(b'#') {
-                line = &line[..comment_start];
-            };
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
+        while let Some(line) = ctx.next_line() {
+            ctx.error_line_number = ctx.line_number;
             if line == b"}" {
                 if let Some((block, index, start_line)) = ctx.block_stack.pop() {
-                    blocks.blocks[(ctx.current_block.1).0 as usize] =
+                    stage1.blocks.blocks[(ctx.current_block.1).0 as usize] =
                         mem::replace(&mut ctx.current_block.0, block);
                     ctx.current_block.1 = index;
                     ctx.current_block.2 = start_line;
@@ -986,10 +1019,10 @@ impl<'a> Parser<'a> {
                     });
                 }
             } else {
-                if let Err(error) = self.parse_line(line, compiler, &mut blocks, &mut ctx) {
+                if let Err(error) = self.parse_line(line, compiler, &mut stage1, &mut ctx) {
                     errors.push(ErrorWithLine {
                         error,
-                        line: Some(ctx.line_number),
+                        line: Some(ctx.error_line_number),
                     });
                 }
             }
@@ -1012,9 +1045,9 @@ impl<'a> Parser<'a> {
                 line: Some(ctx.line_number),
             });
         }
-        blocks.blocks[(ctx.current_block.1).0 as usize] = ctx.current_block.0;
+        stage1.blocks.blocks[(ctx.current_block.1).0 as usize] = ctx.current_block.0;
         if errors.is_empty() {
-            Ok(blocks)
+            Ok(stage1)
         } else {
             Err(errors)
         }
@@ -1024,7 +1057,7 @@ impl<'a> Parser<'a> {
         &mut self,
         line: &'a [u8],
         compiler: &mut Compiler<'a>,
-        blocks: &mut Blocks<'a>,
+        stage1: &mut ParseStage1<'a>,
         ctx: &mut TextParseContext<'a>,
     ) -> Result<(), Error> {
         if line == b".headerend" {
@@ -1070,7 +1103,7 @@ impl<'a> Parser<'a> {
             });
             Ok(())
         } else {
-            self.parse_line_command(line, compiler, blocks, ctx)
+            self.parse_line_command(line, compiler, stage1, ctx)
         }
     }
 
@@ -1078,27 +1111,30 @@ impl<'a> Parser<'a> {
         &mut self,
         line: &'a [u8],
         compiler: &mut Compiler<'a>,
-        blocks: &mut Blocks<'a>,
+        stage1: &mut ParseStage1<'a>,
         ctx: &mut TextParseContext<'a>,
     ) -> Result<(), Error> {
+        let line_number = ctx.line_number;
         if let Some((label, block_start)) = parse_label(line)? {
             ctx.current_block.0.lines.push(PartiallyParsedLine {
                 ty: BlockLine::Label(label),
-                line_number: ctx.line_number,
+                line_number,
             });
             if block_start {
-                blocks.start_inline_block(ctx);
+                stage1.blocks.start_inline_block(ctx);
             }
             return Ok(());
         }
         if line == b"{" {
-            blocks.start_inline_block(ctx);
+            stage1.blocks.start_inline_block(ctx);
             return Ok(());
         }
         let command = line.fields().next().ok_or_else(|| Error::Msg("Empty line???"))?;
         let rest = (&line[command.len()..]).trim_start();
         match self.command_map.get(&command) {
             Some(&command) => {
+                let mut linked = LinkedBlock::None;
+                ctx.is_continuing_commands = true;
                 match command {
                     CommandPrototype::BwCommand(_, commands, ends_flow) => {
                         mark_required_bw_labels(rest, commands, compiler, ctx)?;
@@ -1111,17 +1147,36 @@ impl<'a> Parser<'a> {
                         let (place, _if_uninit, _rest) =
                             self.parse_set_place(rest, None, compiler)?;
                         if let ParsedPlace::Variable(ty, var_name) = place {
-                            self.add_set_decl(var_name, ty)?;
+                            add_set_decl(&mut stage1.variable_types, var_name, ty)?;
                         }
-                        ctx.is_continuing_commands = true;
                     }
-                    _ => {
-                        ctx.is_continuing_commands = true;
+                    CommandPrototype::CreateUnit => {
+                        if ends_with_tokens(rest, &[b"with", b"{"]) {
+                            let main_line_no = ctx.error_line_number;
+                            let id = self.parse_spritelocal_set(stage1, ctx)?;
+                            linked = LinkedBlock::SpriteLocals(id);
+                            for &(text, line_no) in stage1.sprite_local_sets.get_or_empty(id) {
+                                ctx.error_line_number = line_no;
+                                let (name, rest) = split_first_token(text)
+                                    .ok_or_else(|| Error::Msg("Expected var name"))?;
+                                // Checking this early for better errors
+                                let (_, _) = split_first_token(rest)
+                                    .filter(|x| x.0 == b"=")
+                                    .ok_or_else(|| Error::Msg("Expected '='"))?;
+                                add_set_decl(
+                                    &mut stage1.variable_types,
+                                    name,
+                                    VariableType::SpriteLocal,
+                                )?;
+                            }
+                            ctx.error_line_number = main_line_no;
+                        }
                     }
+                    _ => (),
                 }
                 ctx.current_block.0.lines.push(PartiallyParsedLine {
-                    ty: BlockLine::Command(command, rest, None),
-                    line_number: ctx.line_number,
+                    ty: BlockLine::Command(command, rest, linked),
+                    line_number,
                 });
             }
             None => return Err(Error::UnknownCommand(command.into())),
@@ -1129,17 +1184,30 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn add_set_decl(&mut self, var_name: &'a [u8], ty: VariableType) -> Result<(), Error> {
-        let old = self.variable_types.entry(var_name)
-            .or_insert(ty);
-        if *old != ty {
-            Err(Error::Dynamic(format!(
-                "Conflicting variable type for '{}', was previously used with {:?}",
-                var_name.as_bstr(), old,
-            )))
-        } else {
-            Ok(())
+    /// Reads lines until } and adds them as a new set to stage1.sprite_local_sets.
+    fn parse_spritelocal_set(
+        &mut self,
+        stage1: &mut ParseStage1<'a>,
+        ctx: &mut TextParseContext<'a>,
+    ) -> Result<SpriteLocalSetId, Error> {
+        let start = u32::try_from(stage1.sprite_local_sets.data.len())
+            .map_err(|_| Error::Overflow)?;
+        let id = u32::try_from(stage1.sprite_local_sets.offsets_lens.len())
+            .ok()
+            .and_then(|x| x.checked_add(1))
+            .ok_or_else(|| Error::Overflow)?;
+        let start_line = ctx.error_line_number;
+        let mut len = 0u32;
+        while let Some(line) = ctx.next_line() {
+            if line == b"}" {
+                stage1.sprite_local_sets.offsets_lens.push((start, len));
+                return Ok(SpriteLocalSetId(id));
+            }
+            len = len.checked_add(1).ok_or_else(|| Error::Overflow)?;
+            stage1.sprite_local_sets.data.push((line, ctx.line_number));
         }
+        ctx.error_line_number = start_line;
+        Err(Error::Msg("Unterminated {"))
     }
 
     fn parse_line_add_label(
@@ -1170,6 +1238,7 @@ impl<'a> Parser<'a> {
         line: &PartiallyParsedLine<'a>,
         block_scope: &BlockScope<'a, '_>,
         compiler: &mut Compiler<'a>,
+        stage1: &ParseStage1<'a>,
         ctx: &mut CompileContext,
     ) -> Result<(), Error> {
         compiler.set_current_line(line.line_number as u32);
@@ -1178,7 +1247,7 @@ impl<'a> Parser<'a> {
                 compiler.set_label_position_to_current(label, block_scope);
                 Ok(())
             }
-            BlockLine::Command(command, rest, _) => match command {
+            BlockLine::Command(command, rest, linked) => match command {
                 CommandPrototype::BwCommand(op, params, ends_flow) => {
                     compiler.add_bw_command(op, rest, params, ends_flow, block_scope)?;
                     Ok(())
@@ -1259,15 +1328,11 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::CreateUnit => {
-                    let (unit_id, rest) = parse_int_expr(rest, self, &compiler)?;
-                    let (x, rest) = parse_int_expr(rest, self, &compiler)?;
-                    let (y, rest) = parse_int_expr(rest, self, &compiler)?;
-                    let (player, rest) = parse_int_expr(rest, self, &compiler)?;
-                    if !rest.is_empty() {
-                        return Err(
-                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
-                        );
-                    }
+                    let (unit_id, rest) = parse_int_expr(rest, self, compiler)?;
+                    let (x, rest) = parse_int_expr(rest, self, compiler)?;
+                    let (y, rest) = parse_int_expr(rest, self, compiler)?;
+                    let (player, rest) = parse_int_expr(rest, self, compiler)?;
+                    let spritelocals = parse_with(rest, self, stage1, compiler, ctx, linked)?;
                     let unit_id = compiler.int_expr_id(unit_id);
                     let x = compiler.int_expr_id(x);
                     let y = compiler.int_expr_id(y);
@@ -1277,6 +1342,7 @@ impl<'a> Parser<'a> {
                     compiler.aice_bytecode.write_u32::<LE>(x).unwrap();
                     compiler.aice_bytecode.write_u32::<LE>(y).unwrap();
                     compiler.aice_bytecode.write_u32::<LE>(player).unwrap();
+                    compiler.aice_bytecode.write_u32::<LE>(spritelocals.0).unwrap();
                     Ok(())
                 }
                 CommandPrototype::IssueOrder => {
@@ -1557,7 +1623,32 @@ struct TextParseContext<'a> {
     current_block: (Block<'a>, BlockId, usize),
     text: &'a [u8],
     line_number: usize,
+    /// Current line for error reporting.
+    error_line_number: usize,
     is_continuing_commands: bool,
+}
+
+impl<'a> TextParseContext<'a> {
+    pub fn next_line(&mut self) -> Option<&'a [u8]> {
+        loop {
+            let text = self.text;
+            if text.is_empty() {
+                return None;
+            }
+            self.line_number = self.line_number.wrapping_add(1);
+            let line_end = text.find_byte(b'\n').unwrap_or_else(|| text.len());
+            let mut line = &text[..line_end];
+            self.text = text.get(line_end + 1..).unwrap_or_else(|| b"");
+            // Comment
+            if let Some(comment_start) = line.find_byte(b'#') {
+                line = &line[..comment_start];
+            };
+            let line = line.trim();
+            if !line.is_empty() {
+                return Some(line);
+            }
+        }
+    }
 }
 
 fn split_first_token_brace_aware(text: &[u8]) -> Option<(&[u8], &[u8])> {
@@ -1587,13 +1678,43 @@ fn is_word_char(val: u8) -> bool {
 }
 
 fn split_first_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
-    let start = text.bytes().position(|x| x != b' ' && x != b'\t')?;
-    let end = start + text.bytes().skip(start).position(|x| x == b' ' || x == b'\t')?;
+    debug_assert!(text.trim().len() == text.len(), "Untrimmed input {}", text.as_bstr());
+    let start = 0;
+    let end = text.bytes().skip(start).position(|x| x == b' ' || x == b'\t')
+        .map(|x| start.wrapping_add(x))
+        .unwrap_or(text.len());
     let first = &text[start..end];
     Some(match text.bytes().skip(end).position(|x| x != b' ' && x != b'\t') {
         Some(s) => (first, &text[end + s..]),
         None => (first, b""),
     })
+}
+
+fn split_last_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
+    debug_assert!(text.trim().len() == text.len(), "Untrimmed input {}", text.as_bstr());
+    let rev_start = 0;
+    let rev_end = text.bytes().rev().skip(rev_start).position(|x| x == b' ' || x == b'\t')
+        .map(|x| rev_start.wrapping_add(x))
+        .unwrap_or(text.len());
+    let start = text.len() - rev_end;
+    let end = text.len() - rev_start;
+    let first = &text[start..end];
+    Some(match text.bytes().rev().skip(rev_end).position(|x| x != b' ' && x != b'\t') {
+        Some(s) => (first, &text[..text.len() - rev_end - s]),
+        None => (first, b""),
+    })
+}
+
+fn ends_with_tokens(mut text: &[u8], tokens: &[&[u8]]) -> bool {
+    for &token in tokens.iter().rev() {
+        match split_last_token(text) {
+            Some((tok, rest)) if tok == token => {
+                text = rest;
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn parse_bool_expr<'a, 'b, 'c>(
@@ -1646,6 +1767,70 @@ fn parse_int_expr<'a, 'b, 'c>(
         ));
     }
     Ok((expr, rest))
+}
+
+/// Parses `with { spritelocal1 = expr, ... }`
+/// Accepts also empty input for empty set of spritelocals.
+fn parse_with<'a, 'b, 'c>(
+    text: &'a [u8],
+    parser: &'c mut Parser<'b>,
+    stage1: &ParseStage1<'b>,
+    compiler: &'c mut Compiler<'b>,
+    ctx: &mut CompileContext,
+    linked: LinkedBlock,
+) -> Result<SpriteLocalSetId, Error> {
+    if text.is_empty() {
+        return Ok(SpriteLocalSetId(0));
+    }
+
+    let parser_id = match linked {
+        LinkedBlock::SpriteLocals(id) => id,
+        _ => return Err(Error::Internal("Linked id not spritelocal")),
+    };
+    let (_, rest) = split_first_token(text)
+        .filter(|x| x.0 == b"with")
+        .ok_or_else(|| {
+            Error::Dynamic(format!("Expected 'with' or end of line; got '{}'", text.as_bstr()))
+        })?;
+    let (_, rest) = split_first_token(rest)
+        .filter(|x| x.0 == b"{")
+        .ok_or_else(|| Error::Msg("Expected '{'"))?;
+    if !rest.is_empty() {
+        return Err(Error::Trailing(rest.into()));
+    }
+
+    let prev_line = ctx.error_line;
+    let start = u32::try_from(compiler.sprite_local_sets.data.len())
+        .map_err(|_| Error::Overflow)?;
+    let id = u32::try_from(compiler.sprite_local_sets.offsets_lens.len())
+        .ok()
+        .and_then(|x| x.checked_add(1))
+        .ok_or_else(|| Error::Overflow)?;
+    let mut len = 0u32;
+    for &(text, line_no) in stage1.sprite_local_sets.get_or_empty(parser_id) {
+        ctx.error_line = line_no;
+        let (var_name, rest) = split_first_token(text)
+            .ok_or_else(|| Error::Msg("Expected variable name"))?;
+        let (_, rest) = split_first_token(rest)
+            .filter(|x| x.0 == b"=")
+            .ok_or_else(|| Error::Msg("Expected '='"))?;
+        let (expr, rest) = parse_int_expr(rest, parser, compiler)?;
+        if !rest.is_empty() {
+            return Err(Error::Trailing(rest.into()));
+        }
+        let expr = compiler.int_expr_id(expr);
+        let var = compiler.variables.get(var_name)
+            .and_then(|x| match x.place() {
+                Place::SpriteLocal(x) => Some(x),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Internal("Var not added"))?;
+        compiler.sprite_local_sets.data.push((var, expr));
+        len = len.checked_add(1).ok_or_else(|| Error::Overflow)?;
+    }
+    compiler.sprite_local_sets.offsets_lens.push((start, len));
+    ctx.error_line = prev_line;
+    Ok(SpriteLocalSetId(id))
 }
 
 fn mark_required_bw_labels<'a>(
@@ -1803,6 +1988,7 @@ struct Compiler<'a> {
     existing_conditions: FxHashMap<Rc<BoolExpr>, u32>,
     int_expressions: Vec<Rc<IntExpr>>,
     existing_int_expressions: FxHashMap<Rc<IntExpr>, u32>,
+    sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, u32)>,
     variables: FxHashMap<&'a [u8], PlaceId>,
     variable_counts: [u32; 2],
     flow_in_bw: bool,
@@ -1814,6 +2000,7 @@ struct Compiler<'a> {
 struct CompileContext {
     expr_buffer: [Option<Box<IntExpr>>; 4],
     write_buffer: Vec<u8>,
+    error_line: usize,
 }
 
 struct BwRequiredLabels<'a> {
@@ -1832,7 +2019,7 @@ impl<'a> BwRequiredLabels<'a> {
 
 /// 0xc000_0000 == tag
 /// tag 0 = global, 1 = spritelocal, 2 = bw
-/// Spritelocal 0x2000_0000 = set if_uninit
+/// SpriteLocal 0x2000_0000 = set if_uninit
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
 pub struct PlaceId(pub u32);
 
@@ -2186,6 +2373,7 @@ impl<'a> Compiler<'a> {
             existing_conditions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
             int_expressions: Vec::with_capacity(16),
             existing_int_expressions: FxHashMap::with_capacity_and_hasher(16, Default::default()),
+            sprite_local_sets: VecOfVecs::new(),
             variables: FxHashMap::default(),
             variable_counts: [0; 2],
             flow_in_bw: true,
@@ -2626,6 +2814,7 @@ impl<'a> Compiler<'a> {
             aice_data: self.aice_bytecode,
             conditions: self.conditions,
             int_expressions: self.int_expressions,
+            sprite_local_sets: self.sprite_local_sets,
             bw_aice_cmd_offsets,
             headers,
             global_count: self.variable_counts[VariableType::Global as usize],
@@ -2698,6 +2887,15 @@ pub struct ErrorWithLine {
     pub line: Option<usize>,
 }
 
+/// Results of the first parse pass.
+/// Immutable after that parse.
+struct ParseStage1<'a> {
+    blocks: Blocks<'a>,
+    /// Unparsed lines of `var_name = expr` and line number.
+    sprite_local_sets: VecOfVecs<SpriteLocalSetId, (&'a [u8], usize)>,
+    variable_types: FxHashMap<&'a [u8], VariableType>,
+}
+
 struct Blocks<'a> {
     blocks: Vec<Block<'a>>,
     /// Indices of blocks that aren't inlined
@@ -2751,9 +2949,27 @@ struct Block<'a> {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 struct BlockId(u32);
 
+/// Index to sprite_local_sets in Blocks / Compiler / Iscript. 1-based; 0 may be
+/// used for None.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct SpriteLocalSetId(pub u32);
+
+impl VecIndex for SpriteLocalSetId {
+    #[inline(always)]
+    fn index(&self) -> Option<usize> {
+        (self.0 as usize).checked_sub(1)
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum LinkedBlock {
+    SpriteLocals(SpriteLocalSetId),
+    None,
+}
+
 enum BlockLine<'a> {
     /// Normal line (Command, rest, linked_block if @{})
-    Command(CommandPrototype, &'a [u8], Option<BlockId>),
+    Command(CommandPrototype, &'a [u8], LinkedBlock),
     /// Execution switches to another block (e.g. not @{} block)
     InlineBlock(BlockId),
     Label(Label<'a>),
@@ -2826,13 +3042,31 @@ impl<'a> Blocks<'a> {
     }
 }
 
+fn add_set_decl<'a>(
+    variable_types: &mut FxHashMap<&'a [u8], VariableType>,
+    var_name: &'a [u8],
+    ty: VariableType,
+) -> Result<(), Error> {
+    let old = variable_types.entry(var_name)
+        .or_insert(ty);
+    if *old != ty {
+        Err(Error::Dynamic(format!(
+            "Conflicting variable type for '{}', was previously used with {:?}",
+            var_name.as_bstr(), old,
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     let mut compiler = Compiler::new();
     let mut parser = Parser::new();
     let mut errors = Vec::new();
 
-    let blocks = parser.parse_text(text, &mut compiler)?;
-    compiler.add_variables(&parser.variable_types);
+    let stage1 = parser.parse_text(text, &mut compiler)?;
+    let blocks = &stage1.blocks;
+    compiler.add_variables(&stage1.variable_types);
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
             parser.clear_current_error();
@@ -2851,16 +3085,20 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     let ctx = &mut CompileContext {
         expr_buffer: [None, None, None, None],
         write_buffer: Vec::with_capacity(64),
+        error_line: 0,
     };
 
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
             parser.clear_current_error();
-            if let Err(error) = parser.parse_line_pass3(line, &block, &mut compiler, ctx) {
+            ctx.error_line = line.line_number;
+            if let Err(error) =
+                parser.parse_line_pass3(line, &block, &mut compiler, &stage1, ctx)
+            {
                 let error = parser.current_error.take().unwrap_or(error);
                 errors.push(ErrorWithLine {
                     error,
-                    line: Some(line.line_number),
+                    line: Some(ctx.error_line),
                 });
             }
         });
@@ -3071,6 +3309,8 @@ mod test {
         assert_eq!(iscript.aice_data[aice_pos], aice_op::CREATE_UNIT);
         let x = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]) as usize;
         let y = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 9)..]) as usize;
+        let with_set = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 17)..]);
+        assert_eq!(with_set, 0);
         let x_place = BW_PLACES.iter()
             .find(|x| x.0 == b"flingy.position_x")
             .map(|x| x.1)
@@ -3266,6 +3506,80 @@ mod test {
         let mut errors = compile_err("if_uninit_err.txt");
         find_error(&mut errors, "if_uninit", 25);
         find_error(&mut errors, "if_uninit", 26);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn with() {
+        let iscript = compile_success("with.txt");
+        // The pos_to_line currently returns next aice line for any position
+        // that isn't inside the command start; search in reverse to find the actual line
+
+        // Line 48 check `create_unit .. with {}`
+        let aice_pos = (0..0x80).rfind(|&i| {
+            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 48
+        }).unwrap() as usize;
+        assert_eq!(iscript.aice_data[aice_pos], aice_op::CREATE_UNIT);
+        let with_set = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 17)..]);
+        assert_eq!(with_set, 1);
+        let locals = iscript.sprite_local_set(SpriteLocalSetId(with_set));
+        assert_eq!(locals.len(), 3);
+        assert_ne!(locals[0].0, locals[1].0);
+        assert_ne!(locals[0].0, locals[2].0);
+        // deaths = deaths + 1
+        let expr1 = locals[0].1 as usize;
+        match *iscript.int_expressions[expr1].inner() {
+            IntExprTree::Add(ref pair) => {
+                assert_eq!(&pair.1, &IntExprTree::Integer(1));
+                match pair.0 {
+                    IntExprTree::Custom(Int::Variable(place, _)) => {
+                        match place.place() {
+                            Place::SpriteLocal(x) => {
+                                assert_eq!(x, locals[0].0);
+                            }
+                            ref x => panic!("Wrong place {:?}", x),
+                        }
+                    }
+                    ref x => panic!("Wrong expr {:?}", x),
+                }
+            }
+            ref x => panic!("Wrong expr {:?}", x),
+        }
+        // miscstuff = 50
+        let expr2 = locals[1].1 as usize;
+        match *iscript.int_expressions[expr2].inner() {
+            IntExprTree::Integer(50) => (),
+            ref x => panic!("Wrong expr {:?}", x),
+        }
+        // rest = unit.target.hitpoints default 0
+        let expr3 = locals[2].1 as usize;
+        let (l, r) = unwrap_expr_default(iscript.int_expressions[expr3].inner());
+        match *l {
+            IntExprTree::Custom(Int::Variable(place, _)) => {
+                assert_place_obj(
+                    &iscript,
+                    place,
+                    UnitVar::Hitpoints,
+                    &[UnitObject::UnitTarget],
+                );
+            }
+            ref x => panic!("Wrong expr {:?}", x),
+        }
+        assert_eq!(r, &IntExprTree::Integer(0));
+    }
+
+    #[test]
+    fn with_err() {
+        let mut errors = compile_err("with_err.txt");
+        find_error(&mut errors, "Unterminated", 48);
+        find_error(&mut errors, "Last command does not terminate", 82);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn with_err2() {
+        let mut errors = compile_err("with_err2.txt");
+        find_error(&mut errors, "Global", 51);
         assert!(errors.is_empty());
     }
 }

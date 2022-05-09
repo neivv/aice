@@ -296,10 +296,14 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     bw_dat::init_units(units_dat as *const _, dat_len);
     let weapons_dat = ((*api).extended_dat)(1).expect("weapons.dat")(&mut dat_len);
     bw_dat::init_weapons(weapons_dat as *const _, dat_len);
+    let flingy_dat = ((*api).extended_dat)(2).expect("flingy.dat")(&mut dat_len);
+    bw_dat::init_flingy(flingy_dat as *const _, dat_len);
     let upgrades_dat = ((*api).extended_dat)(3).expect("upgrades.dat")(&mut dat_len);
     bw_dat::init_upgrades(upgrades_dat as *const _, dat_len);
     let techdata_dat = ((*api).extended_dat)(4).expect("techdata.dat")(&mut dat_len);
     bw_dat::init_techdata(techdata_dat as *const _, dat_len);
+    let sprites_dat = ((*api).extended_dat)(5).expect("sprites.dat")(&mut dat_len);
+    bw_dat::init_sprites(sprites_dat as *const _, dat_len);
     let orders_dat = ((*api).extended_dat)(7).expect("orders.dat")(&mut dat_len);
     bw_dat::init_orders(orders_dat as *const _, dat_len);
     ORDERS_DAT.store(orders_dat as usize, Ordering::Relaxed);

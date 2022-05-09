@@ -1,4 +1,5 @@
 use std::convert::TryFrom;
+use std::mem;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -14,7 +15,7 @@ use crate::bw;
 use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, SerializableImage};
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
-    UnitVar, ImageVar, GameVar, UnitRefId, UnitObject, UnitRefParts,
+    UnitVar, ImageVar, GameVar, UnitRefId, UnitObject, UnitRefParts, SpriteLocalSetId,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
@@ -30,6 +31,8 @@ pub struct IscriptState {
     image_locals: FxHashMap<SerializableImage, FxHashMap<u32, u32>>,
     globals: Vec<i32>,
     dry_run_call_stack: Vec<u32>,
+    with_vars: Vec<SpriteLocal>,
+    with_image: Option<ImageId>,
 }
 
 const TEMP_LOCAL_ID: u32 = !0;
@@ -101,6 +104,8 @@ impl IscriptState {
             image_locals: FxHashMap::default(),
             globals: vec![0; iscript.global_count as usize],
             dry_run_call_stack: Vec::new(),
+            with_vars: Vec::new(),
+            with_image: None,
         }
     }
 }
@@ -176,6 +181,10 @@ pub unsafe extern fn run_aice_script(
                     bw::finish_unit_pre(unit);
                     bw::finish_unit_post(unit);
                     bw::give_ai(unit);
+                } else {
+                    let mut globals_guard = Globals::get("run_aice_script");
+                    let globals = &mut *globals_guard;
+                    globals.iscript_state.with_image = None;
                 }
             }
             Ok(ScriptRunResult::IssueOrder(unit, order, pos)) => {
@@ -743,6 +752,31 @@ impl<'a> IscriptRunner<'a> {
         }
     }
 
+    fn set_with_vars(&mut self, image: ImageId, locals: SpriteLocalSetId) {
+        let set = self.iscript.sprite_local_set(locals);
+        if set.is_empty() {
+            return;
+        }
+        if let Some(image) = self.state.with_image {
+            bw_print!(
+                "Warning: Spritelocals for image {} did not get properly inited",
+                image.0,
+            );
+        }
+        self.state.with_image = Some(image);
+        self.state.with_vars.clear();
+        self.state.with_vars.reserve(set.len());
+        for &(var, expr) in set {
+            let expression = &self.iscript.int_expressions[expr as usize];
+            let mut eval_ctx = self.eval_ctx();
+            let value = eval_ctx.eval_int(&expression);
+            self.state.with_vars.push(SpriteLocal {
+                id: var,
+                value,
+            });
+        }
+    }
+
     /// Return error pos on error.
     ///
     /// Some commands which may recurse to iscript running (create_unit)
@@ -774,6 +808,16 @@ impl<'a> IscriptRunner<'a> {
                     }
                     let header_index = ((*self.bw_script).header - 0x1c) / 8;
                     let animation = (*self.bw_script).animation;
+                    if animation == 0 {
+                        // Check for init vars
+                        if self.state.with_image == Some(ImageId((*self.image).image_id)) {
+                            let sprite = Sprite::from_ptr((*self.image).parent)
+                                .expect("Image had no parent??");
+                            let vars = mem::replace(&mut self.state.with_vars, Vec::new());
+                            self.state.sprite_locals.insert(SerializableSprite(*sprite), vars);
+                            self.state.with_image = None;
+                        }
+                    }
                     let start_pos = self.iscript.headers.get(header_index as usize)
                         .and_then(|header| header.animations.get(animation as usize))
                         .and_then(|&x| x);
@@ -1131,6 +1175,7 @@ impl<'a> IscriptRunner<'a> {
                     let x_expr = self.read_u32()? as usize;
                     let y_expr = self.read_u32()? as usize;
                     let player_expr = self.read_u32()? as usize;
+                    let sprite_locals = SpriteLocalSetId(self.read_u32()?);
                     if self.dry_run {
                         continue;
                     }
@@ -1151,7 +1196,12 @@ impl<'a> IscriptRunner<'a> {
                         x: x as i16,
                         y: y as i16,
                     };
-                    let player = player as u8;
+                    let player = match player {
+                        0..=11 => player as u8,
+                        _ => continue,
+                    };
+                    let image = unit_id.flingy().sprite().image();
+                    self.set_with_vars(image, sprite_locals);
                     return Ok(ScriptRunResult::CreateUnit(unit_id, pos, player));
                 }
                 ISSUE_ORDER => {

@@ -71,7 +71,7 @@ dependencies = [
 [[package]]
 name = "bw_dat"
 version = "0.1.0"
-source = "git+https://github.com/neivv/aise?rev=68a4c868ed2dc3c68ec45d798718809b73383cc2#68a4c868ed2dc3c68ec45d798718809b73383cc2"
+source = "git+https://github.com/neivv/aise?rev=ec89bbd8359fdbd14ddbb02178a1cfb186f1aa5a#ec89bbd8359fdbd14ddbb02178a1cfb186f1aa5a"
 dependencies = [
  "bitflags",
  "fxhash",
