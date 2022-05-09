@@ -1,0 +1,83 @@
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 000 Scourge (zerg\avenger.grp)
+.headerstart
+IsId           	0
+Type           	12
+Init           	ScourgeInit
+Death          	ScourgeDeath
+GndAttkInit    	[NONE]
+AirAttkInit    	ScourgeAirAttkInit
+Unused1        	[NONE]
+GndAttkRpt     	[NONE]
+AirAttkRpt     	ScourgeAirAttkInit
+CastSpell      	[NONE]
+GndAttkToIdle  	[NONE]
+AirAttkToIdle  	ScourgeAirAttkToIdle
+Unused2        	[NONE]
+Walking        	ScourgeWalking
+WalkingToIdle  	ScourgeAirAttkToIdle
+SpecialState1  	[NONE]
+.headerend
+# ----------------------------------------------------------------------------- #
+
+ScourgeInit:
+    set if_uninit spritelocal deaths = 0
+	imgul          	1 0 42	# ScourgeShad (zerg\avenger.grp)
+	playfram       0
+	waitrand       	1 5
+ScourgeAirAttkToIdle:
+	playfram       	0x00	# frame set 0
+	setvertpos     	0
+	wait           	3
+	playfram       	0x11	# frame set 1
+	wait           	3
+	playfram       	0x22	# frame set 2
+	setvertpos     	1
+	wait           	3
+	playfram       	0x33	# frame set 3
+	setvertpos     	2
+	wait           	3
+	playfram       	0x44	# frame set 4
+	setvertpos     	1
+	wait           	3
+	goto           	ScourgeAirAttkToIdle
+
+ScourgeDeath:
+    if deaths > 5 goto ScourgeDeathSkip
+    create_unit 47 flingy.position_x flingy.position_y player with {
+        deaths = deaths + 1
+        miscstuff = 50
+        rest = unit.target.hitpoints default 0
+    }
+ScourgeDeathSkip:
+	playsnd        	776	# Zerg\AVENGER\ZAvDth00.WAV
+	imgol          	3 0 0	# ScourgeDeath (zerg\zavDeath.grp)
+	wait           	1
+	end            	
+
+ScourgeAirAttkInit:
+	playsnd        	778	# Zerg\AVENGER\ZAvHit00.WAV
+	sprol          	132 0 0	# ScourgeExplosion (zerg\zavExplo.grp)
+	wait           	1
+	attackwith     	2
+	goto           	long00
+
+ScourgeWalking:
+	setvertpos     	0
+ScourgeLocal00:
+	playfram       	0x00	# frame set 0
+	wait           	2
+	playfram       	0x11	# frame set 1
+	wait           	2
+	playfram       	0x22	# frame set 2
+	wait           	2
+	playfram       	0x33	# frame set 3
+	wait           	2
+	playfram       	0x44	# frame set 4
+	wait           	2
+	goto           	ScourgeLocal00
+
+long00:
+	wait           	125
+	goto           	long00
