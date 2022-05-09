@@ -89,6 +89,10 @@ expressions can use variables and Bw-visible memory.
 
 ```
 fireweapon <weapon_id>
+fireweapon <weapon_id> with {
+    spritelocal1 = <value>
+    [...]
+}
 ```
 
 Causes the unit to attack with a weapon. Weapon can be any [expression][expr], though
@@ -101,6 +105,12 @@ has not been explicitly confirmed. The very least they have very similar behavio
 `useweapon` also allows specifying any weapon to used, `useweapon` spawns the bullet on top of
 target regardless of its `weapons.dat` configuration, making it less useful than `fireweapon` with
 certain weapons.
+
+You can use `with {}` block to set spritelocals in the created weapon.
+See [create\_unit examples][with-example] for more information.
+
+Note that since `fireweapon` behaves as `castspell`, it will respect the rarely used weapons.dat
+targeting flags, and do nothing if the targeting flags prevent attacking the current target unit.
 
 ### playfram
 
@@ -146,7 +156,7 @@ unit would not fit there or the area is unwalkable. All four arguments are [expr
 Spritelocal variables can be set to the newly created unit `with { }` block containing spritelocal
 names and expressions to set them to.
 
-#### Example
+#### create\_unit examples
 
 ```
 create_unit 40 (flingy.position_x + 3) (flingy.position_y + 3) player
@@ -922,3 +932,4 @@ Orders.dat:
 [other-units]: #other-units
 [opt-expr]: #default-expressions
 [dat-fields]: #dat-table-fields
+[with-example]: #create_unit-examples

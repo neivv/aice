@@ -334,6 +334,7 @@ pub mod aice_op {
     pub const ORDER_DONE: u8 = 0x0d;
     pub const ISSUE_ORDER: u8 = 0x0e;
     pub const IMG_ON: u8 = 0x0f;
+    pub const FIRE_WEAPON: u8 = 0x10;
 }
 
 quick_error! {
@@ -1150,7 +1151,7 @@ impl<'a> Parser<'a> {
                             add_set_decl(&mut stage1.variable_types, var_name, ty)?;
                         }
                     }
-                    CommandPrototype::CreateUnit => {
+                    CommandPrototype::CreateUnit | CommandPrototype::FireWeapon => {
                         if ends_with_tokens(rest, &[b"with", b"{"]) {
                             let main_line_no = ctx.error_line_number;
                             let id = self.parse_spritelocal_set(stage1, ctx)?;
@@ -1283,13 +1284,11 @@ impl<'a> Parser<'a> {
                 }
                 CommandPrototype::FireWeapon => {
                     let (expr, rest) = parse_int_expr(rest, self, &compiler)?;
-                    if !rest.is_empty() {
-                        return Err(
-                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
-                        );
-                    }
+                    let spritelocals = parse_with(rest, self, stage1, compiler, ctx, linked)?;
                     let id = compiler.int_expr_id(expr);
-                    compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, id);
+                    compiler.add_aice_command(aice_op::FIRE_WEAPON);
+                    compiler.aice_bytecode.write_u32::<LE>(id).unwrap();
+                    compiler.aice_bytecode.write_u32::<LE>(spritelocals.0).unwrap();
                     // castspell
                     compiler.add_bw_code(&[0x27]);
                     compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, !0);

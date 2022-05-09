@@ -9,7 +9,9 @@ use lazy_static::lazy_static;
 use libc::c_void;
 use serde_derive::{Serialize, Deserialize};
 
-use bw_dat::{Game, Image, ImageId, OrderId, Unit, UnitId, UpgradeId, Sprite, TechId, Race};
+use bw_dat::{
+    Game, Image, ImageId, OrderId, Unit, UnitId, UpgradeId, Sprite, TechId, Race, WeaponId
+};
 
 use crate::bw;
 use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, SerializableImage};
@@ -1116,8 +1118,13 @@ impl<'a> IscriptRunner<'a> {
                     (*self.bw_script).pos = 0x4;
                     self.in_aice_code = false;
                 }
-                SET_ORDER_WEAPON => {
+                SET_ORDER_WEAPON | FIRE_WEAPON => {
                     let expr = self.read_u32()?;
+                    let sprite_locals = if opcode == FIRE_WEAPON {
+                        SpriteLocalSetId(self.read_u32()?)
+                    } else {
+                        SpriteLocalSetId(0)
+                    };
                     if self.dry_run {
                         continue;
                     }
@@ -1142,8 +1149,11 @@ impl<'a> IscriptRunner<'a> {
                         };
                         self.state.set_sprite_local(sprite, TEMP_LOCAL_ID, old as i32, false);
                         new_value = value;
+                        let image = WeaponId(value as u16).flingy().sprite().image();
+                        self.set_with_vars(image, sprite_locals);
                     } else {
                         new_value = self.get_sprite_local(self.image, TEMP_LOCAL_ID);
+                        self.state.with_image = None;
                     }
                     match orders_dat_weapon.entry_size {
                         1 => {
