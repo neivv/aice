@@ -71,23 +71,9 @@ struct ExprParser<'a, 'b> {
 impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
     type State = ExprState;
     fn parse_int<'a>(&mut self, input: &'a [u8]) -> Option<(Int, &'a [u8])> {
-        let word_end = input.iter().position(|&x| match x {
-            b'a' ..= b'z' | b'A' ..= b'Z' | b'_' | b'.' | b'0' ..= b'9' => false,
-            _ => true,
-        }).unwrap_or(input.len());
-        let word = &input[..word_end];
         let mut out = [None, None, None, None];
-        if let Some(&var_id) = self.variables.variables.get(word) {
-            return Some((Int::Variable(var_id, out), &input[word_end..]));
-        }
-        match self.parser.parse_place_expr(input, Some(&mut out), self.variables) {
-            Ok((place, rest)) => {
-                let var_id = match place {
-                    ParsedPlace::Variable(_ty, var_name) => {
-                        *self.variables.variables.get(var_name)?
-                    }
-                    ParsedPlace::Bw(place) => place,
-                };
+        match self.parser.parse_place_expr(input, &mut out, self.variables) {
+            Ok((var_id, rest)) => {
                 return Some((Int::Variable(var_id, out), rest));
             }
             Err(CanRecoverError::No(e)) => {
@@ -1179,9 +1165,8 @@ impl<'a> Parser<'a> {
                         ctx.is_continuing_commands = false;
                     }
                     CommandPrototype::Set => {
-                        let (place, _if_uninit, _rest) =
-                            self.exprs.parse_set_place(rest, None, &compiler.variables)?;
-                        if let ParsedPlace::Variable(ty, var_name) = place {
+                        let place = self.exprs.var_name_type_from_set_place(rest)?;
+                        if let Some((var_name, ty)) = place {
                             add_set_decl(&mut stage1.variable_types, var_name, ty)?;
                         }
                     }
@@ -1406,7 +1391,7 @@ impl<'a> Parser<'a> {
                     let vars = &compiler.variables;
                     let exprs = &mut self.exprs;
                     let (place, if_uninit, rest) =
-                        exprs.parse_set_place(rest, Some(&mut ctx.expr_buffer), vars)?;
+                        exprs.parse_set_place(rest, &mut ctx.expr_buffer, vars)?;
                     let (expr, rest) = parse_int_expr(rest, exprs, vars)?;
                     if !rest.is_empty() {
                         return Err(
@@ -1522,23 +1507,39 @@ impl ParserExprs {
         Ok((val, skip_spaces(rest)))
     }
 
+    fn var_name_type_from_set_place<'a>(
+        &mut self,
+        text: &'a [u8],
+    ) -> Result<Option<(&'a [u8], VariableType)>, Error> {
+        let (mut place, mut rest) = split_first_token_brace_aware(text)
+            .ok_or_else(|| CanRecoverError::Yes(Error::Msg("Expected place")))?;
+        if place == b"if_uninit" {
+            let (place2, rest2) = split_first_token_brace_aware(rest)
+                .ok_or_else(|| CanRecoverError::Yes(Error::Msg("Expected place")))?;
+            place = place2;
+            rest = rest2;
+        }
+        let ty = match place {
+            x if x == b"global" => VariableType::Global,
+            x if x == b"spritelocal" => VariableType::SpriteLocal,
+            _ => return Ok(None),
+        };
+        let (name, _) = split_first_token(rest)
+            .ok_or_else(|| Error::Msg("Expected variable name"))?;
+        let name = field_name_from_projection(name);
+        Ok(Some((name, ty)))
+    }
+
     fn parse_place_expr<'text, 'a>(
         &mut self,
         text: &'text [u8],
-        variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
+        var_out: &mut [Option<Box<IntExpr>>; 4],
         variable_decls: &CompilerVariables<'a>,
-    ) -> Result<(ParsedPlace<'text>, &'text [u8]), CanRecoverError> {
+    ) -> Result<(PlaceId, &'text [u8]), CanRecoverError> {
         let (place, rest) = split_first_token_brace_aware(text)
             .ok_or_else(|| CanRecoverError::Yes(Error::Msg("Expected place")))?;
-        let ty = match place {
-            x if x == b"global" => Some(VariableType::Global),
-            x if x == b"spritelocal" => Some(VariableType::SpriteLocal),
-            _ => None,
-        };
-        if let Some(ty) = ty {
-            let (name, rest) = split_first_token(rest)
-                .ok_or_else(|| Error::Msg("Expected variable name"))?;
-            return Ok((ParsedPlace::Variable(ty, name), rest));
+        if let Some(&var_id) = variable_decls.variables.get(place) {
+            return Ok((var_id, rest));
         }
         let (place, params) = place.iter()
             .position(|&x| x == b'(')
@@ -1546,7 +1547,7 @@ impl ParserExprs {
             .unwrap_or_else(|| (place, b""));
         // Params is b"param1, param2)", possibly also b"param1).left"
 
-        let mut bw = self.parse_place_expr_pre_params(place)?;
+        let mut bw = self.parse_place_expr_pre_params(place, variable_decls)?;
         let var_count = bw.place().var_count();
         if var_count == 0 {
             if !params.is_empty() {
@@ -1555,56 +1556,52 @@ impl ParserExprs {
                 ).into());
             }
         } else {
-            if let Some(var_out) = variables {
-                let mut params = params;
-                for i in 0..var_count {
-                    let (expr, rest) = parse_int_expr_allow_opt(params, self, variable_decls)?;
-                    if i != var_count - 1 {
-                        let rest = expect_token(rest, b",")?;
-                        params = rest;
-                    } else {
-                        params = rest;
-                    }
-                    var_out[i as usize] = Some(Box::new(expr));
+            let mut params = params;
+            for i in 0..var_count {
+                let (expr, rest) = parse_int_expr_allow_opt(params, self, variable_decls)?;
+                if i != var_count - 1 {
+                    let rest = expect_token(rest, b",")?;
+                    params = rest;
+                } else {
+                    params = rest;
                 }
-                if params.get(0).copied() != Some(b')') {
-                    return Err(Error::Dynamic(
-                        format!("Too many parameters for place: '{}'", params.as_bstr())
-                    ).into());
-                }
-                params = &params[1..];
-                // Parse what location coord it actually is
-                if matches!(bw.place(), Place::Game(GameVar::LocationLeft)) {
-                    bw = match params {
-                        b".left" => PlaceId::new_game(GameVar::LocationLeft),
-                        b".top" => PlaceId::new_game(GameVar::LocationTop),
-                        b".right" => PlaceId::new_game(GameVar::LocationRight),
-                        b".bottom" => PlaceId::new_game(GameVar::LocationBottom),
-                        _ => return Err(Error::Dynamic(
-                            format!("Invalid location coord '{}'", params.as_bstr())
-                        ).into()),
-                    };
-                    params = b"";
-                }
-                if !params.is_empty() {
-                    return Err(Error::Dynamic(
-                        format!("Trailing characters: '{}'", params.as_bstr())
-                    ).into());
-                }
+                var_out[i as usize] = Some(Box::new(expr));
+            }
+            if params.get(0).copied() != Some(b')') {
+                return Err(Error::Dynamic(
+                    format!("Too many parameters for place: '{}'", params.as_bstr())
+                ).into());
+            }
+            params = &params[1..];
+            // Parse what location coord it actually is
+            if matches!(bw.place(), Place::Game(GameVar::LocationLeft)) {
+                bw = match params {
+                    b".left" => PlaceId::new_game(GameVar::LocationLeft),
+                    b".top" => PlaceId::new_game(GameVar::LocationTop),
+                    b".right" => PlaceId::new_game(GameVar::LocationRight),
+                    b".bottom" => PlaceId::new_game(GameVar::LocationBottom),
+                    _ => return Err(Error::Dynamic(
+                        format!("Invalid location coord '{}'", params.as_bstr())
+                    ).into()),
+                };
+                params = b"";
+            }
+            if !params.is_empty() {
+                return Err(Error::Dynamic(
+                    format!("Trailing characters: '{}'", params.as_bstr())
+                ).into());
             }
         }
-        Ok((ParsedPlace::Bw(bw), rest))
+        Ok((bw, rest))
     }
 
-    /// If `result_variables` is set, parses place variables `game.deaths(a, b)`, to there.
-    /// Otherwise just skips over them.
     /// Returns (place, if_uninit, rest)
     fn parse_set_place<'a>(
         &mut self,
         mut text: &'a [u8],
-        result_variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
+        result_variables: &mut [Option<Box<IntExpr>>; 4],
         variable_decls: &CompilerVariables<'a>,
-    ) -> Result<(ParsedPlace<'a>, bool, &'a [u8]), Error> {
+    ) -> Result<(PlaceId, bool, &'a [u8]), Error> {
         let mut uninit = false;
         if let Some((first, rest)) = split_first_token(text) {
             if first == b"if_uninit" {
@@ -1612,11 +1609,18 @@ impl ParserExprs {
                 uninit = true;
             }
         }
+        let (place, rest) = split_first_token_brace_aware(text)
+            .ok_or_else(|| CanRecoverError::Yes(Error::Msg("Expected place")))?;
+        let text = match place {
+            x if x == b"global" => rest,
+            x if x == b"spritelocal" => rest,
+            _ => text,
+        };
         let (expr, rest) = self.parse_place_expr(text, result_variables, variable_decls)?;
         let rest = expect_token(rest, b"=")?;
         if uninit {
-            match expr {
-                ParsedPlace::Variable(VariableType::SpriteLocal, _) => (),
+            match expr.place() {
+                Place::SpriteLocal(..) => (),
                 _ => return Err(
                     Error::Msg("`if_uninit` can only be used for spritelocal variables")
                 ),
@@ -1630,6 +1634,7 @@ impl ParserExprs {
     fn parse_place_expr_pre_params<'text>(
         &mut self,
         place: &'text [u8],
+        variable_decls: &CompilerVariables<'text>,
     ) -> Result<PlaceId, CanRecoverError> {
         let error = || {
             CanRecoverError::Yes(
@@ -1651,6 +1656,13 @@ impl ParserExprs {
             .or_else(|| {
                 self.flingy_vars.get(field.as_bytes()).copied()
                     .map(|var| PlaceId::new_flingy(var, unit_ref))
+            })
+            .or_else(|| {
+                variable_decls.variables.get(field.as_bytes())
+                    .and_then(|x| match x.place() {
+                        Place::SpriteLocal(_, id) => PlaceId::new_spritelocal(id, unit_ref),
+                        _ => None,
+                    })
             })
             .ok_or_else(|| {
                 Error::Dynamic(format!("Unknown unit variable '{}'", field.as_bstr()))
@@ -1698,6 +1710,14 @@ impl<'a> TextParseContext<'a> {
                 return Some(line);
             }
         }
+    }
+}
+
+/// Splits out last part of x.y.z.x chain
+fn field_name_from_projection<'a>(text: &'a [u8]) -> &'a [u8] {
+    match text.bytes().rposition(|x| x == b'.') {
+        Some(x) => &text[(x + 1)..],
+        None => text,
     }
 }
 
@@ -1929,7 +1949,7 @@ fn parse_with<'a, 'b, 'c>(
         let expr = exprs.int_expr_id(expr);
         let var = vars.variables.get(var_name)
             .and_then(|x| match x.place() {
-                Place::SpriteLocal(x) => Some(x),
+                Place::SpriteLocal(_, x) => Some(x),
                 _ => None,
             })
             .ok_or_else(|| Error::Internal("Var not added"))?;
@@ -2131,23 +2151,6 @@ impl<'a> BwRequiredLabels<'a> {
     }
 }
 
-/// 0xc000_0000 == tag
-/// tag 0 = global, 1 = spritelocal, 2 = bw
-/// SpriteLocal 0x2000_0000 = set if_uninit
-#[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
-pub struct PlaceId(pub u32);
-
-enum ParsedPlace<'a> {
-    Variable(VariableType, &'a [u8]),
-    Bw(PlaceId),
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum VariableType {
-    Global,
-    SpriteLocal,
-}
-
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FlingyVar {
@@ -2304,10 +2307,26 @@ pub enum GameVar {
     PlayerColorChoice,
 }
 
+/// 0xc000_0000 == tag
+/// tag 0 = global, 1 = spritelocal, 2 = bw
+/// SpriteLocal 0x2000_0000 = set if_uninit
+///     spritelocal 0x1fff_0000 = object ref id
+/// bw second tag: 0x3c00_0000, 0 = flingy, 1 = bullet, 2 = unit, 3 = image, 4 = game
+///     bw 0x0000_00ff = var id
+///     bw 0x00ff_ff00 = object ref id (For units, flingies)
+#[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
+pub struct PlaceId(pub u32);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum VariableType {
+    Global,
+    SpriteLocal,
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Place {
     Global(u32),
-    SpriteLocal(u32),
+    SpriteLocal(UnitRefId, u32),
     Flingy(UnitRefId, FlingyVar),
     Bullet(BulletVar),
     Unit(UnitRefId, UnitVar),
@@ -2331,21 +2350,6 @@ impl UnitRefId {
 }
 
 impl PlaceId {
-    fn new(place: Place) -> PlaceId {
-        let (tag, id) = match place {
-            Place::Global(id) => (0 << 3, id),
-            Place::SpriteLocal(id) => (1 << 3, id),
-            Place::Flingy(unit, id) => ((2 << 3), (id as u32) | ((unit.0 as u32) << 8)),
-            Place::Bullet(id) => ((2 << 3) + 1, id as u32),
-            Place::Unit(unit, id) => ((2 << 3) + 2, (id as u32) | ((unit.0 as u32) << 8)),
-            Place::Image(id) => ((2 << 3) + 3, id as u32),
-            Place::Game(id) => ((2 << 3) + 4, id as u32),
-        };
-        let tag_shifted = (tag as u32) << 27;
-        assert!(id & tag_shifted == 0);
-        PlaceId(id | tag_shifted)
-    }
-
     const fn new_flingy(x: FlingyVar, unit: UnitRefId) -> PlaceId {
         PlaceId((x as u32) | ((unit.0 as u32) << 8) | ((2 << 3) << 27))
     }
@@ -2361,12 +2365,35 @@ impl PlaceId {
     const fn new_game(x: GameVar) -> PlaceId {
         PlaceId((x as u32) | (((2 << 3) + 4) << 27))
     }
+    fn new_global(id: u32) -> Option<PlaceId> {
+        if id <= 0x0fff_ffff {
+            Some(PlaceId(id))
+        } else {
+            None
+        }
+    }
+    fn new_spritelocal(id: u32, unit: UnitRefId) -> Option<PlaceId> {
+        if id <= 0x0000_ffff {
+            let tag_shifted = 1u32 << 30;
+            let unit_shifted = if unit.0 <= 0x1fff {
+                (unit.0 as u32) << 16
+            } else {
+                return None;
+            };
+            Some(PlaceId(id | tag_shifted | unit_shifted))
+        } else {
+            None
+        }
+    }
 
     pub fn place(self) -> Place {
         let id = self.0 & !0xc000_0000;
         match self.0 >> 30 {
             0 => Place::Global(id),
-            1 => Place::SpriteLocal(id & !0x2000_0000),
+            1 => Place::SpriteLocal(
+                UnitRefId((id >> 16) as u16 & 0x1fff),
+                id & 0xffff,
+            ),
             2 | _ => match (self.0 >> 27) & 0x7 {
                 0 => Place::Flingy(
                     UnitRefId((id >> 8) as u16),
@@ -2388,8 +2415,11 @@ impl PlaceId {
     }
 
     fn is_optional_expr(self) -> bool {
-        self.0 & 0xffff00 != 0 && (self.0 >> 30) == 2 &&
-            matches!((self.0 >> 27) & 0x7, 0 | 2)
+        match self.0 >> 30 {
+            1 => (self.0 >> 16) & 0x1fff != 0,
+            2 => self.0 & 0xffff00 != 0 && matches!((self.0 >> 27) & 0x7, 0 | 2),
+            _ => false,
+        }
     }
 }
 
@@ -2514,17 +2544,23 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn add_variables(&mut self, variables: &FxHashMap<&'a [u8], VariableType>) {
+    fn add_variables(
+        &mut self,
+        variables: &FxHashMap<&'a [u8], VariableType>,
+    ) -> Result<(), Error> {
         let vars = &mut self.variables;
         vars.variables.reserve(variables.len());
         for (&name, &ty) in variables {
             let id = vars.variable_counts[ty as usize] as u32;
             vars.variable_counts[ty as usize] += 1;
-            vars.variables.insert(name, match ty {
-                VariableType::Global => PlaceId::new(Place::Global(id)),
-                VariableType::SpriteLocal => PlaceId::new(Place::SpriteLocal(id)),
-            });
+            let place_id = match ty {
+                VariableType::Global => PlaceId::new_global(id),
+                VariableType::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
+            };
+            let place_id = place_id.ok_or_else(|| Error::Overflow)?;
+            vars.variables.insert(name, place_id);
         }
+        Ok(())
     }
 
     /// Makes `label` located at current position.
@@ -2621,23 +2657,17 @@ impl<'a> Compiler<'a> {
     fn add_set(
         &mut self,
         write_buffer: &mut Vec<u8>,
-        place: ParsedPlace,
+        place: PlaceId,
         if_uninit: bool,
         value: IntExpr,
         place_vars: &mut [Option<Box<IntExpr>>; 4],
     ) {
         self.add_flow_to_aice();
         let index = self.expressions.int_expr_id(value);
-        let var_id = match place {
-            ParsedPlace::Variable(_ty, var_name) => {
-                let val = *self.variables.variables.get(var_name).unwrap();
-                if if_uninit {
-                    val.0 | 0x2000_0000
-                } else {
-                    val.0
-                }
-            }
-            ParsedPlace::Bw(place) => place.0,
+        let var_id = if if_uninit {
+            place.0 | 0x2000_0000
+        } else {
+            place.0
         };
         write_buffer.clear();
         write_buffer.push(aice_op::SET);
@@ -3200,7 +3230,13 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
 
     let stage1 = parser.parse_text(text, &mut compiler)?;
     let blocks = &stage1.blocks;
-    compiler.add_variables(&stage1.variable_types);
+    if let Err(error) = compiler.add_variables(&stage1.variable_types) {
+        errors.push(ErrorWithLine {
+            error,
+            line: None,
+        });
+        return Err(errors);
+    }
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
             parser.exprs.clear_current_error();
@@ -3335,6 +3371,27 @@ mod test {
                         assert_eq!(x, object);
                     }
                 }
+            }
+            x => panic!("Wrong place {:?}", x),
+        }
+    }
+
+    fn assert_spritelocal_place_obj(
+        iscript: &Iscript,
+        place: PlaceId,
+        object: &[UnitObject],
+    ) -> u32 {
+        match place.place() {
+            Place::SpriteLocal(unit, x) => {
+                match iscript.unit_ref_object(unit) {
+                    UnitRefParts::Single(x) => {
+                        assert_eq!(&[x], object);
+                    }
+                    UnitRefParts::Many(x) => {
+                        assert_eq!(x, object);
+                    }
+                }
+                x
             }
             x => panic!("Wrong place {:?}", x),
         }
@@ -3607,6 +3664,42 @@ mod test {
             }
             ref x => panic!("Wrong expr {:?}", x),
         }
+
+        // Line 115 `set if_uninit spritelocal unit.transport.marine_count = 0`
+        let aice_pos = (0..0x100).rfind(|&i| {
+            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 115
+        }).unwrap() as usize;
+        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
+        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
+        let marine_count = assert_spritelocal_place_obj(&iscript, place, &[UnitObject::Transport]);
+        // Line 116 `set spritelocal unit.transport.marine_count = unit.transport.marine_count + 1 default 0`
+        let aice_pos = (0..0x100).rfind(|&i| {
+            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 116
+        }).unwrap() as usize;
+        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
+        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
+        let expr = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]);
+        let marine_count2 = assert_spritelocal_place_obj(&iscript, place, &[UnitObject::Transport]);
+        assert_eq!(marine_count, marine_count2);
+        let (l, r) = unwrap_expr_default(iscript.int_expressions[expr as usize].inner());
+        assert_eq!(r, &IntExprTree::Integer(0));
+        match l {
+            IntExprTree::Add(ref pair) => {
+                match pair.0 {
+                    IntExprTree::Custom(Int::Variable(place, _)) => {
+                        let marine_count2 = assert_spritelocal_place_obj(
+                            &iscript,
+                            place,
+                            &[UnitObject::Transport],
+                        );
+                        assert_eq!(marine_count, marine_count2);
+                    }
+                    ref x => panic!("Wrong expr {:?}", x),
+                }
+                assert_eq!(&pair.1, &IntExprTree::Integer(1));
+            }
+            ref x => panic!("Wrong expr {:?}", x),
+        }
     }
 
     #[test]
@@ -3673,7 +3766,8 @@ mod test {
                 match pair.0 {
                     IntExprTree::Custom(Int::Variable(place, _)) => {
                         match place.place() {
-                            Place::SpriteLocal(x) => {
+                            Place::SpriteLocal(unit_ref, x) => {
+                                assert_eq!(unit_ref, UnitRefId::this());
                                 assert_eq!(x, locals[0].0);
                             }
                             ref x => panic!("Wrong place {:?}", x),

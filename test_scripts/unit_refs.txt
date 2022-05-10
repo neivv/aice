@@ -85,3 +85,150 @@ long00:
     imgol_on unit.target 10 0 0
 	wait           	125
 	goto           	long00
+
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 239 Marine (terran\marine.grp)
+.headerstart
+IsId            78
+Type            12
+Init            MarineInit
+Death           MarineDeath
+GndAttkInit     MarineGndAttkInit
+AirAttkInit     MarineGndAttkInit
+Unused1         [NONE]
+GndAttkRpt      MarineGndAttkRpt
+AirAttkRpt      MarineGndAttkRpt
+CastSpell       [NONE]
+GndAttkToIdle   MarineGndAttkToIdle
+AirAttkToIdle   MarineGndAttkToIdle
+Unused2         [NONE]
+Walking         MarineWalking
+WalkingToIdle   MarineWalkingToIdle
+SpecialState1   [NONE]
+.headerend
+# ----------------------------------------------------------------------------- #
+
+MarineInit:
+    imgul           240 0 0 # MarineShad (terran\tmaShad.grp)
+MarineWalkingToIdle:
+    set if_uninit spritelocal unit.transport.marine_count = 0
+    set spritelocal unit.transport.marine_count = unit.transport.marine_count + 1 default 0
+    if (unit.transport.marine_count default 0) < 4 goto SkipTooManyRines
+    print TOO MANY MARINES HAVE ENTERED THIS TRANSPORT, IT WILL DIE
+    set unit.transport.death_timer = 1
+SkipTooManyRines:
+    playfram        0x44    # frame set 4
+MarineLocal02:
+    waitrand        63 75
+    randcondjmp     25 MarineLocal00
+    randcondjmp     128 MarineLocal01
+    goto            MarineLocal02
+
+MarineLocal00:
+    playfram        0x00    # frame set 0
+    wait            1
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x22    # frame set 2
+    randcondjmp     192 MarineLocal03
+    turnccwise      2
+    wait            3
+    turnccwise      2
+    wait            3
+    turnccwise      2
+    wait            3
+    turncwise       2
+    wait            3
+    turncwise       2
+    wait            3
+    turnccwise      2
+    wait            3
+    turnccwise      2
+    wait            3
+    turnccwise      2
+    wait            3
+    goto            MarineLocal04
+
+MarineLocal01:
+    playfram        0x55    # frame set 5
+    wait            1
+    playfram        0x66    # frame set 6
+    wait            1
+    turnrand        3
+    wait            1
+    playfram        0x55    # frame set 5
+    wait            1
+    goto            MarineWalkingToIdle
+
+MarineLocal03:
+    wait            13
+MarineLocal04:
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x00    # frame set 0
+    wait            1
+    goto            MarineWalkingToIdle
+
+MarineDeath:
+    playsndbtwn     276 277 # Terran\MARINE\TMaDth00.WAV, Terran\MARINE\TMaDth01.WAV
+    playfram        0xde    # frame set 13
+    wait            2
+    playfram        0xdf    # frame set 13
+    wait            2
+    playfram        0xe0    # frame set 13
+    wait            2
+    playfram        0xe1    # frame set 13
+    wait            2
+    playfram        0xe2    # frame set 13
+    wait            2
+    playfram        0xe3    # frame set 13
+    wait            2
+    playfram        0xe4    # frame set 13
+    wait            2
+    wait            1
+    end
+
+MarineGndAttkInit:
+    set image.drawfunc = 3
+    playfram        0x00    # frame set 0
+    wait            1
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x22    # frame set 2
+MarineGndAttkRpt:
+    wait            1
+    nobrkcodestart
+    playsnd         69  # Bullet\TMaFir00.wav
+    attackwith      1
+    playfram        0x33    # frame set 3
+    wait            1
+    playfram        0x22    # frame set 2
+    wait            1
+    playfram        0x33    # frame set 3
+    wait            1
+    playfram        0x22    # frame set 2
+    wait            1
+    playfram        0x33    # frame set 3
+    wait            1
+    playfram        0x22    # frame set 2
+    wait            1
+    nobrkcodeend
+    gotorepeatattk
+    ignorerest
+MarineGndAttkToIdle:
+    playfram        0x11    # frame set 1
+    wait            1
+    playfram        0x00    # frame set 0
+    wait            1
+    goto            MarineWalkingToIdle
+
+MarineWalking:
+    playfram        0xbb    # frame set 11
+    move            4
+    wait            1
+    playfram        0xcc    # frame set 12
+    move            4
+    wait            1
+    playfram        0x44    # frame set 4
+    goto            MarineWalking

@@ -655,6 +655,16 @@ the following names can be used to access other unit's, such as the current targ
 Note that any expression using these other units
 [needs to provide a default value][opt-expr] when the other unit is missing.
 
+Additionally any `spritelocal` variable names can be used to resolve the value of the
+`spritelocal` for the referenced unit's sprite. For example `unit.target.some_variable` can
+be used to read `some_variable` from unit's target. Note that when accessing `spritelocal`s from
+other units, an uninitialized `spritelocal` will also cause the default value to be executed.
+
+That is, `6 + unit.target.some_variable default -1` will evaluate to -1 if
+either `unit.target` does not exist, or if target has not set `some_variable` to any value.
+This is different from plain `spritelocal` access (`6 + some_variable`) which will print an error
+if the `some_variable` has not bee initialized.
+
 If you want to check if an unit exists, for example to jump depending on that,
 `has(unit_name)` boolean expression can be used.
 

@@ -70,7 +70,11 @@ impl IscriptState {
     }
 
     fn get_sprite_local(&self, image: *mut bw::Image, id: u32) -> Option<i32> {
-        self.get_sprite_locals(unsafe { (*image).parent })
+        self.get_sprite_local_sprite(unsafe { Sprite::from_ptr((*image).parent)? }, id)
+    }
+
+    fn get_sprite_local_sprite(&self, sprite: Sprite, id: u32) -> Option<i32> {
+        self.get_sprite_locals(*sprite)
             .and_then(|locals| locals.iter().find(|x| x.id == id))
             .map(|x| x.value)
     }
@@ -239,7 +243,21 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
             Int::Variable(id, place_vars) => {
                 match id.place() {
                     Place::Global(id) => self.parent.state.globals[id as usize],
-                    Place::SpriteLocal(id) => self.parent.get_sprite_local(self.image, id),
+                    Place::SpriteLocal(unit_ref, id) => {
+                        if unit_ref.is_this() {
+                            self.parent.get_sprite_local(self.image, id)
+                        } else {
+                            let result = self.parent.resolve_unit_ref(unit_ref)
+                                .and_then(|x| x.sprite())
+                                .and_then(|x| self.parent.state.get_sprite_local_sprite(x, id));
+                            if let Some(result) = result {
+                                result
+                            } else {
+                                self.evaluate_default = true;
+                                return 0;
+                            }
+                        }
+                    }
                     Place::Flingy(unit_ref, ty) => unsafe {
                         let flingy = if unit_ref.is_this() {
                             self.unit.map(|x| ptr::addr_of_mut!((**x).flingy))
@@ -938,9 +956,16 @@ impl<'a> IscriptRunner<'a> {
                     }
                     match place {
                         Place::Global(id) => self.state.globals[id as usize] = value,
-                        Place::SpriteLocal(id) => {
+                        Place::SpriteLocal(unit_ref, id) => {
                             let uninit = place_id.if_uninit();
-                            self.state.set_sprite_local((*self.image).parent, id, value, uninit);
+                            let sprite = if unit_ref.is_this() {
+                                Sprite::from_ptr((*self.image).parent)
+                            } else {
+                                self.resolve_unit_ref(unit_ref).and_then(|x| x.sprite())
+                            };
+                            if let Some(sprite) = sprite {
+                                self.state.set_sprite_local(*sprite, id, value, uninit);
+                            }
                         }
                         Place::Flingy(unit_ref, ty) => {
                             let flingy = if unit_ref.is_this() {
