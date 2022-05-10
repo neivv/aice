@@ -1,0 +1,120 @@
+
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 258 SpiderMine (terran\Spider.grp)
+.headerstart
+IsId            87
+Type            26
+Init            SpiderMineInit
+Death           SpiderMineDeath
+GndAttkInit     [NONE]
+AirAttkInit     [NONE]
+Unused1         [NONE]
+GndAttkRpt      [NONE]
+AirAttkRpt      [NONE]
+CastSpell       [NONE]
+GndAttkToIdle   [NONE]
+AirAttkToIdle   [NONE]
+Unused2         [NONE]
+Walking         SpiderMineWalking
+WalkingToIdle   SpiderMineWalkingToIdle
+SpecialState1   SpiderMineSpecialState1
+SpecialState2   [NONE]
+AlmostBuilt     [NONE]
+Built           [NONE]
+Landing         [NONE]
+LiftOff         [NONE]
+IsWorking       [NONE]
+WorkingToIdle   [NONE]
+WarpIn          [NONE]
+Unused3         [NONE]
+StarEditInit    [NONE]
+Disable         [NONE]
+Burrow          SpiderMineBurrow
+UnBurrow        SpiderMineUnBurrow
+Enable          [NONE]
+.headerend
+# ----------------------------------------------------------------------------- #
+
+SpiderMineInit:
+    imgul           259 0 0 # SpiderMineShad (terran\tsmShad.grp)
+SpiderMineWalkingToIdle:
+    playfram        0
+    goto            long00
+
+SpiderMineDeath:
+    imgol           429 0 0 # Spidermineexplosion (thingy\tmnExplo.grp)
+    wait            1
+    end
+
+SpiderMineWalking:
+    playsnd         355 # Terran\VULTURE\TVuMin00.WAV
+    print           mine is walking towards {unit.taget}, which is targeting {unit.target.target}
+    print       btw <5>color<6> other color <3><.< <1d>>.><7>ok x/y {flingy.position_x / 32},{flingy.position_y / 32}
+    print           target hp {unit.target.hitpoints} less than 10? {unit.target.hitpoints < 10}
+    move            16
+    wait            1
+    playfram        0
+    move            16
+    wait            1
+    playfram        1
+    move            16
+    wait            1
+    playfram        2
+    move            16
+    wait            1
+    playfram        3
+    move            16
+    wait            1
+    playfram        4
+    move            16
+    wait            1
+    playfram        5
+    move            16
+    wait            1
+    playfram        6
+    move            16
+    wait            1
+    playfram        7
+    goto            SpiderMineWalking
+
+SpiderMineSpecialState1:
+    castspell
+    sigorder        1
+    goto            long00
+
+SpiderMineBurrow:
+    nobrkcodestart
+    imgol           423 0 0 # Unknown423 (thingy\bDust.grp)
+    playsnd         354 # Terran\VULTURE\TVuMin01.WAV
+    playfram        8
+    wait            1
+    playfram        9
+    wait            1
+    playfram        10
+    wait            1
+    playfram        11
+    wait            1
+    sigorder        4
+    nobrkcodeend
+    goto            long00
+
+SpiderMineUnBurrow:
+    nobrkcodestart
+    imgul           423 0 0 # Unknown423 (thingy\bDust.grp)
+    playsnd         354 # Terran\VULTURE\TVuMin01.WAV
+    playfram        10
+    wait            1
+    playfram        9
+    wait            1
+    playfram        8
+    wait            1
+    playfram        0
+    sigorder        4
+    nobrkcodeend
+    goto            SpiderMineWalkingToIdle
+
+
+long00:
+    wait            125
+    goto            long00

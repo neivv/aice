@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::samase;
 
-use bw_dat::{OrderId, UnitId};
+use bw_dat::{OrderId, UnitId, UnitArray};
 
 pub use bw_dat::structs::*;
 
@@ -85,4 +85,11 @@ pub fn map_tile_flags() -> *mut u32 {
         MAP_TILE_FLAGS.store(val, Ordering::Relaxed);
     }
     val as *mut u32
+}
+
+pub fn unit_array() -> UnitArray {
+    unsafe {
+        let (ptr, len) = samase::unit_array();
+        UnitArray::new(ptr, len)
+    }
 }

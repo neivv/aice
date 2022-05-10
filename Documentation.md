@@ -85,6 +85,38 @@ continues from parent's iscript.
 Anything that was assigned with `set` can be evaluated later in any [expression][expr], as
 expressions can use variables and Bw-visible memory.
 
+### print
+
+```
+print <text>
+```
+
+Prints text. The text can contain [expressions][expr] wrapped in `{}`, in which case they will be
+evaluated and inserted in place of the expression. You do not need to add [default
+expression][opt-expr] if accessing [other units][other-units]; unevaluable expressions will
+display `NONE`.
+
+Unit references itself can be printed too, in which case the unit's unique id (uid), unit id,
+position, and owning player are printed. Or `NONE` if the unit reference does not exist.
+
+You can also include color codes with `<hex>` syntax similar to SCMDraft.
+
+If you need to have `{` or `}` in the message, you can refer to them with their hex codes
+`<7b>` for `{` and `<7d>` for `}`. `<` and `>` can be escaped with `<3c> and `<3e>`, though
+as long as they aren't part of a hex code they'll be printed normally anyway.
+
+Similarly, regular spaces after `print` and at end of the line are not included in message,
+but if you use `<20>` as the first or last space character they will be included.
+
+#### Examples
+
+```
+print hello this is a message
+print current unit's hitpoints are {hitpoints / 256} while its target has {unit.target.hitpoints / 256} hitpoints
+print Current unit's target is {unit.target}
+print <5>Color 1, <1c>color 2
+```
+
 ### fireweapon
 
 ```

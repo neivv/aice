@@ -1,4 +1,5 @@
 use std::convert::TryFrom;
+use std::io::Write;
 use std::mem;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,7 +11,8 @@ use libc::c_void;
 use serde_derive::{Serialize, Deserialize};
 
 use bw_dat::{
-    Game, Image, ImageId, OrderId, Unit, UnitId, UpgradeId, Sprite, TechId, Race, WeaponId
+    Game, Image, ImageId, OrderId, Unit, UnitId, UpgradeId, Sprite, TechId, Race, WeaponId,
+    UnitArray,
 };
 
 use crate::bw;
@@ -18,6 +20,7 @@ use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, Serializab
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
     UnitVar, ImageVar, GameVar, UnitRefId, UnitObject, UnitRefParts, SpriteLocalSetId,
+    FormatStringId, AnyExpr,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
@@ -33,8 +36,12 @@ pub struct IscriptState {
     image_locals: FxHashMap<SerializableImage, FxHashMap<u32, u32>>,
     globals: Vec<i32>,
     dry_run_call_stack: Vec<u32>,
+    #[serde(skip)]
     with_vars: Vec<SpriteLocal>,
+    #[serde(skip)]
     with_image: Option<ImageId>,
+    #[serde(skip)]
+    format_buffer: Vec<u8>,
 }
 
 const TEMP_LOCAL_ID: u32 = !0;
@@ -108,6 +115,7 @@ impl IscriptState {
             dry_run_call_stack: Vec::new(),
             with_vars: Vec::new(),
             with_image: None,
+            format_buffer: Vec::new(),
         }
     }
 }
@@ -548,6 +556,7 @@ struct IscriptRunner<'a> {
     player_lobby_color_choices: &'a mut PlayerColorChoices,
     active_iscript_unit: Option<Unit>,
     active_iscript_bullet: Option<*mut bw::Bullet>,
+    unit_array: Option<UnitArray>,
 }
 
 enum ScriptRunResult {
@@ -586,6 +595,7 @@ impl<'a> IscriptRunner<'a> {
             unit: None,
             bullet: None,
             map_tile_flags: None,
+            unit_array: None,
             player_lobby_color_choices,
             active_iscript_unit,
             active_iscript_bullet,
@@ -638,6 +648,10 @@ impl<'a> IscriptRunner<'a> {
                 evaluate_default: false,
             },
         }
+    }
+
+    fn unit_array(&mut self) -> UnitArray {
+        *self.unit_array.get_or_insert_with(|| bw::unit_array())
     }
 
     #[cold]
@@ -1330,6 +1344,57 @@ impl<'a> IscriptRunner<'a> {
                     if let Some(base_image) = base_image {
                         return Ok(ScriptRunResult::AddOverlay(base_image, image_id, x, y, above));
                     }
+                }
+                PRINT => {
+                    let text_id = FormatStringId(self.read_u32()?);
+                    if self.dry_run {
+                        continue;
+                    }
+                    let mut buf = mem::replace(&mut self.state.format_buffer, Vec::new());
+                    buf.clear();
+                    buf.reserve(128);
+                    let iscript = self.iscript;
+                    iscript.format_strings.format(text_id, &mut buf, |buf, expr| {
+                        match *expr {
+                            AnyExpr::Int(expr) => {
+                                let mut eval_ctx = self.eval_ctx();
+                                let expr = &iscript.int_expressions[expr as usize];
+                                let val = eval_ctx.eval_int(expr);
+                                if eval_ctx.custom.evaluate_default {
+                                    buf.extend_from_slice(b"NONE");
+                                } else {
+                                    let _ = write!(buf, "{}", val);
+                                }
+                            }
+                            AnyExpr::Bool(expr) => {
+                                let mut eval_ctx = self.eval_ctx();
+                                let expr = &iscript.conditions[expr as usize];
+                                let val = eval_ctx.eval_bool(expr);
+                                let msg = if eval_ctx.custom.evaluate_default {
+                                    &b"NONE"[..]
+                                } else {
+                                    [&b"false"[..], b"true"][val as usize]
+                                };
+                                buf.extend_from_slice(msg);
+                            }
+                            AnyExpr::UnitRef(id) => {
+                                if let Some(unit) = self.resolve_unit_ref(id) {
+                                    let pos = unit.position();
+                                    let unit_uid = self.unit_array().to_unique_id(unit);
+                                    let _ = write!(
+                                        buf,
+                                        "uid 0x{:x}, id {} at {},{}, owned by player {}",
+                                        unit_uid, unit.id().0, pos.x, pos.y, unit.player(),
+                                    );
+                                } else {
+                                    buf.extend_from_slice(b"NONE");
+                                }
+                            }
+                        }
+                    });
+                    buf.push(0);
+                    crate::samase::print_text(buf.as_ptr());
+                    self.state.format_buffer = buf;
                 }
                 x => {
                     error!("Unknown opcode {:02x}", x);

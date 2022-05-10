@@ -111,6 +111,14 @@ pub fn sprite_hlines() -> *mut *mut bw::Sprite {
     unsafe { SPRITE_HLINES.get()() }
 }
 
+static mut UNIT_ARRAY_LEN: GlobalFunc<extern fn(*mut *mut bw::Unit, *mut usize)> = GlobalFunc(None);
+pub unsafe fn unit_array() -> (*mut bw::Unit, usize) {
+    let mut size = 0usize;
+    let mut ptr = null_mut();
+    UNIT_ARRAY_LEN.get()(&mut ptr, &mut size);
+    (ptr, size)
+}
+
 static ORDERS_DAT: AtomicUsize = AtomicUsize::new(0);
 pub fn orders_dat() -> *mut bw_dat::DatTable {
     ORDERS_DAT.load(Ordering::Relaxed) as *mut bw_dat::DatTable
@@ -313,6 +321,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         "get_iscript_bin",
     );
     SPRITE_HLINES.init(((*api).sprite_hlines)().map(|x| mem::transmute(x)), "sprite_hlines");
+    UNIT_ARRAY_LEN.0 = Some(mem::transmute(((*api).unit_array_len)()));
 
     PRINT_TEXT.0 = Some(mem::transmute(((*api).print_text)()));
     RNG_SEED.0 = Some(mem::transmute(((*api).rng_seed)()));

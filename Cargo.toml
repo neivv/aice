@@ -2,7 +2,7 @@
 name = "aice"
 version = "0.0.1"
 authors = ["Markus Heikkinen <ittevien@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 [lib]
 name = "aice"

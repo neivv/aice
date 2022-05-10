@@ -15,6 +15,7 @@
 //! in low byte, and that offsets 0x4550 and 0x4353 are reserved 0xcc AnimationInit. Fun working
 //! with that =)
 
+mod print_format;
 mod ref_builder;
 
 use std::collections::hash_map::Entry;
@@ -32,6 +33,8 @@ use serde_derive::{Serialize, Deserialize};
 use bw_dat::expr::{self, Expr, CustomBoolExpr, CustomIntExpr};
 
 use ref_builder::UnitRefBuilder;
+
+pub use print_format::{FormatStrings, FormatStringId};
 
 pub type IntExpr = CustomIntExpr<ExprState>;
 pub type IntExprTree = bw_dat::expr::IntExprTree<ExprState>;
@@ -62,7 +65,7 @@ pub enum Bool {
 
 struct ExprParser<'a, 'b> {
     variables: &'b CompilerVariables<'a>,
-    parser: &'b mut Parser<'a>,
+    parser: &'b mut ParserExprs,
 }
 
 impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
@@ -335,6 +338,7 @@ pub mod aice_op {
     pub const ISSUE_ORDER: u8 = 0x0e;
     pub const IMG_ON: u8 = 0x0f;
     pub const FIRE_WEAPON: u8 = 0x10;
+    pub const PRINT: u8 = 0x11;
 }
 
 quick_error! {
@@ -522,6 +526,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"issue_order", IssueOrder),
         (b"imgul_on", ImgulOn),
         (b"imgol_on", ImgolOn),
+        (b"print", Print),
     ]
 };
 
@@ -695,6 +700,7 @@ enum CommandPrototype {
     OrderDone,
     ImgulOn,
     ImgolOn,
+    Print,
 }
 
 pub struct Iscript {
@@ -708,6 +714,13 @@ pub struct Iscript {
     pub line_info: LineInfo,
     unit_refs: Vec<Vec<UnitObject>>,
     sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, u32)>,
+    pub format_strings: FormatStrings,
+}
+
+pub enum AnyExpr {
+    Int(u32),
+    Bool(u32),
+    UnitRef(UnitRefId),
 }
 
 struct VecOfVecs<Key, T> {
@@ -965,11 +978,17 @@ struct Parser<'a> {
     // true if the previous command didn't force end execution
     animation_name_to_index: FxHashMap<&'static [u8], u8>,
     command_map: FxHashMap<&'static [u8], CommandPrototype>,
+    exprs: ParserExprs,
+    format_strings: FormatStrings,
+}
+
+struct ParserExprs {
+    unit_refs: UnitRefBuilder,
+    current_error: Option<Error>,
+    // These maps stay constant so maybe they should be in separate ParserConstantData
     bw_places: FxHashMap<&'static [u8], PlaceId>,
     unit_vars: FxHashMap<&'static [u8], UnitVar>,
     flingy_vars: FxHashMap<&'static [u8], FlingyVar>,
-    unit_refs: UnitRefBuilder,
-    current_error: Option<Error>,
 }
 
 impl<'a> Parser<'a> {
@@ -982,20 +1001,15 @@ impl<'a> Parser<'a> {
                 .map(|x| (x.0.as_bytes(), x.1))
                 .collect(),
             command_map: COMMANDS.iter().cloned().collect(),
-            bw_places: BW_PLACES.iter().cloned().collect(),
-            unit_vars: UNIT_VARS.iter().cloned().collect(),
-            flingy_vars: FLINGY_VARS.iter().cloned().collect(),
-            unit_refs: UnitRefBuilder::new(),
-            current_error: None,
+            exprs: ParserExprs {
+                unit_refs: UnitRefBuilder::new(),
+                current_error: None,
+                bw_places: BW_PLACES.iter().cloned().collect(),
+                unit_vars: UNIT_VARS.iter().cloned().collect(),
+                flingy_vars: FLINGY_VARS.iter().cloned().collect(),
+            },
+            format_strings: FormatStrings::new(),
         }
-    }
-
-    fn clear_current_error(&mut self) {
-        self.current_error = None;
-    }
-
-    fn set_current_error(&mut self, error: Error) {
-        self.current_error = Some(error);
     }
 
     /// Separates blocks out of the text, parses headers.
@@ -1166,7 +1180,7 @@ impl<'a> Parser<'a> {
                     }
                     CommandPrototype::Set => {
                         let (place, _if_uninit, _rest) =
-                            self.parse_set_place(rest, None, &compiler.variables)?;
+                            self.exprs.parse_set_place(rest, None, &compiler.variables)?;
                         if let ParsedPlace::Variable(ty, var_name) = place {
                             add_set_decl(&mut stage1.variable_types, var_name, ty)?;
                         }
@@ -1203,7 +1217,7 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Reads lines until } and adds them as a new set to stage1.sprite_local_sets.
+    /// Reads lines until '}' and adds them as a new set to stage1.sprite_local_sets.
     fn parse_spritelocal_set(
         &mut self,
         stage1: &mut ParseStage1<'a>,
@@ -1267,7 +1281,8 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::If => {
-                    let (condition, rest) = parse_bool_expr(rest, self, &compiler.variables)?;
+                    let (condition, rest) =
+                        parse_bool_expr(rest, &mut self.exprs, &compiler.variables)?;
                     let mut tokens = rest.fields();
                     let next = tokens.next();
                     let is_call = match next {
@@ -1296,8 +1311,9 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::FireWeapon => {
-                    let (expr, rest) = parse_int_expr(rest, self, &compiler.variables)?;
-                    let spritelocals = parse_with(rest, self, stage1, compiler, ctx, linked)?;
+                    let exprs = &mut self.exprs;
+                    let (expr, rest) = parse_int_expr(rest, exprs, &compiler.variables)?;
+                    let spritelocals = parse_with(rest, exprs, stage1, compiler, ctx, linked)?;
                     let id = compiler.expressions.int_expr_id(expr);
                     compiler.add_aice_command(aice_op::FIRE_WEAPON);
                     compiler.aice_bytecode.write_u32::<LE>(id).unwrap();
@@ -1308,7 +1324,7 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::PlayFram => {
-                    let (expr, rest) = parse_int_expr(rest, self, &compiler.variables)?;
+                    let (expr, rest) = parse_int_expr(rest, &mut self.exprs, &compiler.variables)?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
@@ -1341,11 +1357,12 @@ impl<'a> Parser<'a> {
                 }
                 CommandPrototype::CreateUnit => {
                     let vars = &compiler.variables;
-                    let (unit_id, rest) = parse_int_expr(rest, self, vars)?;
-                    let (x, rest) = parse_int_expr(rest, self, vars)?;
-                    let (y, rest) = parse_int_expr(rest, self, vars)?;
-                    let (player, rest) = parse_int_expr(rest, self, vars)?;
-                    let spritelocals = parse_with(rest, self, stage1, compiler, ctx, linked)?;
+                    let exprs = &mut self.exprs;
+                    let (unit_id, rest) = parse_int_expr(rest, exprs, vars)?;
+                    let (x, rest) = parse_int_expr(rest, exprs, vars)?;
+                    let (y, rest) = parse_int_expr(rest, exprs, vars)?;
+                    let (player, rest) = parse_int_expr(rest, exprs, vars)?;
+                    let spritelocals = parse_with(rest, exprs, stage1, compiler, ctx, linked)?;
                     let expr = &mut compiler.expressions;
                     let unit_id = expr.int_expr_id(unit_id);
                     let x = expr.int_expr_id(x);
@@ -1362,8 +1379,9 @@ impl<'a> Parser<'a> {
                 CommandPrototype::IssueOrder => {
                     let (order_id, rest) = parse_u8_rest(rest)?;
                     let vars = &compiler.variables;
-                    let (x, rest) = parse_int_expr(rest, self, vars)?;
-                    let (y, rest) = parse_int_expr(rest, self, vars)?;
+                    let exprs = &mut self.exprs;
+                    let (x, rest) = parse_int_expr(rest, exprs, vars)?;
+                    let (y, rest) = parse_int_expr(rest, exprs, vars)?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
@@ -1386,9 +1404,10 @@ impl<'a> Parser<'a> {
                 CommandPrototype::Set => {
                     ctx.expr_buffer[0] = None;
                     let vars = &compiler.variables;
+                    let exprs = &mut self.exprs;
                     let (place, if_uninit, rest) =
-                        self.parse_set_place(rest, Some(&mut ctx.expr_buffer), vars)?;
-                    let (expr, rest) = parse_int_expr(rest, self, vars)?;
+                        exprs.parse_set_place(rest, Some(&mut ctx.expr_buffer), vars)?;
+                    let (expr, rest) = parse_int_expr(rest, exprs, vars)?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
@@ -1408,11 +1427,12 @@ impl<'a> Parser<'a> {
                     // Flags 0x1 = Imgol, 0x2 = image is u16 const, 0x4 = x is i8 const
                     // 0x8 = y is i8 const
                     // Otherwise u32 expressions
-                    let (unit_ref, rest) = self.parse_unit_ref_rest(rest)?;
+                    let (unit_ref, rest) = self.exprs.parse_unit_ref_rest(rest)?;
                     let vars = &compiler.variables;
-                    let (image, rest) = parse_int_expr(rest, self, vars)?;
-                    let (x, rest) = parse_int_expr(rest, self, vars)?;
-                    let (y, rest) = parse_int_expr(rest, self, vars)?;
+                    let exprs = &mut self.exprs;
+                    let (image, rest) = parse_int_expr(rest, exprs, vars)?;
+                    let (x, rest) = parse_int_expr(rest, exprs, vars)?;
+                    let (y, rest) = parse_int_expr(rest, exprs, vars)?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
@@ -1471,52 +1491,38 @@ impl<'a> Parser<'a> {
                     }
                     Ok(())
                 }
+                CommandPrototype::Print => {
+                    let format_id = self.format_strings.parse(rest, &mut self.exprs, compiler)?;
+                    compiler.add_aice_command_u32(aice_op::PRINT, format_id.0);
+                    Ok(())
+                }
             }
             _ => Ok(())
         }
+    }
+}
+
+impl ParserExprs {
+    fn clear_current_error(&mut self) {
+        self.current_error = None;
+    }
+
+    fn set_current_error(&mut self, error: Error) {
+        self.current_error = Some(error);
     }
 
     fn parse_unit_ref_rest<'text>(
         &mut self,
         text: &'text [u8],
     ) -> Result<(UnitRefId, &'text [u8]), Error> {
-        let space = text.iter().position(|&x| x == b' ' || x == b'\t')
+        let end = text.iter().position(|&x| x != b'.' && !x.is_ascii_alphanumeric())
             .unwrap_or(text.len());
-        let (text, rest) = text.split_at(space);
+        let (text, rest) = text.split_at(end);
         let val = self.unit_refs.parse(text)?;
-        Ok((val, &rest[1..]))
+        Ok((val, skip_spaces(rest)))
     }
 
-    /// If `result_variables` is set, parses place variables `game.deaths(a, b)`, to there.
-    /// Otherwise just skips over them.
-    /// Returns (place, if_uninit, rest)
-    fn parse_set_place(
-        &mut self,
-        mut text: &'a [u8],
-        result_variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
-        variable_decls: &CompilerVariables<'a>,
-    ) -> Result<(ParsedPlace<'a>, bool, &'a [u8]), Error> {
-        let mut uninit = false;
-        if let Some((first, rest)) = split_first_token(text) {
-            if first == b"if_uninit" {
-                text = rest;
-                uninit = true;
-            }
-        }
-        let (expr, rest) = self.parse_place_expr(text, result_variables, variable_decls)?;
-        let rest = expect_token(rest, b"=")?;
-        if uninit {
-            match expr {
-                ParsedPlace::Variable(VariableType::SpriteLocal, _) => (),
-                _ => return Err(
-                    Error::Msg("`if_uninit` can only be used for spritelocal variables")
-                ),
-            }
-        }
-        Ok((expr, uninit, rest))
-    }
-
-    fn parse_place_expr<'text>(
+    fn parse_place_expr<'text, 'a>(
         &mut self,
         text: &'text [u8],
         variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
@@ -1588,6 +1594,35 @@ impl<'a> Parser<'a> {
             }
         }
         Ok((ParsedPlace::Bw(bw), rest))
+    }
+
+    /// If `result_variables` is set, parses place variables `game.deaths(a, b)`, to there.
+    /// Otherwise just skips over them.
+    /// Returns (place, if_uninit, rest)
+    fn parse_set_place<'a>(
+        &mut self,
+        mut text: &'a [u8],
+        result_variables: Option<&mut [Option<Box<IntExpr>>; 4]>,
+        variable_decls: &CompilerVariables<'a>,
+    ) -> Result<(ParsedPlace<'a>, bool, &'a [u8]), Error> {
+        let mut uninit = false;
+        if let Some((first, rest)) = split_first_token(text) {
+            if first == b"if_uninit" {
+                text = rest;
+                uninit = true;
+            }
+        }
+        let (expr, rest) = self.parse_place_expr(text, result_variables, variable_decls)?;
+        let rest = expect_token(rest, b"=")?;
+        if uninit {
+            match expr {
+                ParsedPlace::Variable(VariableType::SpriteLocal, _) => (),
+                _ => return Err(
+                    Error::Msg("`if_uninit` can only be used for spritelocal variables")
+                ),
+            }
+        }
+        Ok((expr, uninit, rest))
     }
 
     /// Parses `unit.hitpoints`, `unit.target.target.parent.hitpoints`, `game.deaths`, etc.
@@ -1739,18 +1774,33 @@ fn ends_with_tokens(mut text: &[u8], tokens: &[&[u8]]) -> bool {
     true
 }
 
-fn parse_bool_expr<'a, 'b, 'c>(
+fn skip_spaces(input: &[u8]) -> &[u8] {
+    match input.iter().position(|&x| x != b' ' && x != b'\t') {
+        Some(s) => &input[s..],
+        None => &[],
+    }
+}
+
+fn parse_bool_expr_allow_opt<'a, 'b, 'c>(
     text: &'a [u8],
-    parser: &'c mut Parser<'b>,
+    parser: &'c mut ParserExprs,
     variable_decls: &'c CompilerVariables<'b>,
 ) -> Result<(BoolExpr, &'a [u8]), Error> {
     let mut parser = ExprParser {
         variables: variable_decls,
         parser,
     };
-    let (expr, rest) = CustomBoolExpr::parse_part_custom(text.as_ref(), &mut parser)
+    CustomBoolExpr::parse_part_custom(text.as_ref(), &mut parser)
         .map(|(a, b)| (a, b))
-        .map_err(|e| Error::from(e))?;
+        .map_err(|e| Error::from(e))
+}
+
+fn parse_bool_expr<'a, 'b, 'c>(
+    text: &'a [u8],
+    parser: &'c mut ParserExprs,
+    variable_decls: &'c CompilerVariables<'b>,
+) -> Result<(BoolExpr, &'a [u8]), Error> {
+    let (expr, rest) = parse_bool_expr_allow_opt(text, parser, variable_decls)?;
     if is_optional_expr(expr.inner()) {
         let expr_string_len = text.len() - rest.len();
         let expr_string = &text[..expr_string_len];
@@ -1763,7 +1813,7 @@ fn parse_bool_expr<'a, 'b, 'c>(
 
 fn parse_int_expr_allow_opt<'a, 'b, 'c>(
     text: &'a [u8],
-    parser: &'c mut Parser<'b>,
+    parser: &'c mut ParserExprs,
     variable_decls: &'c CompilerVariables<'b>,
 ) -> Result<(IntExpr, &'a [u8]), Error> {
     let mut parser = ExprParser {
@@ -1777,7 +1827,7 @@ fn parse_int_expr_allow_opt<'a, 'b, 'c>(
 
 fn parse_int_expr<'a, 'b, 'c>(
     text: &'a [u8],
-    parser: &'c mut Parser<'b>,
+    parser: &'c mut ParserExprs,
     variable_decls: &'c CompilerVariables<'b>,
 ) -> Result<(IntExpr, &'a [u8]), Error> {
     let (expr, rest) = parse_int_expr_allow_opt(text, parser, variable_decls)?;
@@ -1791,11 +1841,50 @@ fn parse_int_expr<'a, 'b, 'c>(
     Ok((expr, rest))
 }
 
+fn parse_any_expr_allow_opt<'a, 'b, 'c>(
+    text: &'a [u8],
+    parser: &'c mut ParserExprs,
+    compiler: &'c mut Compiler<'b>,
+) -> Result<(AnyExpr, &'a [u8]), Error> {
+    let int_result = parse_int_expr_allow_opt(text, parser, &compiler.variables);
+    if int_result.is_ok() {
+        if let Ok(x) = int_result {
+            let expr = compiler.expressions.int_expr_id(x.0);
+            return Ok((AnyExpr::Int(expr), x.1));
+        }
+    }
+    let int_err = parser.current_error.take().unwrap_or(int_result.unwrap_err());
+    let bool_result = parse_bool_expr_allow_opt(text, parser, &compiler.variables);
+    if bool_result.is_ok() {
+        if let Ok(x) = bool_result {
+            let expr = compiler.expressions.bool_expr_id(x.0);
+            return Ok((AnyExpr::Bool(expr), x.1));
+        }
+    }
+    let bool_err = parser.current_error.take().unwrap_or(bool_result.unwrap_err());
+    let unit_ref_result = parser.parse_unit_ref_rest(text);
+    if unit_ref_result.is_ok() {
+        if let Ok(x) = unit_ref_result {
+            return Ok((AnyExpr::UnitRef(x.0), x.1));
+        }
+    }
+    let unit_err = parser.current_error.take().unwrap_or(unit_ref_result.unwrap_err());
+    Err(Error::Dynamic(
+        format!(
+            "Cannot parse '{}' as any kind of expression:\n\
+            Int parsing error: {}\n\
+            Bool parsing error: {}\n\
+            Unit ref parsing error: {}",
+            text.as_bstr(), int_err, bool_err, unit_err,
+        )
+    ))
+}
+
 /// Parses `with { spritelocal1 = expr, ... }`
 /// Accepts also empty input for empty set of spritelocals.
 fn parse_with<'a, 'b, 'c>(
     text: &'a [u8],
-    parser: &'c mut Parser<'b>,
+    parser: &'c mut ParserExprs,
     stage1: &ParseStage1<'b>,
     compiler: &'c mut Compiler<'b>,
     ctx: &mut CompileContext,
@@ -2569,17 +2658,7 @@ impl<'a> Compiler<'a> {
         is_call: bool,
     ) -> Result<(), Error> {
         self.add_flow_to_aice();
-        let exprs = &mut self.expressions;
-        let index = match exprs.existing_conditions.get(&condition).cloned() {
-            Some(s) => s,
-            None => {
-                let index = exprs.conditions.len() as u32;
-                let rc = Rc::new(condition);
-                exprs.conditions.push(rc.clone());
-                exprs.existing_conditions.insert(rc, index);
-                index
-            }
-        };
+        let index = self.expressions.bool_expr_id(condition);
         let pos = self.label_location(dest, block_scope)
             .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
 
@@ -2730,6 +2809,7 @@ impl<'a> Compiler<'a> {
         blocks: &Blocks<'a>,
         headers: &[Header<'a>],
         unit_refs: Vec<Vec<UnitObject>>,
+        format_strings: FormatStrings,
     ) -> Result<Iscript, Error> {
         self.fixup_missing_label_positions(blocks);
 
@@ -2840,6 +2920,7 @@ impl<'a> Compiler<'a> {
             global_count: self.variables.variable_counts[VariableType::Global as usize],
             line_info: self.line_info.finish(),
             unit_refs,
+            format_strings,
         })
     }
 
@@ -2898,6 +2979,19 @@ impl CompilerExprs {
                 let rc = Rc::new(value);
                 self.int_expressions.push(rc.clone());
                 self.existing_int_expressions.insert(rc, index);
+                index
+            }
+        }
+    }
+
+    fn bool_expr_id(&mut self, value: BoolExpr) -> u32 {
+        match self.existing_conditions.get(&value).cloned() {
+            Some(s) => s,
+            None => {
+                let index = self.conditions.len() as u32;
+                let rc = Rc::new(value);
+                self.conditions.push(rc.clone());
+                self.existing_conditions.insert(rc, index);
                 index
             }
         }
@@ -3109,9 +3203,9 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     compiler.add_variables(&stage1.variable_types);
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
-            parser.clear_current_error();
+            parser.exprs.clear_current_error();
             if let Err(error) = parser.parse_line_add_label(line, &block, &mut compiler) {
-                let error = parser.current_error.take().unwrap_or(error);
+                let error = parser.exprs.current_error.take().unwrap_or(error);
                 errors.push(ErrorWithLine {
                     error,
                     line: Some(line.line_number),
@@ -3130,12 +3224,12 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
 
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
-            parser.clear_current_error();
+            parser.exprs.clear_current_error();
             ctx.error_line = line.line_number;
             if let Err(error) =
                 parser.parse_line_pass3(line, &block, &mut compiler, &stage1, ctx)
             {
-                let error = parser.current_error.take().unwrap_or(error);
+                let error = parser.exprs.current_error.take().unwrap_or(error);
                 errors.push(ErrorWithLine {
                     error,
                     line: Some(ctx.error_line),
@@ -3146,7 +3240,12 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     if !errors.is_empty() {
         return Err(errors);
     }
-    let script = match compiler.compile(&blocks, &parser.headers, parser.unit_refs.finish()) {
+    let script = match compiler.compile(
+        &blocks,
+        &parser.headers,
+        parser.exprs.unit_refs.finish(),
+        parser.format_strings,
+    ) {
         Ok(o) => o,
         Err(error) => {
             errors.push(ErrorWithLine {
@@ -3620,6 +3719,18 @@ mod test {
     fn with_err2() {
         let mut errors = compile_err("with_err2.txt");
         find_error(&mut errors, "Global", 51);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn print() {
+        let _ = compile_success("print.txt");
+    }
+
+    #[test]
+    fn print_err() {
+        let mut errors = compile_err("print_err.txt");
+        find_error(&mut errors, "as any kind of expression", 52);
         assert!(errors.is_empty());
     }
 }
