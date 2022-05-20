@@ -158,3 +158,39 @@ impl UnitRefBuilder {
         Ok(new_id)
     }
 }
+
+#[test]
+fn unit_ref_tests() {
+    let mut builder = UnitRefBuilder::new();
+    assert_eq!(
+        builder.parse(b"unit").unwrap(),
+        (UnitRefId(UnitObject::This as _), &b""[..])
+    );
+    assert_eq!(
+        builder.parse(b"unit.target~~~").unwrap(),
+        (UnitRefId(UnitObject::UnitTarget as _), &b"~~~"[..])
+    );
+    assert_eq!(
+        builder.parse(b"bullet.target.x").unwrap(),
+        (UnitRefId(UnitObject::BulletTarget as _), &b".x"[..])
+    );
+    assert_eq!(
+        builder.parse(b"unit.var1 + 5").unwrap(),
+        (UnitRefId(UnitObject::This as _), &b".var1 + 5"[..])
+    );
+    assert_eq!(
+        builder.parse(b"bullet.target.target.irradiated_by.target").unwrap(),
+        (UnitRefId(UnitObject::_Last as _), &b""[..])
+    );
+    let refs = builder.finish();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(
+        &refs[0][..],
+        &[
+            UnitObject::BulletTarget,
+            UnitObject::UnitTarget,
+            UnitObject::IrradiatedBy,
+            UnitObject::UnitTarget,
+        ],
+    );
+}
