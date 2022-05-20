@@ -3,26 +3,25 @@ use std::convert::TryFrom;
 use bstr::ByteSlice;
 use fxhash::FxHashMap;
 
-use super::{UnitObject, UnitRefId, Error};
+use super::{UnitObject, UnitRefId, Error, expect_token, split_first_token};
 
-static FULL_UNIT_REFS: &[(&[u8], UnitObject)] = {
+static FULL_UNIT_REFS: &[((bool, &[u8]), UnitObject)] = {
     use UnitObject::*;
     &[
-        (b"bullet.parent", BulletParent),
-        (b"bullet.target", BulletTarget),
-        (b"bullet.previous_bounce_target", BulletPreviousBounceTarget),
-        (b"unit", This),
-        (b"unit.parent", UnitParent),
-        (b"unit.nuke", Nuke),
-        (b"unit.currently_building", CurrentlyBuilding),
-        (b"unit.target", UnitTarget),
-        (b"unit.transport", Transport),
-        (b"unit.addon", Addon),
-        (b"unit.subunit", Subunit),
-        (b"unit.linked_nydus", LinkedNydus),
-        (b"unit.powerup", Powerup),
-        (b"unit.rally_target", RallyTarget),
-        (b"unit.irradiated_by", IrradiatedBy),
+        ((false, b"parent"), BulletParent),
+        ((false, b"target"), BulletTarget),
+        ((false, b"previous_bounce_target"), BulletPreviousBounceTarget),
+        ((true, b"parent"), UnitParent),
+        ((true, b"nuke"), Nuke),
+        ((true, b"currently_building"), CurrentlyBuilding),
+        ((true, b"target"), UnitTarget),
+        ((true, b"transport"), Transport),
+        ((true, b"addon"), Addon),
+        ((true, b"subunit"), Subunit),
+        ((true, b"linked_nydus"), LinkedNydus),
+        ((true, b"powerup"), Powerup),
+        ((true, b"rally_target"), RallyTarget),
+        ((true, b"irradiated_by"), IrradiatedBy),
     ]
 };
 
@@ -48,7 +47,8 @@ pub struct UnitRefBuilder {
     existing_lookup: FxHashMap<Vec<UnitObject>, UnitRefId>,
     buffer: Vec<UnitObject>,
     unit_objects: FxHashMap<&'static [u8], UnitObject>,
-    full_refs: FxHashMap<&'static [u8], UnitObject>,
+    // bool true = unit, false = bullet
+    full_refs: FxHashMap<(bool, &'static [u8]), UnitObject>,
 }
 
 impl UnitRefBuilder {
@@ -66,41 +66,82 @@ impl UnitRefBuilder {
         self.result
     }
 
-    pub fn parse(&mut self, text: &[u8]) -> Result<UnitRefId, Error> {
+    pub fn parse<'a>(&mut self, text: &'a [u8]) -> Result<(UnitRefId, &'a [u8]), Error> {
         let error = || {
             Error::Dynamic(format!("Cannot parse '{}' as object place", text.as_bstr()))
         };
 
-        if let Some(&obj) = self.full_refs.get(&text) {
-            return Ok(UnitRefId(obj as u16));
-        }
-        self.buffer.clear();
-        let (first, mut rest) = text.find_byte(b'.')
-            .and_then(|first_dot| {
-                let second_dot = first_dot + 1 + (&text[first_dot + 1..]).find_byte(b'.')?;
-                let (first, rest) = text.split_at(second_dot);
-                let &first = self.full_refs.get(&first)?;
-                Some((first, rest))
-            })
+        let (first, rest) = split_first_token(text)
             .ok_or_else(error)?;
-        self.buffer.push(first);
-        while !rest.is_empty() {
-            if rest[0] != b'.' {
-                return Err(error());
-            }
-            rest = &rest[1..];
-            let (next, new_rest) = rest.find_byte(b'.')
-                .or_else(|| Some(rest.len()))
-                .and_then(|dot| {
-                    let (next, rest) = rest.split_at(dot);
-                    let &next = self.unit_objects.get(&next)?;
-                    Some((next, rest))
-                })
-                .ok_or_else(error)?;
-            self.buffer.push(next);
-            rest = new_rest;
+        let is_unit = if first == b"unit" {
+            true
+        } else if first == b"bullet" {
+            false
+        } else {
+            return Err(error());
+        };
+        if is_unit && rest.get(0).copied() != Some(b'.') {
+            return Ok((UnitRefId::this(), rest));
         }
-        self.add_multi_component_ref()
+        let rest_no_dot = expect_token(rest, b".")?;
+        self.parse_pre_split(first, rest_no_dot, rest)
+    }
+
+    /// If the text `unit.x.y.z ~~` is already split to `unit` and `x.y.z ~~`, this can
+    /// be used to avoid redoing that work
+    pub fn parse_pre_split<'a>(
+        &mut self,
+        first: &[u8],
+        rest_no_dot: &'a [u8],
+        rest: &'a [u8],
+    ) -> Result<(UnitRefId, &'a [u8]), Error> {
+        let error = || {
+            Error::Dynamic(
+                format!("Cannot parse '{}.{}' as object place", first.as_bstr(), rest.as_bstr())
+            )
+        };
+
+        let is_unit = if first == b"unit" {
+            true
+        } else if first == b"bullet" {
+            false
+        } else {
+            return Err(error());
+        };
+
+        let (second, rest2) = split_first_token(rest_no_dot)
+            .ok_or_else(error)?;
+
+        let obj = match self.full_refs.get(&(is_unit, second)) {
+            Some(&obj) => obj,
+            None => {
+                if is_unit {
+                    return Ok((UnitRefId::this(), rest));
+                } else {
+                    return Err(error());
+                }
+            }
+        };
+
+        self.buffer.clear();
+        self.buffer.push(obj);
+        let mut rest = rest2;
+        while rest.get(0).copied() == Some(b'.') {
+            let r2 = expect_token(rest, b".")?;
+            let (token, r2) = split_first_token(r2)
+                .ok_or_else(error)?;
+            let &obj = match self.unit_objects.get(token) {
+                Some(s) => s,
+                None => break,
+            };
+            rest = r2;
+            self.buffer.push(obj);
+        }
+        if self.buffer.len() == 1 {
+            return Ok((UnitRefId(self.buffer[0] as u16), rest));
+        }
+        let result = self.add_multi_component_ref()?;
+        Ok((result, rest))
     }
 
     /// Uses self.buffer

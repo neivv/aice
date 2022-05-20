@@ -123,23 +123,34 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
     }
 
     fn parse_bool<'a>(&mut self, input: &'a [u8]) -> Option<(Bool, &'a [u8])> {
-        let (word, rest) = split_first_token_brace_aware(input)?;
-        if word.starts_with(b"has(") && word.ends_with(b")") {
-            let params = &word[4..word.len() - 1];
-            match self.parser.unit_refs.parse(params) {
-                Ok(ref_id) => Some((Bool::Has(ref_id), rest)),
+        let (word, rest) = split_first_token(input)?;
+        if word == b"has" {
+            let result = expect_token(rest, b"(")
+                .and_then(|rest| {
+                    let (ref_id, rest) = self.parser.unit_refs.parse(rest)?;
+                    let rest = expect_token(rest, b")")?;
+                    Ok((Bool::Has(ref_id), rest))
+                });
+            match result {
+                Ok(o) => Some(o),
                 Err(e) => {
                     self.parser.set_current_error(e);
                     None
                 }
             }
-        } else if word == b"sprite.has_flingy" {
-            Some((Bool::HasFlingy, rest))
-        } else if word == b"sprite.has_unit" {
-            let ref_id = UnitRefId::this();
-            Some((Bool::Has(ref_id), rest))
-        } else if word == b"sprite.has_bullet" {
-            Some((Bool::HasBullet, rest))
+        } else if word == b"sprite" {
+            let rest = expect_token(rest, b".").ok()?;
+            let (next, rest) = split_first_token(rest)?;
+            if next == b"has_flingy" {
+                Some((Bool::HasFlingy, rest))
+            } else if word == b"has_unit" {
+                let ref_id = UnitRefId::this();
+                Some((Bool::Has(ref_id), rest))
+            } else if word == b"has_bullet" {
+                Some((Bool::HasBullet, rest))
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -516,93 +527,6 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
     ]
 };
 
-static BW_PLACES: &[(&[u8], PlaceId)] = {
-    use self::FlingyVar::*;
-    use self::BulletVar::*;
-    use self::ImageVar::*;
-    use self::GameVar::*;
-    const fn flingy(x: FlingyVar) -> PlaceId {
-        PlaceId::new_flingy(x, UnitRefId(UnitObject::This as u16))
-    }
-    const fn bullet(x: BulletVar) -> PlaceId {
-        PlaceId::new_bullet(x)
-    }
-    const fn image(x: ImageVar) -> PlaceId {
-        PlaceId::new_image(x)
-    }
-    const fn game(x: GameVar) -> PlaceId {
-        PlaceId::new_game(x)
-    }
-    &[
-        (b"flingy.move_target_x", flingy(MoveTargetX)),
-        (b"flingy.move_target_y", flingy(MoveTargetY)),
-        (b"flingy.position_x", flingy(PositionX)),
-        (b"flingy.position_y", flingy(PositionY)),
-        (b"flingy.facing_direction", flingy(FacingDirection)),
-        (b"flingy.movement_direction", flingy(MovementDirection)),
-        (b"flingy.target_direction", flingy(TargetDirection)),
-        (b"flingy.turn_speed", flingy(TurnSpeed)),
-        (b"flingy.acceleration", flingy(Acceleration)),
-        (b"flingy.top_speed", flingy(TopSpeed)),
-        (b"flingy.speed", flingy(Speed)),
-        (b"flingy.player", flingy(Player)),
-        (b"flingy.flingy_id", flingy(FlingyId)),
-        (b"bullet.weapon_id", bullet(WeaponId)),
-        (b"bullet.death_timer", bullet(BulletVar::DeathTimer)),
-        (b"bullet.state", bullet(State)),
-        (b"bullet.bounces_remaining", bullet(BouncesRemaining)),
-        (b"bullet.order_target_x", bullet(OrderTargetX)),
-        (b"bullet.order_target_y", bullet(OrderTargetY)),
-        (b"speed", flingy(Speed)),
-        (b"player", flingy(Player)),
-        (b"image.drawfunc", image(Drawfunc)),
-        (b"image.drawfunc_param", image(DrawfuncParam)),
-        (b"image.displayed_frame", image(Frame)),
-        (b"image.frame", image(BaseFrame)),
-        (b"game.deaths", game(Deaths)),
-        (b"game.kills", game(Kills)),
-        (b"game.upgrade_level", game(UpgradeLevel)),
-        (b"game.upgrade_limit", game(UpgradeLimit)),
-        (b"game.tech_level", game(TechLevel)),
-        (b"game.tech_availability", game(TechAvailability)),
-        (b"game.unit_availability", game(UnitAvailability)),
-        (b"game.alliance", game(Alliance)),
-        (b"game.shared_vision", game(SharedVision)),
-        (b"game.minerals", game(Minerals)),
-        (b"game.gas", game(Gas)),
-        (b"game.zerg_supply_max", game(ZergSupplyMax)),
-        (b"game.zerg_supply_used", game(ZergSupplyUsed)),
-        (b"game.zerg_supply_provided", game(ZergSupplyProvided)),
-        (b"game.terran_supply_max", game(TerranSupplyMax)),
-        (b"game.terran_supply_used", game(TerranSupplyUsed)),
-        (b"game.terran_supply_provided", game(TerranSupplyProvided)),
-        (b"game.protoss_supply_max", game(ProtossSupplyMax)),
-        (b"game.protoss_supply_used", game(ProtossSupplyUsed)),
-        (b"game.protoss_supply_provided", game(ProtossSupplyProvided)),
-        (b"game.location", game(LocationLeft)),
-        (b"game.units_total", game(UnitsTotal)),
-        (b"game.units_produced", game(UnitsProduced)),
-        (b"game.units_owned", game(UnitsOwned)),
-        (b"game.units_lost", game(UnitsLost)),
-        (b"game.units_killed", game(UnitsKilled)),
-        (b"game.units_score", game(UnitsScore)),
-        (b"game.units_killed_score", game(UnitsKilledScore)),
-        (b"game.buildings_total", game(BuildingsTotal)),
-        (b"game.buildings_constructed", game(BuildingsConstructed)),
-        (b"game.buildings_owned", game(BuildingsOwned)),
-        (b"game.buildings_lost", game(BuildingsLost)),
-        (b"game.buildings_razed", game(BuildingsRazed)),
-        (b"game.buildings_score", game(BuildingsScore)),
-        (b"game.buildings_razed_score", game(BuildingsRazedScore)),
-        (b"game.factories_constructed", game(FactoriesConstructed)),
-        (b"game.factories_owned", game(FactoriesOwned)),
-        (b"game.factories_lost", game(FactoriesLost)),
-        (b"game.factories_razed", game(FactoriesRazed)),
-        (b"game.custom_score", game(CustomScore)),
-        (b"game.player_color_choice", game(PlayerColorChoice)),
-    ]
-};
-
 static UNIT_VARS: &[(&[u8], UnitVar)] = {
     use self::UnitVar::*;
     &[
@@ -666,6 +590,75 @@ static FLINGY_VARS: &[(&[u8], FlingyVar)] = {
         (b"speed", Speed),
         (b"player", Player),
         (b"flingy_id", FlingyId),
+    ]
+};
+
+static BULLET_VARS: &[(&[u8], BulletVar)] = {
+    use self::BulletVar::*;
+    &[
+        (b"bullet.weapon_id", WeaponId),
+        (b"bullet.death_timer", BulletVar::DeathTimer),
+        (b"bullet.state", State),
+        (b"bullet.bounces_remaining", BouncesRemaining),
+        (b"bullet.order_target_x", OrderTargetX),
+        (b"bullet.order_target_y", OrderTargetY),
+    ]
+};
+
+static IMAGE_VARS: &[(&[u8], ImageVar)] = {
+    use self::ImageVar::*;
+    &[
+        (b"drawfunc", Drawfunc),
+        (b"drawfunc_param", DrawfuncParam),
+        (b"displayed_frame", Frame),
+        (b"frame", BaseFrame),
+    ]
+};
+
+static GAME_VARS: &[(&[u8], GameVar)] = {
+    use self::GameVar::*;
+    &[
+        (b"deaths", Deaths),
+        (b"kills", Kills),
+        (b"upgrade_level", UpgradeLevel),
+        (b"upgrade_limit", UpgradeLimit),
+        (b"tech_level", TechLevel),
+        (b"tech_availability", TechAvailability),
+        (b"unit_availability", UnitAvailability),
+        (b"alliance", Alliance),
+        (b"shared_vision", SharedVision),
+        (b"minerals", Minerals),
+        (b"gas", Gas),
+        (b"zerg_supply_max", ZergSupplyMax),
+        (b"zerg_supply_used", ZergSupplyUsed),
+        (b"zerg_supply_provided", ZergSupplyProvided),
+        (b"terran_supply_max", TerranSupplyMax),
+        (b"terran_supply_used", TerranSupplyUsed),
+        (b"terran_supply_provided", TerranSupplyProvided),
+        (b"protoss_supply_max", ProtossSupplyMax),
+        (b"protoss_supply_used", ProtossSupplyUsed),
+        (b"protoss_supply_provided", ProtossSupplyProvided),
+        (b"location", LocationLeft),
+        (b"units_total", UnitsTotal),
+        (b"units_produced", UnitsProduced),
+        (b"units_owned", UnitsOwned),
+        (b"units_lost", UnitsLost),
+        (b"units_killed", UnitsKilled),
+        (b"units_score", UnitsScore),
+        (b"units_killed_score", UnitsKilledScore),
+        (b"buildings_total", BuildingsTotal),
+        (b"buildings_constructed", BuildingsConstructed),
+        (b"buildings_owned", BuildingsOwned),
+        (b"buildings_lost", BuildingsLost),
+        (b"buildings_razed", BuildingsRazed),
+        (b"buildings_score", BuildingsScore),
+        (b"buildings_razed_score", BuildingsRazedScore),
+        (b"factories_constructed", FactoriesConstructed),
+        (b"factories_owned", FactoriesOwned),
+        (b"factories_lost", FactoriesLost),
+        (b"factories_razed", FactoriesRazed),
+        (b"custom_score", CustomScore),
+        (b"player_color_choice", PlayerColorChoice),
     ]
 };
 
@@ -972,9 +965,11 @@ struct ParserExprs {
     unit_refs: UnitRefBuilder,
     current_error: Option<Error>,
     // These maps stay constant so maybe they should be in separate ParserConstantData
-    bw_places: FxHashMap<&'static [u8], PlaceId>,
     unit_vars: FxHashMap<&'static [u8], UnitVar>,
     flingy_vars: FxHashMap<&'static [u8], FlingyVar>,
+    game_vars: FxHashMap<&'static [u8], GameVar>,
+    bullet_vars: FxHashMap<&'static [u8], BulletVar>,
+    image_vars: FxHashMap<&'static [u8], ImageVar>,
 }
 
 impl<'a> Parser<'a> {
@@ -990,9 +985,11 @@ impl<'a> Parser<'a> {
             exprs: ParserExprs {
                 unit_refs: UnitRefBuilder::new(),
                 current_error: None,
-                bw_places: BW_PLACES.iter().cloned().collect(),
                 unit_vars: UNIT_VARS.iter().cloned().collect(),
                 flingy_vars: FLINGY_VARS.iter().cloned().collect(),
+                bullet_vars: BULLET_VARS.iter().cloned().collect(),
+                game_vars: GAME_VARS.iter().cloned().collect(),
+                image_vars: IMAGE_VARS.iter().cloned().collect(),
             },
             format_strings: FormatStrings::new(),
         }
@@ -1500,11 +1497,7 @@ impl ParserExprs {
         &mut self,
         text: &'text [u8],
     ) -> Result<(UnitRefId, &'text [u8]), Error> {
-        let end = text.iter().position(|&x| x != b'.' && !x.is_ascii_alphanumeric())
-            .unwrap_or(text.len());
-        let (text, rest) = text.split_at(end);
-        let val = self.unit_refs.parse(text)?;
-        Ok((val, skip_spaces(rest)))
+        self.unit_refs.parse(text)
     }
 
     fn var_name_type_from_set_place<'a>(
@@ -1524,9 +1517,7 @@ impl ParserExprs {
             x if x == b"spritelocal" => VariableType::SpriteLocal,
             _ => return Ok(None),
         };
-        let (name, _) = split_first_token(rest)
-            .ok_or_else(|| Error::Msg("Expected variable name"))?;
-        let name = field_name_from_projection(name);
+        let (name, _rest) = field_name_from_projection(rest)?;
         Ok(Some((name, ty)))
     }
 
@@ -1536,27 +1527,17 @@ impl ParserExprs {
         var_out: &mut [Option<Box<IntExpr>>; 4],
         variable_decls: &CompilerVariables<'a>,
     ) -> Result<(PlaceId, &'text [u8]), CanRecoverError> {
-        let (place, rest) = split_first_token_brace_aware(text)
-            .ok_or_else(|| CanRecoverError::Yes(Error::Msg("Expected place")))?;
-        if let Some(&var_id) = variable_decls.variables.get(place) {
-            return Ok((var_id, rest));
-        }
-        let (place, params) = place.iter()
-            .position(|&x| x == b'(')
-            .map(|start| (&place[..start], &place[(start + 1)..]))
-            .unwrap_or_else(|| (place, b""));
-        // Params is b"param1, param2)", possibly also b"param1).left"
-
-        let mut bw = self.parse_place_expr_pre_params(place, variable_decls)?;
+        let (mut bw, rest) = self.parse_place_expr_pre_params(text, variable_decls)?;
         let var_count = bw.place().var_count();
         if var_count == 0 {
-            if !params.is_empty() {
+            if rest.get(0).copied() == Some(b'(') {
                 return Err(Error::Dynamic(
-                    format!("Place '{}' does not accept parameters", place.as_bstr())
+                    format!("Place '{}' does not accept parameters", text.as_bstr())
                 ).into());
             }
+            Ok((bw, rest))
         } else {
-            let mut params = params;
+            let mut params = expect_token(rest, b"(")?;
             for i in 0..var_count {
                 let (expr, rest) = parse_int_expr_allow_opt(params, self, variable_decls)?;
                 if i != var_count - 1 {
@@ -1567,32 +1548,32 @@ impl ParserExprs {
                 }
                 var_out[i as usize] = Some(Box::new(expr));
             }
-            if params.get(0).copied() != Some(b')') {
-                return Err(Error::Dynamic(
-                    format!("Too many parameters for place: '{}'", params.as_bstr())
-                ).into());
-            }
-            params = &params[1..];
+            params = match expect_token(params, b")") {
+                Ok(o) => o,
+                Err(_) => {
+                    return Err(Error::Dynamic(
+                        format!("Too many parameters for place: '{}'", params.as_bstr())
+                    ).into());
+                }
+            };
             // Parse what location coord it actually is
             if matches!(bw.place(), Place::Game(GameVar::LocationLeft)) {
-                bw = match params {
-                    b".left" => PlaceId::new_game(GameVar::LocationLeft),
-                    b".top" => PlaceId::new_game(GameVar::LocationTop),
-                    b".right" => PlaceId::new_game(GameVar::LocationRight),
-                    b".bottom" => PlaceId::new_game(GameVar::LocationBottom),
+                params = expect_token(params, b".")?;
+                let (next, rest) = split_first_token(params)
+                    .ok_or_else(|| Error::Msg("Expected location coord"))?;
+                params = rest;
+                bw = match next {
+                    b"left" => PlaceId::new_game(GameVar::LocationLeft),
+                    b"top" => PlaceId::new_game(GameVar::LocationTop),
+                    b"right" => PlaceId::new_game(GameVar::LocationRight),
+                    b"bottom" => PlaceId::new_game(GameVar::LocationBottom),
                     _ => return Err(Error::Dynamic(
-                        format!("Invalid location coord '{}'", params.as_bstr())
+                        format!("Invalid location coord '{}'", next.as_bstr())
                     ).into()),
                 };
-                params = b"";
             }
-            if !params.is_empty() {
-                return Err(Error::Dynamic(
-                    format!("Trailing characters: '{}'", params.as_bstr())
-                ).into());
-            }
+            Ok((bw, params))
         }
-        Ok((bw, rest))
     }
 
     /// Returns (place, if_uninit, rest)
@@ -1634,23 +1615,64 @@ impl ParserExprs {
     fn parse_place_expr_pre_params<'text>(
         &mut self,
         place: &'text [u8],
-        variable_decls: &CompilerVariables<'text>,
-    ) -> Result<PlaceId, CanRecoverError> {
+        variable_decls: &CompilerVariables<'_>,
+    ) -> Result<(PlaceId, &'text [u8]), CanRecoverError> {
         let error = || {
             CanRecoverError::Yes(
                 Error::Dynamic(format!("Unknown place/variable type '{}'", place.as_bstr()))
             )
         };
 
-        if let Some(&place) = self.bw_places.get(place.as_bytes()) {
-            return Ok(place);
+        let (first, rest) = split_first_token(place)
+            .ok_or_else(error)?;
+        println!("Got {}, {}", first.as_bstr(), rest.as_bstr());
+        if rest.get(0).copied() != Some(b'.') {
+            if let Some(&var_id) = variable_decls.variables.get(first) {
+                println!("ret var, {}", rest.as_bstr());
+                return Ok((var_id, rest));
+            }
         }
-        // Split out the part before last .
-        let mut tokens = place.rsplitn(2, |&x| x == b'.');
-        let field = tokens.next().ok_or_else(error)?;
-        let obj = tokens.next().ok_or_else(error)?;
+        let rest_dot = rest;
+        let rest = expect_token(rest, b".")
+            .map_err(CanRecoverError::Yes)?;
+        match first {
+            b"flingy" => {
+                let (field, rest) = split_first_token(rest)
+                    .ok_or_else(error)?;
+                return self.flingy_vars.get(field)
+                    .map(|&var| (PlaceId::new_flingy(var, UnitRefId::this()), rest))
+                    .ok_or_else(error);
+            }
+            b"bullet" => {
+                let (field, rest) = split_first_token(rest)
+                    .ok_or_else(error)?;
+                match self.bullet_vars.get(field) {
+                    Some(&var) => return Ok((PlaceId::new_bullet(var), rest)),
+                    // keep going for bullet.target.x etc
+                    None => (),
+                }
+            }
+            b"image" => {
+                let (field, rest) = split_first_token(rest)
+                    .ok_or_else(error)?;
+                return self.image_vars.get(field)
+                    .map(|&var| (PlaceId::new_image(var), rest))
+                    .ok_or_else(error);
+            }
+            b"game" => {
+                let (field, rest) = split_first_token(rest)
+                    .ok_or_else(error)?;
+                return self.game_vars.get(field)
+                    .map(|&var| (PlaceId::new_game(var), rest))
+                    .ok_or_else(error);
+            }
+            _ => (),
+        }
 
-        let unit_ref = self.unit_refs.parse(obj)?;
+        let (unit_ref, rest) = self.unit_refs.parse_pre_split(first, rest, rest_dot)?;
+        let rest = expect_token(rest, b".")?;
+        let (field, rest) = split_first_token(rest)
+            .ok_or_else(error)?;
         let place = self.unit_vars.get(field.as_bytes()).copied()
             .map(|var| PlaceId::new_unit(var, unit_ref))
             .or_else(|| {
@@ -1667,7 +1689,7 @@ impl ParserExprs {
             .ok_or_else(|| {
                 Error::Dynamic(format!("Unknown unit variable '{}'", field.as_bstr()))
             })?;
-        Ok(place)
+        Ok((place, rest))
     }
 }
 
@@ -1714,11 +1736,16 @@ impl<'a> TextParseContext<'a> {
 }
 
 /// Splits out last part of x.y.z.x chain
-fn field_name_from_projection<'a>(text: &'a [u8]) -> &'a [u8] {
-    match text.bytes().rposition(|x| x == b'.') {
-        Some(x) => &text[(x + 1)..],
-        None => text,
+fn field_name_from_projection<'a>(text: &'a [u8]) -> Result<(&'a [u8], &'a [u8]), Error> {
+    let (mut result, mut rest) = split_first_token(text)
+        .ok_or_else(|| Error::Msg("Expected variable name"))?;
+    while rest.get(0).copied() == Some(b'.') {
+        let (a, b) = split_first_token(expect_token(rest, b".")?)
+            .ok_or_else(|| Error::Msg("Expected variable name after final '.'"))?;
+        result = a;
+        rest = b;
     }
+    Ok((result, rest))
 }
 
 fn split_first_token_brace_aware(text: &[u8]) -> Option<(&[u8], &[u8])> {
@@ -1744,16 +1771,20 @@ fn split_first_token_brace_aware(text: &[u8]) -> Option<(&[u8], &[u8])> {
 }
 
 fn is_word_char(val: u8) -> bool {
-    matches!(val, b'a' ..= b'z' | b'A' ..= b'Z' | b'.' | b'_' | b'0' ..= b'9')
+    matches!(val, b'a' ..= b'z' | b'A' ..= b'Z' | b'_' | b'0' ..= b'9')
 }
 
 fn split_first_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
     debug_assert!(text.trim().len() == text.len(), "Untrimmed input {}", text.as_bstr());
-    let start = 0;
-    let end = text.bytes().skip(start).position(|x| x == b' ' || x == b'\t')
-        .map(|x| start.wrapping_add(x))
-        .unwrap_or(text.len());
-    let first = &text[start..end];
+    let &first = text.first()?;
+    let end = if !is_word_char(first) {
+        1
+    } else {
+        text.bytes().skip(1).position(|x| !is_word_char(x))
+            .map(|x| 1usize.wrapping_add(x))
+            .unwrap_or(text.len())
+    };
+    let first = &text[..end];
     Some(match text.bytes().skip(end).position(|x| x != b' ' && x != b'\t') {
         Some(s) => (first, &text[end + s..]),
         None => (first, b""),
@@ -1769,13 +1800,16 @@ fn expect_token<'a>(text: &'a [u8], token: &'static [u8]) -> Result<&'a [u8], Er
 
 fn split_last_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
     debug_assert!(text.trim().len() == text.len(), "Untrimmed input {}", text.as_bstr());
-    let rev_start = 0;
-    let rev_end = text.bytes().rev().skip(rev_start).position(|x| x == b' ' || x == b'\t')
-        .map(|x| rev_start.wrapping_add(x))
-        .unwrap_or(text.len());
+    let &last = text.last()?;
+    let rev_end = if !is_word_char(last) {
+        1
+    } else {
+        text.bytes().rev().skip(1).position(|x| !is_word_char(x))
+            .map(|x| 1usize.wrapping_add(x))
+            .unwrap_or(text.len())
+    };
     let start = text.len() - rev_end;
-    let end = text.len() - rev_start;
-    let first = &text[start..end];
+    let first = &text[start..];
     Some(match text.bytes().rev().skip(rev_end).position(|x| x != b' ' && x != b'\t') {
         Some(s) => (first, &text[..text.len() - rev_end - s]),
         None => (first, b""),
@@ -1792,13 +1826,6 @@ fn ends_with_tokens(mut text: &[u8], tokens: &[&[u8]]) -> bool {
         }
     }
     true
-}
-
-fn skip_spaces(input: &[u8]) -> &[u8] {
-    match input.iter().position(|&x| x != b' ' && x != b'\t') {
-        Some(s) => &input[s..],
-        None => &[],
-    }
 }
 
 fn parse_bool_expr_allow_opt<'a, 'b, 'c>(
@@ -3349,7 +3376,10 @@ mod test {
                 errors.remove(s);
             }
             None => {
-                println!("Errors: {:#?}", errors);
+                println!("Errors:");
+                for e in errors {
+                    println!("    {}: {}", e.line.unwrap_or(0), e.error);
+                }
                 panic!("Couldn't find error '{}' @ line {}", substring, line);
             }
         }
@@ -3507,14 +3537,8 @@ mod test {
         let y = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 9)..]) as usize;
         let with_set = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 17)..]);
         assert_eq!(with_set, 0);
-        let x_place = BW_PLACES.iter()
-            .find(|x| x.0 == b"flingy.position_x")
-            .map(|x| x.1)
-            .unwrap();
-        let y_place = BW_PLACES.iter()
-            .find(|x| x.0 == b"flingy.position_y")
-            .map(|x| x.1)
-            .unwrap();
+        let x_place = PlaceId::new_flingy(FlingyVar::PositionX, UnitRefId::this());
+        let y_place = PlaceId::new_flingy(FlingyVar::PositionY, UnitRefId::this());
         let x_expr = IntExprTree::Custom(Int::Variable(x_place, [None, None, None, None]));
         let y_expr = IntExprTree::Sub(Box::new((
             IntExprTree::Custom(Int::Variable(y_place, [None, None, None, None])),
@@ -3538,14 +3562,8 @@ mod test {
         assert_eq!(order, 72);
         let x = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 2)..]) as usize;
         let y = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 6)..]) as usize;
-        let x_place = BW_PLACES.iter()
-            .find(|x| x.0 == b"flingy.position_x")
-            .map(|x| x.1)
-            .unwrap();
-        let y_place = BW_PLACES.iter()
-            .find(|x| x.0 == b"flingy.position_y")
-            .map(|x| x.1)
-            .unwrap();
+        let x_place = PlaceId::new_flingy(FlingyVar::PositionX, UnitRefId::this());
+        let y_place = PlaceId::new_flingy(FlingyVar::PositionY, UnitRefId::this());
         let x_expr = IntExprTree::Custom(Int::Variable(x_place, [None, None, None, None]));
         let y_expr = IntExprTree::Sub(Box::new((
             IntExprTree::Custom(Int::Variable(y_place, [None, None, None, None])),
@@ -3824,7 +3842,7 @@ mod test {
     #[test]
     fn print_err() {
         let mut errors = compile_err("print_err.txt");
-        find_error(&mut errors, "as any kind of expression", 52);
+        find_error(&mut errors, "got '.taget}", 52);
         assert!(errors.is_empty());
     }
 }
