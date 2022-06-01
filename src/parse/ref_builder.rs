@@ -97,7 +97,7 @@ impl UnitRefBuilder {
     ) -> Result<(UnitRefId, &'a [u8]), Error> {
         let error = || {
             Error::Dynamic(
-                format!("Cannot parse '{}.{}' as object place", first.as_bstr(), rest.as_bstr())
+                format!("Cannot parse '{}{}' as object place", first.as_bstr(), rest.as_bstr())
             )
         };
 

@@ -20,7 +20,7 @@ use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, Serializab
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
     UnitVar, ImageVar, GameVar, UnitRefId, UnitObject, UnitRefParts, SpriteLocalSetId,
-    FormatStringId, AnyExpr,
+    FormatStringId, AnyExpr, AnyTypeRef,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
@@ -67,10 +67,6 @@ struct SpriteLocal {
 impl IscriptState {
     fn get_sprite_locals(&self, sprite: *mut bw::Sprite) -> Option<&Vec<SpriteLocal>> {
         self.sprite_locals.get(&SerializableSprite(sprite))
-    }
-
-    fn get_sprite_local(&self, image: *mut bw::Image, id: u32) -> Option<i32> {
-        self.get_sprite_local_sprite(unsafe { Sprite::from_ptr((*image).parent)? }, id)
     }
 
     fn get_sprite_local_sprite(&self, sprite: Sprite, id: u32) -> Option<i32> {
@@ -242,20 +238,17 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
         match val {
             Int::Variable(id, place_vars) => {
                 match id.place() {
-                    Place::Global(id) => self.parent.state.globals[id as usize],
+                    Place::Global(id) => self.parent.get_global(id),
                     Place::SpriteLocal(unit_ref, id) => {
-                        if unit_ref.is_this() {
-                            self.parent.get_sprite_local(self.image, id)
+                        if let Some(val) = self.parent.get_sprite_local(id, unit_ref) {
+                            val
                         } else {
-                            let result = self.parent.resolve_unit_ref(unit_ref)
-                                .and_then(|x| x.sprite())
-                                .and_then(|x| self.parent.state.get_sprite_local_sprite(x, id));
-                            if let Some(result) = result {
-                                result
+                            if unit_ref.is_this() {
+                                self.parent.show_uninit_spritelocal_err();
                             } else {
                                 self.evaluate_default = true;
-                                return 0;
                             }
+                            i32::MIN
                         }
                     }
                     Place::Flingy(unit_ref, ty) => unsafe {
@@ -680,21 +673,31 @@ impl<'a> IscriptRunner<'a> {
         )
     }
 
-    fn get_sprite_local(&mut self, image: *mut bw::Image, id: u32) -> i32 {
-        match self.state.get_sprite_local(image, id) {
-            Some(s) => s,
-            None => unsafe {
-                error!(
-                    "Error {}: image {:04x} accessed uninitialized spritelocal",
-                    self.current_line(), (*image).image_id,
-                );
-                bw_print!(
-                    "Error {}: image {:04x} accessed uninitialized spritelocal",
-                    self.current_line(), (*image).image_id,
-                );
-                i32::min_value()
-            }
+    fn get_sprite_local(&mut self, id: u32, unit_ref: UnitRefId) -> Option<i32> {
+        let sprite = if unit_ref.is_this() {
+            unsafe { Sprite::from_ptr((*self.image).parent)? }
+        } else {
+            self.resolve_unit_ref(unit_ref)?.sprite()?
+        };
+        self.state.get_sprite_local_sprite(sprite, id)
+    }
+
+    fn show_uninit_spritelocal_err(&self) {
+        unsafe {
+            let image = self.image;
+            error!(
+                "Error {}: image {:04x} accessed uninitialized spritelocal",
+                self.current_line(), (*image).image_id,
+            );
+            bw_print!(
+                "Error {}: image {:04x} accessed uninitialized spritelocal",
+                self.current_line(), (*image).image_id,
+            );
         }
+    }
+
+    fn get_global(&self, id: u32) -> i32 {
+        self.state.globals[id as usize]
     }
 
     fn resolve_unit_ref_part(
@@ -808,6 +811,26 @@ impl<'a> IscriptRunner<'a> {
                 id: var,
                 value,
             });
+        }
+    }
+
+    fn eval_any_type(&mut self, expr: &AnyTypeRef<'_>) -> Option<i32> {
+        match *expr {
+            AnyTypeRef::Variable(place_id) => {
+                match place_id.place() {
+                    Place::Global(x) => Some(self.get_global(x)),
+                    Place::SpriteLocal(unit_ref, x) => self.get_sprite_local(x, unit_ref),
+                    _ => None,
+                }
+            }
+            AnyTypeRef::Default(a, b) => {
+                let a = parse::read_any_type(a)?.0;
+                self.eval_any_type(&a)
+                    .or_else(|| {
+                        let b = parse::read_any_type(b)?.0;
+                        self.eval_any_type(&b)
+                    })
+            }
         }
     }
 
@@ -926,6 +949,43 @@ impl<'a> IscriptRunner<'a> {
                         }
                     }
                 }
+                SET_COPY => {
+                    let place_id = PlaceId(self.read_u32()?);
+                    let place = place_id.place();
+                    let expr = self.read_any_type()?;
+                    if self.dry_run {
+                        continue;
+                    }
+                    let value = self.eval_any_type(&expr);
+                    let value = match value {
+                        Some(s) => s,
+                        None => {
+                            if self.iscript.is_int_var_place(place_id) {
+                                self.show_uninit_spritelocal_err();
+                                continue 'op_loop;
+                            }
+                            0
+                        }
+                    };
+                    match place {
+                        Place::Global(id) => self.state.globals[id as usize] = value,
+                        Place::SpriteLocal(unit_ref, id) => {
+                            let uninit = place_id.if_uninit();
+                            let sprite = if unit_ref.is_this() {
+                                Sprite::from_ptr((*self.image).parent)
+                            } else {
+                                self.resolve_unit_ref(unit_ref).and_then(|x| x.sprite())
+                            };
+                            if let Some(sprite) = sprite {
+                                self.state.set_sprite_local(*sprite, id, value, uninit);
+                            }
+                        }
+                        _ => {
+                            warn!("Invalid SET_COPY dest");
+                            continue 'op_loop;
+                        }
+                    }
+                }
                 SET => {
                     let place_id = PlaceId(self.read_u32()?);
                     let expr = self.read_u32()?;
@@ -941,9 +1001,11 @@ impl<'a> IscriptRunner<'a> {
                         continue;
                     }
 
-                    let expression = &self.iscript.int_expressions[expr as usize];
-                    let mut eval_ctx = self.eval_ctx();
-                    let value = eval_ctx.eval_int(&expression);
+                    let value = {
+                        let expression = &self.iscript.int_expressions[expr as usize];
+                        let mut eval_ctx = self.eval_ctx();
+                        eval_ctx.eval_int(&expression)
+                    };
                     let mut vars = [0i32; 4];
                     for i in 0..var_count {
                         let expr = var_exprs[i];
@@ -1187,24 +1249,27 @@ impl<'a> IscriptRunner<'a> {
                             _ => 0,
                         };
                         self.state.set_sprite_local(sprite, TEMP_LOCAL_ID, old as i32, false);
-                        new_value = value;
+                        new_value = Some(value);
                         let image = WeaponId(value as u16).flingy().sprite().image();
                         self.set_with_vars(image, sprite_locals);
                     } else {
-                        new_value = self.get_sprite_local(self.image, TEMP_LOCAL_ID);
+                        new_value = self.get_sprite_local(TEMP_LOCAL_ID, UnitRefId::this());
                         self.state.with_image = None;
                     }
-                    match orders_dat_weapon.entry_size {
-                        1 => {
-                            *(orders_dat_weapon.data as *mut u8).add(order) = new_value as u8;
+                    if let Some(new_value) = new_value {
+                        let data = orders_dat_weapon.data;
+                        match orders_dat_weapon.entry_size {
+                            1 => {
+                                *(data as *mut u8).add(order) = new_value as u8;
+                            }
+                            2 => {
+                                *(data as *mut u16).add(order) = new_value as u16;
+                            }
+                            4 => {
+                                *(data as *mut u32).add(order) = new_value as u32;
+                            }
+                            _ => (),
                         }
-                        2 => {
-                            *(orders_dat_weapon.data as *mut u16).add(order) = new_value as u16;
-                        }
-                        4 => {
-                            *(orders_dat_weapon.data as *mut u32).add(order) = new_value as u32;
-                        }
-                        _ => (),
                     }
                 }
                 CLEAR_ATTACKING_FLAG => {
@@ -1674,6 +1739,19 @@ impl<'a> IscriptRunner<'a> {
             }
             None => Err(self.pos as u32),
         }
+    }
+
+    fn read_any_type(&mut self) -> Result<AnyTypeRef<'a>, u32> {
+        let pos = self.pos;
+        let aice_data = &self.iscript.aice_data;
+        aice_data.get(pos..)
+            .and_then(|data| {
+                let (val, rest) = parse::read_any_type(data)?;
+                let new_pos = aice_data.len().wrapping_sub(rest.len());
+                self.pos = new_pos;
+                Some(val)
+            })
+            .ok_or(pos as u32)
     }
 }
 

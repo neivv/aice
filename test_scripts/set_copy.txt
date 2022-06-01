@@ -1,0 +1,157 @@
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 005 Broodling (zerg\brood.grp)
+.headerstart
+IsId            4
+Type            12
+Init            BroodlingInit
+Death           BroodlingDeath
+GndAttkInit     BroodlingGndAttkInit
+AirAttkInit     [NONE]
+Unused1         [NONE]
+GndAttkRpt      BroodlingGndAttkInit
+AirAttkRpt      [NONE]
+CastSpell       [NONE]
+GndAttkToIdle   BroodlingGndAttkToIdle
+AirAttkToIdle   [NONE]
+Unused2         [NONE]
+Walking         BroodlingWalking
+WalkingToIdle   BroodlingGndAttkToIdle
+SpecialState1   [NONE]
+.headerend
+# ----------------------------------------------------------------------------- #
+BroodlingInit:
+    set spritelocal counter = gcounter
+    set spritelocal var2 = 0
+    set spritelocal var3 = 0
+    set global var4 = 0
+
+    set spritelocal var1 = var2
+    set spritelocal var1 = var2 default var3
+    set spritelocal var1 = var2 default var3 default var4
+    set spritelocal var1 = (var2 default var3) default var4
+    set game.deaths(0, 0) = counter
+    set game.deaths(0, 1) = unit.target.counter default counter
+    set global gcounter = gcounter + 1
+    imgol           989 0 0   # BroodlingShad (zerg\zbrShad.grp)
+    imgul           6 0 0   # BroodlingShad (zerg\zbrShad.grp)
+    set spritelocal p = player
+BroodlingGndAttkToIdle:
+    playfram        0x11    # frame set 1
+    waitrand        25 30
+    playfram        0x22    # frame set 2
+    waitrand        25 30
+    goto            BroodlingGndAttkToIdle
+
+BroodlingDeath:
+    playsnd         785 # Zerg\BROODLING\ZBrDth00.WAV
+    lowsprul        134 0 0 # BroodlingDeath (zerg\zbrDeath.grp)
+    wait            1
+    end
+
+BroodlingGndAttkInit:
+    playfram        0x77    # frame set 7
+    wait            1
+    nobrkcodestart
+    playfram        0x88    # frame set 8
+    wait            1
+    playfram        0x99    # frame set 9
+    attackmelee     1 786   # Zerg\BROODLING\ZBrAtt00.WAV
+    attackmelee     1 786   # Zerg\BROODLING\ZBrAtt00.WAV
+    attackmelee     1 786   # Zerg\BROODLING\ZBrAtt00.WAV
+    wait            1
+    playfram        0xaa    # frame set 10
+    wait            1
+    playfram        0xbb    # frame set 11
+    wait            1
+    nobrkcodeend
+    gotorepeatattk
+    goto            BroodlingGndAttkToIdle
+
+BroodlingWalking:
+    call            BroodlingLocal00
+    call            BroodlingLocal00
+    waitrand        3 6
+    call            BroodlingLocal00
+    waitrand        3 6
+    call            BroodlingLocal00
+    call            BroodlingLocal00
+    call            BroodlingLocal00
+    waitrand        3 6
+    goto            BroodlingWalking
+
+BroodlingLocal00:
+    move            8
+    move            2
+    wait            1
+    playfram        0x11    # frame set 1
+    move            8
+    move            2
+    wait            1
+    playfram        0x22    # frame set 2
+    move            8
+    move            2
+    wait            1
+    playfram        0x33    # frame set 3
+    move            8
+    move            2
+    wait            1
+    playfram        0x44    # frame set 4
+    move            8
+    move            2
+    wait            1
+    playfram        0x55    # frame set 5
+    move            8
+    move            2
+    wait            1
+    playfram        0x66    # frame set 6
+    move            8
+    move            2
+    wait            1
+    playfram        0x00    # frame set 0
+    return
+
+
+# ------------------------------------------------------------------------------ #
+# LONG JUMPS (these are usually shared routines between many animations)         #
+# ------------------------------------------------------------------------------ #
+
+long00:
+    wait            125
+    goto            long00
+
+long01:
+    wait            1
+    end
+
+long02:
+    setvertpos      1
+    waitrand        8 10
+    setvertpos      2
+    waitrand        8 10
+    setvertpos      1
+    waitrand        8 10
+    setvertpos      0
+    waitrand        8 10
+    goto            long02
+
+long03:
+    playsnd         774 # Zerg\Bldg\ZBldgDth.WAV
+    imgol           60 0 0  # ZergBuildingDeath (thingy\zBldDthS.grp)
+    wait            3
+    lowsprul        187 0 0 # ZergBuildingRubbleSmall (thingy\ZRubbleL.grp)
+    wait            1
+    end
+
+long04:
+    wait            1
+    attackwith      2
+    gotorepeatattk
+    goto            long00
+
+long05:
+    wait            1
+    attackwith      1
+    gotorepeatattk
+    goto            long00
+

@@ -1,0 +1,215 @@
+
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 211 FleetBeaconGlow (protoss\pb1Glow.grp)
+.headerstart
+IsId            191
+Type            13
+Init            WarpAnchorInit
+Death           WarpAnchorDeath
+GndAttkInit     DaSpellFly
+AirAttkInit     [NONE]
+Unused1         [NONE]
+GndAttkRpt      [NONE]
+AirAttkRpt      [NONE]
+CastSpell       [NONE]
+GndAttkToIdle   [NONE]
+AirAttkToIdle   [NONE]
+Unused2         [NONE]
+Walking         [NONE]
+WalkingToIdle   [NONE]
+SpecialState1   WarpAnchorSpecialState1
+.headerend
+# ----------------------------------------------------------------------------- #
+
+WarpAnchorInit:
+    if 1 == 1 goto DaSpellInit
+    set spritelocal variation = 0
+DaSpellFly_State0:
+    playfram        2
+    wait            2
+    playfram        3
+    wait            2
+    playfram        4
+    wait            2
+    playfram        5
+    wait            2
+    playfram        6
+    wait            2
+    playfram        7
+    wait            2
+WarpAnchorLocal00:
+    playfram        8
+    wait            1
+    playfram        9
+    wait            1
+    playfram        10
+    wait            1
+    playfram        11
+    wait            1
+    playfram        12
+    wait            1
+    playfram        13
+    wait            1
+    goto            WarpAnchorLocal00
+
+WarpAnchorDeath:
+    if variation != 0 goto DaSpellHit
+    playfram        7
+    wait            2
+    playfram        6
+    wait            2
+    playfram        5
+    wait            2
+    playfram        4
+    wait            2
+    playfram        3
+    wait            2
+    playfram        2
+    wait            2
+    end
+
+WarpAnchorSpecialState1:
+    playfram        0
+    wait            2
+    playfram        1
+    wait            2
+    sigorder        1
+    goto            long00
+
+DaSpellInit:
+    set spritelocal variation = sequence + 1
+    # Only show one warp anchor image
+    if variation == 1 goto DaSpellInit_SkipHide
+    tmprmgraphicstart
+DaSpellInit_SkipHide:
+    set spritelocal state = 0
+    set global sequence = sequence + 1
+    playfram        0x00    # frame set 0
+    wait            1
+    sigorder        1
+    goto            long00
+
+DaSpellHit:
+    playfram        0
+    wait            2
+    playfram        1
+    wait            2
+    set spritelocal state = 1
+    set bullet.death_timer = 14
+    set bullet.state = 1
+    set flingy.movement_direction = variation * 36
+    set spritelocal orig_x = flingy.move_target_x
+    set spritelocal orig_y = flingy.move_target_y
+    set flingy.move_target_x = flingy.move_target_x + cos(variation * 36)
+    set flingy.move_target_y = flingy.move_target_y + sin(variation * 36)
+    set flingy.top_speed = 7000
+    playfram 5
+    tmprmgraphicstart
+    goto DaSpellFly
+
+DaSpellDie:
+    set bullet.state = 5
+    wait            1
+    end
+
+DaSpellFly:
+    if state == 0 goto DaSpellFly_State0
+    set spritelocal loopcnt = 0
+DaSpellFly_Loop:
+    if loopcnt != 2 goto DaSpellFly_SkipDmg
+        set spritelocal loopcnt = 0
+        set bullet.order_target_x = flingy.position_x
+        set bullet.order_target_y = flingy.position_y
+        if variation % 2 == 0 goto DaSpell_MaelVariation
+            # Ensnare variation
+            set bullet.weapon_id = 58
+            sprol 364 0 0
+            domissiledmg
+            goto DaSpellFly_SkipDmg
+        DaSpell_MaelVariation:
+            set bullet.weapon_id = 108
+            sprol 514 0 0
+            domissiledmg
+            goto DaSpellFly_SkipDmg
+DaSpellFly_SkipDmg:
+    if bullet.death_timer == 2 || bullet.state == 5 goto DaSpell_InitState2
+    set flingy.turn_speed = 1
+    set flingy.movement_direction = flingy.movement_direction - 8
+    set spritelocal loopcnt = loopcnt + 1
+    wait 1
+    goto DaSpellFly_Loop
+
+DaSpell_InitState2:
+    if variation % 2 != 0 goto DaSpellDie
+    set spritelocal state = 2
+    set bullet.death_timer = 150
+    set bullet.state = 1
+    set flingy.acceleration = 1
+    set flingy.speed = 1
+    wait 48
+    set bullet.death_timer = 18
+    set flingy.move_target_x = orig_x
+    set flingy.move_target_y = orig_y
+    set flingy.movement_direction = flingy.movement_direction + 180
+    set flingy.acceleration = 667
+DaSpell_State2Fly:
+    if loopcnt != 2 goto DaSpellFly_State2_SkipDmg
+        set spritelocal loopcnt = 0
+        set bullet.weapon_id = 117
+        if variation != 2 goto DaSpell_State2_SkipSound
+            playsnd         7   # Misc\ExploLrg.wav
+        DaSpell_State2_SkipSound:
+        sprol 222 0 0
+        domissiledmg
+DaSpellFly_State2_SkipDmg:
+    if bullet.death_timer == 2 || bullet.state == 5 goto DaSpellDie
+    set flingy.turn_speed = 1
+    set flingy.movement_direction = flingy.movement_direction + 6
+    set spritelocal loopcnt = loopcnt + 1
+    wait 1
+    goto DaSpell_State2Fly
+
+# ------------------------------------------------------------------------------ #
+# LONG JUMPS (these are usually shared routines between many animations)         #
+# ------------------------------------------------------------------------------ #
+
+long00:
+    wait            125
+    goto            long00
+
+long01:
+    wait            1
+    end
+
+long02:
+    setvertpos      1
+    waitrand        8 10
+    setvertpos      2
+    waitrand        8 10
+    setvertpos      1
+    waitrand        8 10
+    setvertpos      0
+    waitrand        8 10
+    goto            long02
+
+long03:
+    playsnd         774 # Zerg\Bldg\ZBldgDth.WAV
+    imgol           60 0 0  # ZergBuildingDeath (thingy\zBldDthS.grp)
+    wait            3
+    lowsprul        187 0 0 # ZergBuildingRubbleSmall (thingy\ZRubbleL.grp)
+    wait            1
+    end
+
+long04:
+    wait            1
+    attackwith      2
+    gotorepeatattk
+    goto            long00
+
+long05:
+    wait            1
+    attackwith      1
+    gotorepeatattk
+    goto            long00
+

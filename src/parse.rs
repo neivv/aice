@@ -15,8 +15,10 @@
 //! in low byte, and that offsets 0x4550 and 0x4353 are reserved 0xcc AnimationInit. Fun working
 //! with that =)
 
+mod anytype_expr;
 mod print_format;
 mod ref_builder;
+#[cfg(test)] mod test;
 
 use std::collections::hash_map::Entry;
 use std::convert::TryFrom;
@@ -25,6 +27,7 @@ use std::mem;
 use std::rc::Rc;
 
 use bstr::{ByteSlice, BString, BStr};
+use bumpalo::Bump;
 use byteorder::{ByteOrder, ReadBytesExt, WriteBytesExt, LittleEndian, LE};
 use fxhash::{FxHashMap, FxHashSet};
 use quick_error::quick_error;
@@ -32,8 +35,10 @@ use serde_derive::{Serialize, Deserialize};
 
 use bw_dat::expr::{self, Expr, CustomBoolExpr, CustomIntExpr};
 
+use anytype_expr::{AnyTypeExpr, AnyTypeParser};
 use ref_builder::UnitRefBuilder;
 
+pub use anytype_expr::{AnyTypeRef, read_any_type};
 pub use print_format::{FormatStrings, FormatStringId};
 
 pub type IntExpr = CustomIntExpr<ExprState>;
@@ -63,6 +68,11 @@ pub enum Bool {
     Default(Box<(BoolExpr, BoolExpr)>),
 }
 
+enum SetExpr<'a> {
+    Int(IntExpr),
+    AnyType(AnyTypeExpr<'a>),
+}
+
 struct ExprParser<'a, 'b> {
     variables: &'b CompilerVariables<'a>,
     parser: &'b mut ParserExprs,
@@ -80,6 +90,18 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
                 self.parser.set_current_error(e);
             }
             Err(CanRecoverError::Yes(_)) => (),
+        }
+        // Special case player / speed to flingy.player and flingy.speed
+        // so that they're also usable from bullet iscripts
+        if input.starts_with(b"player") {
+            let rest = expect_token(input, b"player").ok()?;
+            const VAR: PlaceId = PlaceId::new_flingy(FlingyVar::Player, UnitRefId::this());
+            return Some((Int::Variable(VAR, out), rest));
+        }
+        if input.starts_with(b"speed") {
+            let rest = expect_token(input, b"speed").ok()?;
+            const VAR: PlaceId = PlaceId::new_flingy(FlingyVar::Speed, UnitRefId::this());
+            return Some((Int::Variable(VAR, out), rest));
         }
         None
     }
@@ -336,6 +358,7 @@ pub mod aice_op {
     pub const IMG_ON: u8 = 0x0f;
     pub const FIRE_WEAPON: u8 = 0x10;
     pub const PRINT: u8 = 0x11;
+    pub const SET_COPY: u8 = 0x12;
 }
 
 quick_error! {
@@ -390,6 +413,12 @@ impl From<CanRecoverError> for Error {
         match error {
             CanRecoverError::Yes(error) | CanRecoverError::No(error) => error,
         }
+    }
+}
+
+impl From<std::num::TryFromIntError> for Error {
+    fn from(_: std::num::TryFromIntError) -> Self {
+        Error::Overflow
     }
 }
 
@@ -596,12 +625,12 @@ static FLINGY_VARS: &[(&[u8], FlingyVar)] = {
 static BULLET_VARS: &[(&[u8], BulletVar)] = {
     use self::BulletVar::*;
     &[
-        (b"bullet.weapon_id", WeaponId),
-        (b"bullet.death_timer", BulletVar::DeathTimer),
-        (b"bullet.state", State),
-        (b"bullet.bounces_remaining", BouncesRemaining),
-        (b"bullet.order_target_x", OrderTargetX),
-        (b"bullet.order_target_y", OrderTargetY),
+        (b"weapon_id", WeaponId),
+        (b"death_timer", BulletVar::DeathTimer),
+        (b"state", State),
+        (b"bounces_remaining", BouncesRemaining),
+        (b"order_target_x", OrderTargetX),
+        (b"order_target_y", OrderTargetY),
     ]
 };
 
@@ -733,6 +762,14 @@ impl Iscript {
     pub fn sprite_local_set(&self, id: SpriteLocalSetId) -> &[(u32, u32)] {
         self.sprite_local_sets.get_or_empty(id)
     }
+
+    pub fn is_int_var_place(&self, place: PlaceId) -> bool {
+        match place.place() {
+            Place::Global(..) => true,
+            Place::SpriteLocal(..) => true,
+            _ => false,
+        }
+    }
 }
 
 impl<Key: VecIndex, T> VecOfVecs<Key, T> {
@@ -754,8 +791,7 @@ impl<Key: VecIndex, T> VecOfVecs<Key, T> {
     }
 
     fn build<F: FnMut() -> Result<Option<T>, Error>>(&mut self, mut cb: F) -> Result<Key, Error> {
-        let start = u32::try_from(self.data.len())
-            .map_err(|_| Error::Overflow)?;
+        let start = u32::try_from(self.data.len())?;
         let id = u32::try_from(self.offsets_lens.len())
             .ok()
             .and_then(|x| Key::from_index(x as u32))
@@ -848,6 +884,36 @@ impl LineInfoLookup {
             }
         }
         0
+    }
+
+    #[cfg(test)]
+    pub fn line_to_pos(&self, line: u32) -> Option<usize> {
+        // Note: Lines being sorted is not actually guaranteed, but pretty sure
+        // it works -- since this is just test helper it should be fiine...
+        let index = match self.sorted.binary_search_by_key(&line, |x| x.line) {
+            Ok(o) => return Some(self.sorted[o].pos as usize),
+            Err(e) => e.checked_sub(1)?,
+        };
+        let sorted = self.sorted.get(index)?;
+
+        let mut current_line = sorted.line as i32;
+        let mut current_pos = sorted.pos;
+        let start = index.wrapping_mul(LOOKUP_LINEAR_BLOCK_SIZE);
+        let end = start.wrapping_add(LOOKUP_LINEAR_BLOCK_SIZE).min(self.relative.len());
+        if let Some(relative) = self.relative.get(start..end) {
+            for rel in relative {
+                current_line = current_line.wrapping_add(rel.line as i32);
+                current_pos = current_pos.wrapping_add(rel.pos as u32);
+                if current_line >= line as i32 {
+                    if current_line == line as i32 {
+                        return Some(current_pos as usize);
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
@@ -1249,7 +1315,7 @@ impl<'a> Parser<'a> {
         block_scope: &BlockScope<'a, '_>,
         compiler: &mut Compiler<'a>,
         stage1: &ParseStage1<'a>,
-        ctx: &mut CompileContext,
+        ctx: &mut CompileContext<'_>,
     ) -> Result<(), Error> {
         compiler.set_current_line(line.line_number as u32);
         match line.ty {
@@ -1389,7 +1455,13 @@ impl<'a> Parser<'a> {
                     let exprs = &mut self.exprs;
                     let (place, if_uninit, rest) =
                         exprs.parse_set_place(rest, &mut ctx.expr_buffer, vars)?;
-                    let (expr, rest) = parse_int_expr(rest, exprs, vars)?;
+                    let (expr, rest) = parse_set_expr(
+                        place,
+                        rest,
+                        exprs,
+                        vars,
+                        &mut ctx.anytype_parser,
+                    )?;
                     if !rest.is_empty() {
                         return Err(
                             Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
@@ -1401,7 +1473,7 @@ impl<'a> Parser<'a> {
                         if_uninit,
                         expr,
                         &mut ctx.expr_buffer,
-                    );
+                    )?;
                     Ok(())
                 }
                 CommandPrototype::ImgulOn | CommandPrototype::ImgolOn => {
@@ -1625,10 +1697,8 @@ impl ParserExprs {
 
         let (first, rest) = split_first_token(place)
             .ok_or_else(error)?;
-        println!("Got {}, {}", first.as_bstr(), rest.as_bstr());
         if rest.get(0).copied() != Some(b'.') {
             if let Some(&var_id) = variable_decls.variables.get(first) {
-                println!("ret var, {}", rest.as_bstr());
                 return Ok((var_id, rest));
             }
         }
@@ -1687,7 +1757,7 @@ impl ParserExprs {
                     })
             })
             .ok_or_else(|| {
-                Error::Dynamic(format!("Unknown unit variable '{}'", field.as_bstr()))
+                Error::Dynamic(format!("Unknown variable name '{}'", field.as_bstr()))
             })?;
         Ok((place, rest))
     }
@@ -1927,6 +1997,26 @@ fn parse_any_expr_allow_opt<'a, 'b, 'c>(
     ))
 }
 
+fn parse_set_expr<'a, 'b, 'c, 'bump>(
+    dest_place: PlaceId,
+    text: &'a [u8],
+    parser: &'c mut ParserExprs,
+    variable_decls: &'c CompilerVariables<'b>,
+    anytype_parser: &mut AnyTypeParser<'bump>,
+) -> Result<(SetExpr<'bump>, &'a [u8]), Error> {
+    if dest_place.is_variable() {
+        if let Some((expr, rest)) =
+            anytype_parser.try_parse_anytype_expr(text, parser, variable_decls)?
+        {
+            if rest.is_empty() {
+                return Ok((SetExpr::AnyType(expr), rest));
+            }
+        }
+    }
+    parse_int_expr(text, parser, variable_decls)
+        .map(|x| (SetExpr::Int(x.0), x.1))
+}
+
 /// Parses `with { spritelocal1 = expr, ... }`
 /// Accepts also empty input for empty set of spritelocals.
 fn parse_with<'a, 'b, 'c>(
@@ -1934,7 +2024,7 @@ fn parse_with<'a, 'b, 'c>(
     parser: &'c mut ParserExprs,
     stage1: &ParseStage1<'b>,
     compiler: &'c mut Compiler<'b>,
-    ctx: &mut CompileContext,
+    ctx: &mut CompileContext<'_>,
     linked: LinkedBlock,
 ) -> Result<SpriteLocalSetId, Error> {
     if text.is_empty() {
@@ -2158,10 +2248,11 @@ struct CompilerExprs {
 }
 
 /// Reusable buffers
-struct CompileContext {
+struct CompileContext<'b> {
     expr_buffer: [Option<Box<IntExpr>>; 4],
     write_buffer: Vec<u8>,
     error_line: usize,
+    anytype_parser: AnyTypeParser<'b>,
 }
 
 struct BwRequiredLabels<'a> {
@@ -2367,7 +2458,7 @@ pub enum Place {
 pub struct UnitRefId(pub u16);
 
 impl UnitRefId {
-    pub fn this() -> UnitRefId {
+    pub const fn this() -> UnitRefId {
         UnitRefId(0)
     }
 
@@ -2447,6 +2538,11 @@ impl PlaceId {
             2 => self.0 & 0xffff00 != 0 && matches!((self.0 >> 27) & 0x7, 0 | 2),
             _ => false,
         }
+    }
+
+    fn is_variable(self) -> bool {
+        let tag = self.0 >> 30;
+        tag == 0 || tag == 1
     }
 }
 
@@ -2686,25 +2782,37 @@ impl<'a> Compiler<'a> {
         write_buffer: &mut Vec<u8>,
         place: PlaceId,
         if_uninit: bool,
-        value: IntExpr,
+        value: SetExpr<'_>,
         place_vars: &mut [Option<Box<IntExpr>>; 4],
-    ) {
+    ) -> Result<(), Error> {
         self.add_flow_to_aice();
-        let index = self.expressions.int_expr_id(value);
         let var_id = if if_uninit {
             place.0 | 0x2000_0000
         } else {
             place.0
         };
         write_buffer.clear();
-        write_buffer.push(aice_op::SET);
-        write_buffer.write_u32::<LE>(var_id).unwrap();
-        write_buffer.write_u32::<LE>(index as u32).unwrap();
-        for var in place_vars.iter_mut().take_while(|x| x.is_some()).filter_map(|x| x.take()) {
-            let index = self.expressions.int_expr_id(*var);
-            write_buffer.write_u32::<LE>(index as u32).unwrap();
+        match value {
+            SetExpr::Int(value) => {
+                let index = self.expressions.int_expr_id(value);
+                write_buffer.push(aice_op::SET);
+                write_buffer.write_u32::<LE>(var_id).unwrap();
+                write_buffer.write_u32::<LE>(index as u32).unwrap();
+                for var in place_vars.iter_mut()
+                    .take_while(|x| x.is_some()).filter_map(|x| x.take())
+                {
+                    let index = self.expressions.int_expr_id(*var);
+                    write_buffer.write_u32::<LE>(index as u32).unwrap();
+                }
+            }
+            SetExpr::AnyType(ref ty) => {
+                write_buffer.push(aice_op::SET_COPY);
+                write_buffer.write_u32::<LE>(var_id).unwrap();
+                anytype_expr::write_any_type(write_buffer, ty);
+            }
         }
         self.add_aice_code(&write_buffer);
+        Ok(())
     }
 
     fn add_if(
@@ -3027,6 +3135,27 @@ impl<'a> Compiler<'a> {
     }
 }
 
+#[cfg(test)]
+impl<'a> CompilerVariables<'a> {
+    fn for_test(input: &[(&'a [u8], VariableType)]) -> Self {
+        let mut result = CompilerVariables {
+            variables: Default::default(),
+            variable_counts: [0, 0],
+        };
+        for &(name, ty) in input {
+            let id = result.variable_counts[ty as usize] as u32;
+            result.variable_counts[ty as usize] += 1;
+            let place_id = match ty {
+                VariableType::Global => PlaceId::new_global(id),
+                VariableType::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
+            };
+            let place_id = place_id.ok_or_else(|| Error::Overflow).unwrap();
+            result.variables.insert(name, place_id);
+        }
+        result
+    }
+}
+
 impl CompilerExprs {
     fn int_expr_id(&mut self, value: IntExpr) -> u32 {
         match self.existing_int_expressions.get(&value).cloned() {
@@ -3279,10 +3408,12 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     if !errors.is_empty() {
         return Err(errors);
     }
+    let bump = Bump::new();
     let ctx = &mut CompileContext {
         expr_buffer: [None, None, None, None],
         write_buffer: Vec::with_capacity(64),
         error_line: 0,
+        anytype_parser: AnyTypeParser::new(&bump),
     };
 
     for &block_id in &blocks.root_blocks {
@@ -3319,530 +3450,4 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
         }
     };
     Ok(script)
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    use bw_dat::expr::{IntFunc, IntFuncType};
-
-    fn read(filename: &str) -> Vec<u8> {
-        std::fs::read(format!("test_scripts/{}", filename)).unwrap()
-    }
-
-    fn compile_success(filename: &str) -> Iscript {
-        let text = read(filename);
-        match compile_iscript_txt(&text) {
-            Ok(o) => o,
-            Err(errors) => {
-                for e in &errors {
-                    if let Some(line) = e.line {
-                        println!("Line {}: {}", line, e.error);
-                    } else {
-                        println!("{}", e.error);
-                    }
-                }
-                panic!("{} errors", errors.len());
-            }
-        }
-    }
-
-    fn compile_err(filename: &str) -> Vec<ErrorWithLine> {
-        let text = read(filename);
-        match compile_iscript_txt(&text) {
-            Ok(_) => panic!("Compilation succeeded"),
-            Err(errors) => errors,
-        }
-    }
-
-    fn find_error(errors: &mut Vec<ErrorWithLine>, substring: &str, line: usize) {
-        let index = errors.iter()
-            .position(|x| {
-                if line != !0 {
-                    if x.line != Some(line) {
-                        return false;
-                    }
-                } else {
-                    if x.line != None {
-                        return false;
-                    }
-                }
-                let text = format!("{}", x.error);
-                text.contains(substring)
-            });
-        match index {
-            Some(s) => {
-                errors.remove(s);
-            }
-            None => {
-                println!("Errors:");
-                for e in errors {
-                    println!("    {}: {}", e.line.unwrap_or(0), e.error);
-                }
-                panic!("Couldn't find error '{}' @ line {}", substring, line);
-            }
-        }
-    }
-
-    fn assert_place_obj(
-        iscript: &Iscript,
-        place: PlaceId,
-        var: UnitVar,
-        object: &[UnitObject],
-    ) {
-        match place.place() {
-            Place::Unit(unit, x) if x == var  => {
-                match iscript.unit_ref_object(unit) {
-                    UnitRefParts::Single(x) => {
-                        assert_eq!(&[x], object);
-                    }
-                    UnitRefParts::Many(x) => {
-                        assert_eq!(x, object);
-                    }
-                }
-            }
-            x => panic!("Wrong place {:?}", x),
-        }
-    }
-
-    fn assert_spritelocal_place_obj(
-        iscript: &Iscript,
-        place: PlaceId,
-        object: &[UnitObject],
-    ) -> u32 {
-        match place.place() {
-            Place::SpriteLocal(unit, x) => {
-                match iscript.unit_ref_object(unit) {
-                    UnitRefParts::Single(x) => {
-                        assert_eq!(&[x], object);
-                    }
-                    UnitRefParts::Many(x) => {
-                        assert_eq!(x, object);
-                    }
-                }
-                x
-            }
-            x => panic!("Wrong place {:?}", x),
-        }
-    }
-
-    fn unwrap_expr_default(expr: &IntExprTree) -> (&IntExprTree, &IntExprTree) {
-        match expr {
-            IntExprTree::Custom(Int::Default(ref pair)) => {
-                (pair.0.inner(), pair.1.inner())
-            }
-            x => panic!("Wrong expr {:?}", x),
-        }
-    }
-
-    #[test]
-    fn parse_vanilla() {
-        let iscript = compile_success("vanilla.txt");
-        assert_eq!(iscript.bw_data[0], AICE_COMMAND);
-        assert_eq!(iscript.bw_data[0x4], 0x16);
-        assert_eq!(iscript.bw_data[0x1b], AICE_COMMAND);
-        assert_eq!(iscript.bw_data[0x4550], AICE_COMMAND);
-        assert_eq!(iscript.bw_data[0x4353], AICE_COMMAND);
-    }
-
-    #[test]
-    fn parse_if1() {
-        let iscript = compile_success("if1.txt");
-        assert_eq!(iscript.conditions.len(), 1);
-        let expr = BoolExprTree::EqualInt(Box::new((
-            IntExprTree::Func(IntFunc {
-                ty: IntFuncType::UnitId,
-                args: Box::new([]),
-            }),
-            IntExprTree::Integer(53),
-        )));
-        assert_eq!(*iscript.conditions[0].inner(), expr);
-    }
-
-    #[test]
-    fn test1() {
-        let iscript = compile_success("test1.txt");
-        assert_eq!(iscript.bw_data[0], AICE_COMMAND);
-        assert_eq!(iscript.bw_data[0x4], 0x16);
-        assert_eq!(iscript.bw_data[0x1b], AICE_COMMAND);
-        assert_eq!(iscript.bw_data[0x4550], AICE_COMMAND);
-        assert_eq!(iscript.bw_data[0x4353], AICE_COMMAND);
-    }
-
-    #[test]
-    fn vars() {
-        let iscript = compile_success("vars.txt");
-        assert_eq!(iscript.global_count, 1);
-    }
-
-    #[test]
-    fn vars2() {
-        compile_success("vars2.txt");
-    }
-
-    #[test]
-    fn blocks_ok() {
-        compile_success("blocks_ok.txt");
-    }
-
-    #[test]
-    fn blocks_err() {
-        let mut errors = compile_err("blocks_err.txt");
-        find_error(&mut errors, "'ScourgeDeath' not found", !0);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_parse_i8() {
-        assert_eq!(parse_i8(b"3"), Some(3));
-        assert_eq!(parse_i8(b"127"), Some(127));
-        assert_eq!(parse_i8(b"128"), Some(128));
-        assert_eq!(parse_i8(b"-128"), Some(128));
-        assert_eq!(parse_i8(b"-1"), Some(255));
-        assert_eq!(parse_i8(b"255"), Some(255));
-        assert_eq!(parse_i8(b"-129"), None);
-        assert_eq!(parse_i8(b"256"), None);
-        assert_eq!(parse_i8(b"255"), Some(255));
-        assert_eq!(parse_i8(b"-0x10"), Some(240));
-        assert_eq!(parse_i8(b"-16"), Some(240));
-    }
-
-    #[test]
-    fn line_lookup() {
-        let iscript = compile_success("if1.txt");
-        // This test needs to be updated if `if` is no longer 9 byte command
-        // or jump_to_bw no longer 3 bytes
-        assert_eq!(iscript.line_info.pos_to_line(CodePosition::aice(0)), 42);
-        assert_eq!(iscript.line_info.pos_to_line(CodePosition::aice(12)), 51);
-        assert_eq!(iscript.line_info.pos_to_line(CodePosition::aice(6 * 12)), 229);
-    }
-
-    #[test]
-    fn if_call() {
-        compile_success("if2.txt");
-    }
-
-    #[test]
-    fn create_unit_expr_regression() {
-        let iscript = compile_success("create_unit_expr.txt");
-        // The pos_to_line currently returns next aice line for any position
-        // that isn't inside the command start; search in reverse to find the actual
-        // line 47
-        let aice_pos = (0..0x40).rfind(|&i| {
-            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 47
-        }).unwrap() as usize;
-        assert_eq!(iscript.aice_data[aice_pos], aice_op::CREATE_UNIT);
-        let x = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]) as usize;
-        let y = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 9)..]) as usize;
-        let with_set = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 17)..]);
-        assert_eq!(with_set, 0);
-        let x_place = PlaceId::new_flingy(FlingyVar::PositionX, UnitRefId::this());
-        let y_place = PlaceId::new_flingy(FlingyVar::PositionY, UnitRefId::this());
-        let x_expr = IntExprTree::Custom(Int::Variable(x_place, [None, None, None, None]));
-        let y_expr = IntExprTree::Sub(Box::new((
-            IntExprTree::Custom(Int::Variable(y_place, [None, None, None, None])),
-            IntExprTree::Integer(9),
-        )));
-        assert_eq!(*iscript.int_expressions[x].inner(), x_expr);
-        assert_eq!(*iscript.int_expressions[y].inner(), y_expr);
-    }
-
-    #[test]
-    fn issue_order() {
-        let iscript = compile_success("issue_order.txt");
-        // The pos_to_line currently returns next aice line for any position
-        // that isn't inside the command start; search in reverse to find the actual
-        // line 47
-        let aice_pos = (0..0x40).rfind(|&i| {
-            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 47
-        }).unwrap() as usize;
-        assert_eq!(iscript.aice_data[aice_pos], aice_op::ISSUE_ORDER);
-        let order = iscript.aice_data[aice_pos + 1] as usize;
-        assert_eq!(order, 72);
-        let x = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 2)..]) as usize;
-        let y = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 6)..]) as usize;
-        let x_place = PlaceId::new_flingy(FlingyVar::PositionX, UnitRefId::this());
-        let y_place = PlaceId::new_flingy(FlingyVar::PositionY, UnitRefId::this());
-        let x_expr = IntExprTree::Custom(Int::Variable(x_place, [None, None, None, None]));
-        let y_expr = IntExprTree::Sub(Box::new((
-            IntExprTree::Custom(Int::Variable(y_place, [None, None, None, None])),
-            IntExprTree::Integer(9),
-        )));
-        assert_eq!(*iscript.int_expressions[x].inner(), x_expr);
-        assert_eq!(*iscript.int_expressions[y].inner(), y_expr);
-    }
-
-    #[test]
-    fn issue_order_nonconst() {
-        let mut errors = compile_err("issue_order_nonconst.txt");
-        find_error(&mut errors, "Starting from + 1", 47);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn unit_refs() {
-        let iscript = compile_success("unit_refs.txt");
-        // The pos_to_line currently returns next aice line for any position
-        // that isn't inside the command start; search in reverse to find the actual line
-
-        // Line 60 check `set unit.target.turn_speed = ..`
-        let aice_pos = (0..0x40).rfind(|&i| {
-            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 60
-        }).unwrap() as usize;
-        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
-        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
-        match place.place() {
-            Place::Flingy(unit, FlingyVar::TurnSpeed) => {
-                match iscript.unit_ref_object(unit) {
-                    UnitRefParts::Single(UnitObject::UnitTarget) => (),
-                    x => panic!("Wrong unit ref parts {:?}", x),
-                }
-            }
-            x => panic!("Wrong place {:?}", x),
-        }
-
-        // Line 61 check `set unit.target.hitpoints = unit.target.hitpoints - 10 default 0`
-        let aice_pos = (0..0x40).rfind(|&i| {
-            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 61
-        }).unwrap() as usize;
-        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
-        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
-        let expr = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]) as usize;
-        assert_place_obj(
-            &iscript,
-            place,
-            UnitVar::Hitpoints,
-            &[UnitObject::UnitTarget],
-        );
-        let (l, r) = unwrap_expr_default(iscript.int_expressions[expr].inner());
-        match l {
-            IntExprTree::Sub(ref pair) => {
-                match pair.0 {
-                    IntExprTree::Custom(Int::Variable(place, _)) => {
-                        assert_place_obj(
-                            &iscript,
-                            place,
-                            UnitVar::Hitpoints,
-                            &[UnitObject::UnitTarget],
-                        );
-                    }
-                    ref x => panic!("Wrong expr {:?}", x),
-                }
-                assert_eq!(pair.1, IntExprTree::Integer(10));
-            }
-            x => panic!("Wrong expr {:?}", x),
-        }
-        assert_eq!(r, &IntExprTree::Integer(0));
-
-        // Line 64 check `set .. = 5 + (unit.target.parent.hitpoints default unit.target.hitpoints default unit.hitpoints)`
-        let aice_pos = (0..0x80).rfind(|&i| {
-            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 64
-        }).unwrap() as usize;
-        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
-        let expr = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]) as usize;
-        match *iscript.int_expressions[expr].inner() {
-            IntExprTree::Add(ref pair) => {
-                assert_eq!(&pair.0, &IntExprTree::Integer(5));
-                let (l, r) = unwrap_expr_default(&pair.1);
-                let (l, m) = unwrap_expr_default(l);
-                match *l {
-                    IntExprTree::Custom(Int::Variable(place, _)) => {
-                        assert_place_obj(
-                            &iscript,
-                            place,
-                            UnitVar::Hitpoints,
-                            &[UnitObject::UnitTarget, UnitObject::UnitParent],
-                        );
-                    }
-                    ref x => panic!("Wrong expr {:?}", x),
-                }
-                match *m {
-                    IntExprTree::Custom(Int::Variable(place, _)) => {
-                        assert_place_obj(
-                            &iscript,
-                            place,
-                            UnitVar::Hitpoints,
-                            &[UnitObject::UnitTarget]
-                        );
-                    }
-                    ref x => panic!("Wrong expr {:?}", x),
-                }
-                match *r {
-                    IntExprTree::Custom(Int::Variable(place, _)) => {
-                        assert_place_obj(
-                            &iscript,
-                            place,
-                            UnitVar::Hitpoints,
-                            &[UnitObject::This]
-                        );
-                    }
-                    ref x => panic!("Wrong expr {:?}", x),
-                }
-            }
-            ref x => panic!("Wrong expr {:?}", x),
-        }
-
-        // Line 115 `set if_uninit spritelocal unit.transport.marine_count = 0`
-        let aice_pos = (0..0x100).rfind(|&i| {
-            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 115
-        }).unwrap() as usize;
-        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
-        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
-        let marine_count = assert_spritelocal_place_obj(&iscript, place, &[UnitObject::Transport]);
-        // Line 116 `set spritelocal unit.transport.marine_count = unit.transport.marine_count + 1 default 0`
-        let aice_pos = (0..0x100).rfind(|&i| {
-            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 116
-        }).unwrap() as usize;
-        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
-        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
-        let expr = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]);
-        let marine_count2 = assert_spritelocal_place_obj(&iscript, place, &[UnitObject::Transport]);
-        assert_eq!(marine_count, marine_count2);
-        let (l, r) = unwrap_expr_default(iscript.int_expressions[expr as usize].inner());
-        assert_eq!(r, &IntExprTree::Integer(0));
-        match l {
-            IntExprTree::Add(ref pair) => {
-                match pair.0 {
-                    IntExprTree::Custom(Int::Variable(place, _)) => {
-                        let marine_count2 = assert_spritelocal_place_obj(
-                            &iscript,
-                            place,
-                            &[UnitObject::Transport],
-                        );
-                        assert_eq!(marine_count, marine_count2);
-                    }
-                    ref x => panic!("Wrong expr {:?}", x),
-                }
-                assert_eq!(&pair.1, &IntExprTree::Integer(1));
-            }
-            ref x => panic!("Wrong expr {:?}", x),
-        }
-    }
-
-    #[test]
-    fn unit_refs_err() {
-        let mut errors = compile_err("unit_refs_err.txt");
-        find_error(&mut errors, "needs `default`", 60);
-        find_error(&mut errors, "needs `default`", 61);
-        find_error(&mut errors, "needs `default`", 62);
-        find_error(&mut errors, "needs `default`", 63);
-        find_error(&mut errors, "X must be between", 78);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn if_uninit() {
-        let iscript = compile_success("if_uninit.txt");
-        // The pos_to_line currently returns next aice line for any position
-        // that isn't inside the command start; search in reverse to find the actual line
-
-        // Line 25 check `set if_uninit spritelocal`
-        let aice_pos = (0..0x40).rfind(|&i| {
-            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 25
-        }).unwrap() as usize;
-        assert_eq!(iscript.aice_data[aice_pos], aice_op::SET);
-        let place = PlaceId(LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 1)..]));
-        assert!(place.if_uninit());
-        match place.place() {
-            Place::SpriteLocal(..) => {
-            }
-            x => panic!("Wrong place {:?}", x),
-        }
-    }
-
-    #[test]
-    fn if_uninit_err() {
-        let mut errors = compile_err("if_uninit_err.txt");
-        find_error(&mut errors, "if_uninit", 25);
-        find_error(&mut errors, "if_uninit", 26);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn with() {
-        let iscript = compile_success("with.txt");
-        // The pos_to_line currently returns next aice line for any position
-        // that isn't inside the command start; search in reverse to find the actual line
-
-        // Line 48 check `create_unit .. with {}`
-        let aice_pos = (0..0x80).rfind(|&i| {
-            iscript.line_info.pos_to_line(CodePosition::aice(i)) == 48
-        }).unwrap() as usize;
-        assert_eq!(iscript.aice_data[aice_pos], aice_op::CREATE_UNIT);
-        let with_set = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 17)..]);
-        assert_eq!(with_set, 1);
-        let locals = iscript.sprite_local_set(SpriteLocalSetId(with_set));
-        assert_eq!(locals.len(), 3);
-        assert_ne!(locals[0].0, locals[1].0);
-        assert_ne!(locals[0].0, locals[2].0);
-        // deaths = deaths + 1
-        let expr1 = locals[0].1 as usize;
-        match *iscript.int_expressions[expr1].inner() {
-            IntExprTree::Add(ref pair) => {
-                assert_eq!(&pair.1, &IntExprTree::Integer(1));
-                match pair.0 {
-                    IntExprTree::Custom(Int::Variable(place, _)) => {
-                        match place.place() {
-                            Place::SpriteLocal(unit_ref, x) => {
-                                assert_eq!(unit_ref, UnitRefId::this());
-                                assert_eq!(x, locals[0].0);
-                            }
-                            ref x => panic!("Wrong place {:?}", x),
-                        }
-                    }
-                    ref x => panic!("Wrong expr {:?}", x),
-                }
-            }
-            ref x => panic!("Wrong expr {:?}", x),
-        }
-        // miscstuff = 50
-        let expr2 = locals[1].1 as usize;
-        match *iscript.int_expressions[expr2].inner() {
-            IntExprTree::Integer(50) => (),
-            ref x => panic!("Wrong expr {:?}", x),
-        }
-        // rest = unit.target.hitpoints default 0
-        let expr3 = locals[2].1 as usize;
-        let (l, r) = unwrap_expr_default(iscript.int_expressions[expr3].inner());
-        match *l {
-            IntExprTree::Custom(Int::Variable(place, _)) => {
-                assert_place_obj(
-                    &iscript,
-                    place,
-                    UnitVar::Hitpoints,
-                    &[UnitObject::UnitTarget],
-                );
-            }
-            ref x => panic!("Wrong expr {:?}", x),
-        }
-        assert_eq!(r, &IntExprTree::Integer(0));
-    }
-
-    #[test]
-    fn with_err() {
-        let mut errors = compile_err("with_err.txt");
-        find_error(&mut errors, "Unterminated", 48);
-        find_error(&mut errors, "Last command does not terminate", 82);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn with_err2() {
-        let mut errors = compile_err("with_err2.txt");
-        find_error(&mut errors, "Global", 51);
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn print() {
-        let _ = compile_success("print.txt");
-    }
-
-    #[test]
-    fn print_err() {
-        let mut errors = compile_err("print_err.txt");
-        find_error(&mut errors, "got '.taget}", 52);
-        assert!(errors.is_empty());
-    }
 }

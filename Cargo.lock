@@ -15,6 +15,7 @@ dependencies = [
  "bincode",
  "bitflags",
  "bstr",
+ "bumpalo",
  "bw_dat",
  "byteorder",
  "chrono",
@@ -67,6 +68,12 @@ dependencies = [
  "memchr",
  "regex-automata",
 ]
+
+[[package]]
+name = "bumpalo"
+version = "3.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4a45a46ab1f2412e53d3a0ade76ffad2025804294569aae387231a0cd6e0899"
 
 [[package]]
 name = "bw_dat"
