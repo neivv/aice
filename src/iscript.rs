@@ -20,7 +20,7 @@ use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, Serializab
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
     UnitVar, ImageVar, GameVar, UnitRefId, UnitObject, UnitRefParts, SpriteLocalSetId,
-    FormatStringId, AnyExpr, AnyTypeRef,
+    FormatStringId, AnyExpr, AnyTypeRef, AiceCommandParam, CommandParams,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
@@ -1219,13 +1219,17 @@ impl<'a> IscriptRunner<'a> {
                     (*self.bw_script).pos = 0x4;
                     self.in_aice_code = false;
                 }
-                SET_ORDER_WEAPON | FIRE_WEAPON => {
-                    let expr = self.read_u32()?;
-                    let sprite_locals = if opcode == FIRE_WEAPON {
-                        SpriteLocalSetId(self.read_u32()?)
+                RESET_ORDER_WEAPON | FIRE_WEAPON => {
+                    let weapon_id;
+                    let sprite_locals;
+                    if opcode == FIRE_WEAPON {
+                        let values = self.read_aice_params(&FIRE_WEAPON_PARAMS)?;
+                        weapon_id = values[0];
+                        sprite_locals = SpriteLocalSetId(values[1] as u32);
                     } else {
-                        SpriteLocalSetId(0)
-                    };
+                        weapon_id = 0;
+                        sprite_locals = SpriteLocalSetId(0);
+                    }
                     if self.dry_run {
                         continue;
                     }
@@ -1238,10 +1242,7 @@ impl<'a> IscriptRunner<'a> {
                     let orders_dat_weapon = &bw::orders_dat()[0xd];
                     let order = unit.order().0 as usize;
                     let new_value;
-                    if expr != !0 {
-                        let expression = &self.iscript.int_expressions[expr as usize];
-                        let mut eval_ctx = self.eval_ctx();
-                        let value = eval_ctx.eval_int(&expression);
+                    if opcode == FIRE_WEAPON {
                         let old = match orders_dat_weapon.entry_size {
                             1 => *(orders_dat_weapon.data as *mut u8).add(order) as u32,
                             2 => *(orders_dat_weapon.data as *mut u16).add(order) as u32,
@@ -1249,8 +1250,8 @@ impl<'a> IscriptRunner<'a> {
                             _ => 0,
                         };
                         self.state.set_sprite_local(sprite, TEMP_LOCAL_ID, old as i32, false);
-                        new_value = Some(value);
-                        let image = WeaponId(value as u16).flingy().sprite().image();
+                        new_value = Some(weapon_id);
+                        let image = WeaponId(weapon_id as u16).flingy().sprite().image();
                         self.set_with_vars(image, sprite_locals);
                     } else {
                         new_value = self.get_sprite_local(TEMP_LOCAL_ID, UnitRefId::this());
@@ -1285,54 +1286,36 @@ impl<'a> IscriptRunner<'a> {
                     (**unit).order_wait = 0;
                 }
                 CREATE_UNIT => {
-                    let unit_id_expr = self.read_u32()? as usize;
-                    let x_expr = self.read_u32()? as usize;
-                    let y_expr = self.read_u32()? as usize;
-                    let player_expr = self.read_u32()? as usize;
-                    let sprite_locals = SpriteLocalSetId(self.read_u32()?);
+                    let values = self.read_aice_params(&CREATE_UNIT_PARAMS)?;
                     if self.dry_run {
                         continue;
                     }
-                    let unit_id = &self.iscript.int_expressions[unit_id_expr];
-                    let x = &self.iscript.int_expressions[x_expr];
-                    let y = &self.iscript.int_expressions[y_expr];
-                    let player = &self.iscript.int_expressions[player_expr];
-                    let mut eval_ctx = self.eval_ctx();
-                    let unit_id = eval_ctx.eval_int(&unit_id);
-                    let x = eval_ctx.eval_int(&x);
-                    let y = eval_ctx.eval_int(&y);
-                    let player = eval_ctx.eval_int(&player).min(11).max(0);
-                    let unit_id = match u32::try_from(unit_id).ok().and_then(UnitId::optional) {
+                    let unit_id = match u32::try_from(values[0]).ok().and_then(UnitId::optional) {
                         Some(s) => s,
                         None => continue,
                     };
                     let pos = bw::Point {
-                        x: x as i16,
-                        y: y as i16,
+                        x: values[1] as i16,
+                        y: values[2] as i16,
                     };
-                    let player = match player {
-                        0..=11 => player as u8,
+                    let player = match values[3] {
+                        0..=11 => values[3] as u8,
                         _ => continue,
                     };
+                    let sprite_locals = SpriteLocalSetId(values[4] as u32);
                     let image = unit_id.flingy().sprite().image();
                     self.set_with_vars(image, sprite_locals);
                     return Ok(ScriptRunResult::CreateUnit(unit_id, pos, player));
                 }
                 ISSUE_ORDER => {
-                    let order_id = OrderId(self.read_u8()?);
-                    let x_expr = self.read_u32()? as usize;
-                    let y_expr = self.read_u32()? as usize;
+                    let values = self.read_aice_params(&ISSUE_ORDER_PARAMS)?;
                     if self.dry_run {
                         continue;
                     }
-                    let x = &self.iscript.int_expressions[x_expr];
-                    let y = &self.iscript.int_expressions[y_expr];
-                    let mut eval_ctx = self.eval_ctx();
-                    let x = eval_ctx.eval_int(&x);
-                    let y = eval_ctx.eval_int(&y);
+                    let order_id = OrderId(values[0] as u8);
                     let pos = bw::Point {
-                        x: x as i16,
-                        y: y as i16,
+                        x: values[1] as i16,
+                        y: values[2] as i16,
                     };
                     let unit = match self.unit {
                         Some(s) => s,
@@ -1341,14 +1324,11 @@ impl<'a> IscriptRunner<'a> {
                     return Ok(ScriptRunResult::IssueOrder(unit, order_id, pos));
                 }
                 PLAY_FRAME => {
-                    let expr = self.read_u32()?;
+                    let values = self.read_aice_params(&PLAY_FRAME_PARAMS)?;
                     if self.dry_run {
                         continue;
                     }
-                    self.init_sprite_owner();
-                    let expression = &self.iscript.int_expressions[expr as usize];
-                    let mut eval_ctx = self.eval_ctx();
-                    let value = clamp_i32_u16(eval_ctx.eval_int(&expression));
+                    let value = values[0] as u16;
                     let image = self.image;
                     if let Err(limit) = image_play_frame(image, value) {
                         bw_print!(
@@ -1379,52 +1359,20 @@ impl<'a> IscriptRunner<'a> {
                     }
                 }
                 IMG_ON => {
-                    let flags = self.read_u8()?;
-                    let unit_ref = UnitRefId(self.read_u16()?);
-                    let image_id = match flags & 0x2 == 0 {
-                        true => self.read_u32()?,
-                        false => self.read_u16()? as u32,
-                    };
-                    let x = match flags & 0x4 == 0 {
-                        true => self.read_u32()?,
-                        false => self.read_u8()? as u32,
-                    };
-                    let y = match flags & 0x8 == 0 {
-                        true => self.read_u32()?,
-                        false => self.read_u8()? as u32,
-                    };
+                    let values = self.read_aice_params(&IMGUL_ON_PARAMS)?;
                     if self.dry_run {
                         continue 'op_loop;
                     }
+                    let above = values[0] != 0;
+                    let unit_ref = UnitRefId(values[1] as u16);
+                    let image_id = ImageId(values[2] as u16);
+                    let x = values[3] as i8;
+                    let y = values[4] as i8;
+
                     let sprite = match self.resolve_unit_ref(unit_ref).and_then(|x| x.sprite()) {
                         Some(s) => s,
                         None => continue 'op_loop,
                     };
-                    let iscript = self.iscript;
-                    let mut eval_ctx = self.eval_ctx();
-                    let image_id = match flags & 0x2 == 0 {
-                        true => {
-                            let expr = &iscript.int_expressions[image_id as usize];
-                            clamp_i32_u16(eval_ctx.eval_int(expr))
-                        }
-                        false => image_id as u16,
-                    };
-                    let image_id = ImageId(image_id);
-                    let x = match flags & 0x4 == 0 {
-                        true => {
-                            let expr = &iscript.int_expressions[x as usize];
-                            clamp_i32_iu8(eval_ctx.eval_int(expr))
-                        }
-                        false => x as i8,
-                    };
-                    let y = match flags & 0x8 == 0 {
-                        true => {
-                            let expr = &iscript.int_expressions[y as usize];
-                            clamp_i32_iu8(eval_ctx.eval_int(expr))
-                        }
-                        false => y as i8,
-                    };
-                    let above = flags & 0x1 != 0;
                     let base_image = match above {
                         true => sprite.images().next(),
                         // Ugh but lazy and pretty minor in the end
@@ -1752,6 +1700,47 @@ impl<'a> IscriptRunner<'a> {
                 Some(val)
             })
             .ok_or(pos as u32)
+    }
+
+    fn read_aice_params(&mut self, params: &CommandParams) -> Result<[i32; 8], u32> {
+        let mut result = [0i32; 8];
+        let mut exprs = [0u8; 8];
+        let start_pos = self.pos;
+        unsafe {
+            let base_ptr = self.iscript.aice_data.as_ptr();
+            let read_ptr = base_ptr.add(start_pos);
+            let (new_ptr, expr_total) =
+                parse::read_aice_params(params, read_ptr, &mut result, &mut exprs);
+            let new_pos = (new_ptr as usize).wrapping_sub(base_ptr as usize);
+            if new_pos > self.iscript.aice_data.len() {
+                return Err(start_pos as u32);
+            }
+            self.pos = new_pos;
+
+            if expr_total != 0 {
+                if !self.dry_run {
+                    self.init_sprite_owner();
+                    for i in 0..params.params.len().min(exprs.len()) {
+                        if exprs[i] != 0 {
+                            let expr = result[i];
+                            let expression = &self.iscript.int_expressions[expr as usize];
+                            let mut eval_ctx = self.eval_ctx();
+                            let mut value = eval_ctx.eval_int(&expression);
+                            let param_type = params.params[i];
+                            if param_type == AiceCommandParam::IntExprOrConstU8 {
+                                value = clamp_i32_u8(value) as i32;
+                            } else if param_type == AiceCommandParam::IntExprOrConstI8 {
+                                value = clamp_i32_iu8(value) as i32;
+                            } else if param_type == AiceCommandParam::IntExprOrConstU16 {
+                                value = clamp_i32_u16(value) as i32;
+                            }
+                            result[i] = value;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(result)
     }
 }
 

@@ -15,6 +15,7 @@
 //! in low byte, and that offsets 0x4550 and 0x4353 are reserved 0xcc AnimationInit. Fun working
 //! with that =)
 
+mod aice_commands;
 mod anytype_expr;
 mod print_format;
 mod ref_builder;
@@ -38,6 +39,7 @@ use bw_dat::expr::{self, Expr, CustomBoolExpr, CustomIntExpr};
 use anytype_expr::{AnyTypeExpr, AnyTypeParser};
 use ref_builder::UnitRefBuilder;
 
+pub use aice_commands::{AiceCommandParam, CommandParams, read_aice_params};
 pub use anytype_expr::{AnyTypeRef, read_any_type};
 pub use print_format::{FormatStrings, FormatStringId};
 
@@ -340,23 +342,38 @@ impl ExprTree for BoolExprTree {
 }
 
 pub mod aice_op {
+    use super::AiceCommandParam::*;
+    use super::CommandParams;
+
     pub const JUMP_TO_BW: u8 = 0x00;
     pub const ANIMATION_START: u8 = 0x01;
     pub const IF: u8 = 0x02;
     pub const PRE_END: u8 = 0x03;
     pub const SET: u8 = 0x04;
-    pub const SET_ORDER_WEAPON: u8 = 0x05;
+    pub const RESET_ORDER_WEAPON: u8 = 0x05;
     pub const CLEAR_ATTACKING_FLAG: u8 = 0x06;
     pub const CREATE_UNIT: u8 = 0x07;
+    pub static CREATE_UNIT_PARAMS: CommandParams =
+        CommandParams::new(&[IntExprOrConstU16, IntExpr, IntExpr, IntExprOrConstU8, With]);
     pub const CALL: u8 = 0x08;
     pub const RETURN: u8 = 0x09;
     pub const IF_CALL: u8 = 0x0a;
     pub const PLAY_FRAME: u8 = 0x0b;
+    pub static PLAY_FRAME_PARAMS: CommandParams = CommandParams::new(&[IntExprOrConstU16]);
     pub const SIGORDER: u8 = 0x0c;
     pub const ORDER_DONE: u8 = 0x0d;
     pub const ISSUE_ORDER: u8 = 0x0e;
+    pub static ISSUE_ORDER_PARAMS: CommandParams =
+        CommandParams::new(&[IntExprOrConstU8, IntExpr, IntExpr]);
     pub const IMG_ON: u8 = 0x0f;
+    pub static IMGUL_ON_PARAMS: CommandParams = CommandParams::new(
+        &[False, UnitRef, IntExprOrConstU16, IntExprOrConstI8, IntExprOrConstI8]
+    );
+    pub static IMGOL_ON_PARAMS: CommandParams = CommandParams::new(
+        &[True, UnitRef, IntExprOrConstU16, IntExprOrConstI8, IntExprOrConstI8]
+    );
     pub const FIRE_WEAPON: u8 = 0x10;
+    pub static FIRE_WEAPON_PARAMS: CommandParams = CommandParams::new(&[IntExprOrConstU16, With]);
     pub const PRINT: u8 = 0x11;
     pub const SET_COPY: u8 = 0x12;
 }
@@ -378,6 +395,9 @@ quick_error! {
         }
         Msg(msg: &'static str) {
             display("{}", msg)
+        }
+        ParamRange(param: usize, min: i32, max: i32) {
+            display("Parameter {} must be between {} and {}", param, min, max)
         }
         Internal(msg: &'static str) {
             display("Internal error; {}", msg)
@@ -1025,6 +1045,7 @@ struct Parser<'a> {
     command_map: FxHashMap<&'static [u8], CommandPrototype>,
     exprs: ParserExprs,
     format_strings: FormatStrings,
+    command_build_buffer: Vec<u8>,
 }
 
 struct ParserExprs {
@@ -1058,6 +1079,7 @@ impl<'a> Parser<'a> {
                 image_vars: IMAGE_VARS.iter().cloned().collect(),
             },
             format_strings: FormatStrings::new(),
+            command_build_buffer: Vec::with_capacity(0x20),
         }
     }
 
@@ -1359,27 +1381,30 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::FireWeapon => {
-                    let exprs = &mut self.exprs;
-                    let (expr, rest) = parse_int_expr(rest, exprs, &compiler.variables)?;
-                    let spritelocals = parse_with(rest, exprs, stage1, compiler, ctx, linked)?;
-                    let id = compiler.expressions.int_expr_id(expr);
-                    compiler.add_aice_command(aice_op::FIRE_WEAPON);
-                    compiler.aice_bytecode.write_u32::<LE>(id).unwrap();
-                    compiler.aice_bytecode.write_u32::<LE>(spritelocals.0).unwrap();
+                    self.parse_add_aice_command(
+                        compiler,
+                        stage1,
+                        ctx,
+                        aice_op::FIRE_WEAPON,
+                        &aice_op::FIRE_WEAPON_PARAMS,
+                        rest,
+                        linked,
+                    )?;
                     // castspell
                     compiler.add_bw_code(&[0x27]);
-                    compiler.add_aice_command_u32(aice_op::SET_ORDER_WEAPON, !0);
+                    compiler.add_aice_command(aice_op::RESET_ORDER_WEAPON);
                     Ok(())
                 }
                 CommandPrototype::PlayFram => {
-                    let (expr, rest) = parse_int_expr(rest, &mut self.exprs, &compiler.variables)?;
-                    if !rest.is_empty() {
-                        return Err(
-                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
-                        );
-                    }
-                    let id = compiler.expressions.int_expr_id(expr);
-                    compiler.add_aice_command_u32(aice_op::PLAY_FRAME, id);
+                    self.parse_add_aice_command(
+                        compiler,
+                        stage1,
+                        ctx,
+                        aice_op::PLAY_FRAME,
+                        &aice_op::PLAY_FRAME_PARAMS,
+                        rest,
+                        linked,
+                    )?;
                     Ok(())
                 }
                 CommandPrototype::Sigorder | CommandPrototype::OrderDone => {
@@ -1389,7 +1414,7 @@ impl<'a> Parser<'a> {
                     let flags = match (flags, has_next) {
                         (Some(s), false) => s,
                         _ => return Err(Error::Dynamic(format!(
-                            "Expected single integer paramete, got '{}'", rest.as_bstr(),
+                            "Expected single integer parameter, got '{}'", rest.as_bstr(),
                         ))),
                     };
                     let op = match command {
@@ -1404,44 +1429,27 @@ impl<'a> Parser<'a> {
                     Ok(())
                 }
                 CommandPrototype::CreateUnit => {
-                    let vars = &compiler.variables;
-                    let exprs = &mut self.exprs;
-                    let (unit_id, rest) = parse_int_expr(rest, exprs, vars)?;
-                    let (x, rest) = parse_int_expr(rest, exprs, vars)?;
-                    let (y, rest) = parse_int_expr(rest, exprs, vars)?;
-                    let (player, rest) = parse_int_expr(rest, exprs, vars)?;
-                    let spritelocals = parse_with(rest, exprs, stage1, compiler, ctx, linked)?;
-                    let expr = &mut compiler.expressions;
-                    let unit_id = expr.int_expr_id(unit_id);
-                    let x = expr.int_expr_id(x);
-                    let y = expr.int_expr_id(y);
-                    let player = expr.int_expr_id(player);
-                    compiler.add_aice_command(aice_op::CREATE_UNIT);
-                    compiler.aice_bytecode.write_u32::<LE>(unit_id).unwrap();
-                    compiler.aice_bytecode.write_u32::<LE>(x).unwrap();
-                    compiler.aice_bytecode.write_u32::<LE>(y).unwrap();
-                    compiler.aice_bytecode.write_u32::<LE>(player).unwrap();
-                    compiler.aice_bytecode.write_u32::<LE>(spritelocals.0).unwrap();
+                    self.parse_add_aice_command(
+                        compiler,
+                        stage1,
+                        ctx,
+                        aice_op::CREATE_UNIT,
+                        &aice_op::CREATE_UNIT_PARAMS,
+                        rest,
+                        linked,
+                    )?;
                     Ok(())
                 }
                 CommandPrototype::IssueOrder => {
-                    let (order_id, rest) = parse_u8_rest(rest)?;
-                    let vars = &compiler.variables;
-                    let exprs = &mut self.exprs;
-                    let (x, rest) = parse_int_expr(rest, exprs, vars)?;
-                    let (y, rest) = parse_int_expr(rest, exprs, vars)?;
-                    if !rest.is_empty() {
-                        return Err(
-                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
-                        );
-                    }
-                    let expr = &mut compiler.expressions;
-                    let x = expr.int_expr_id(x);
-                    let y = expr.int_expr_id(y);
-                    compiler.add_aice_command(aice_op::ISSUE_ORDER);
-                    compiler.aice_bytecode.write_u8(order_id).unwrap();
-                    compiler.aice_bytecode.write_u32::<LE>(x).unwrap();
-                    compiler.aice_bytecode.write_u32::<LE>(y).unwrap();
+                    self.parse_add_aice_command(
+                        compiler,
+                        stage1,
+                        ctx,
+                        aice_op::ISSUE_ORDER,
+                        &aice_op::ISSUE_ORDER_PARAMS,
+                        rest,
+                        linked,
+                    )?;
                     Ok(())
                 }
                 CommandPrototype::End => {
@@ -1481,68 +1489,19 @@ impl<'a> Parser<'a> {
                     // Flags 0x1 = Imgol, 0x2 = image is u16 const, 0x4 = x is i8 const
                     // 0x8 = y is i8 const
                     // Otherwise u32 expressions
-                    let (unit_ref, rest) = self.exprs.parse_unit_ref_rest(rest)?;
-                    let vars = &compiler.variables;
-                    let exprs = &mut self.exprs;
-                    let (image, rest) = parse_int_expr(rest, exprs, vars)?;
-                    let (x, rest) = parse_int_expr(rest, exprs, vars)?;
-                    let (y, rest) = parse_int_expr(rest, exprs, vars)?;
-                    if !rest.is_empty() {
-                        return Err(
-                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
-                        );
-                    }
-
-                    let mut flags = match command {
-                        CommandPrototype::ImgulOn => 0,
-                        _ => 0x1,
+                    let params = match command {
+                        CommandPrototype::ImgulOn => &aice_op::IMGUL_ON_PARAMS,
+                        _ => &aice_op::IMGOL_ON_PARAMS,
                     };
-                    let exprs = &mut compiler.expressions;
-                    let image = if let Some(c) = is_constant_expr(&image) {
-                        flags |= 0x2;
-                        u16::try_from(c)
-                            .map(|x| x as u32)
-                            .map_err(|_| Error::Msg("Image ID must be between 0 and 65535"))?
-                    } else {
-                        exprs.int_expr_id(image)
-                    };
-                    let x = if let Some(c) = is_constant_expr(&x) {
-                        flags |= 0x4;
-                        u8::try_from(c)
-                            .map(|x| x as u32)
-                            .or_else(|_| i8::try_from(c).map(|x| x as u32))
-                            .map_err(|_| Error::Msg("X must be between -128 and 255"))?
-                    } else {
-                        exprs.int_expr_id(x)
-                    };
-                    let y = if let Some(c) = is_constant_expr(&y) {
-                        flags |= 0x8;
-                        u8::try_from(c)
-                            .map(|x| x as u32)
-                            .or_else(|_| i8::try_from(c).map(|x| x as u32))
-                            .map_err(|_| Error::Msg("Y must be between -128 and 255"))?
-                    } else {
-                        exprs.int_expr_id(y)
-                    };
-
-                    compiler.add_aice_command(aice_op::IMG_ON);
-                    compiler.aice_bytecode.write_u8(flags).unwrap();
-                    compiler.aice_bytecode.write_u16::<LE>(unit_ref.0).unwrap();
-                    if flags & 0x2 == 0 {
-                        compiler.aice_bytecode.write_u32::<LE>(image).unwrap();
-                    } else {
-                        compiler.aice_bytecode.write_u16::<LE>(image as u16).unwrap();
-                    }
-                    if flags & 0x4 == 0 {
-                        compiler.aice_bytecode.write_u32::<LE>(x).unwrap();
-                    } else {
-                        compiler.aice_bytecode.write_u8(x as u8).unwrap();
-                    }
-                    if flags & 0x8 == 0 {
-                        compiler.aice_bytecode.write_u32::<LE>(y).unwrap();
-                    } else {
-                        compiler.aice_bytecode.write_u8(y as u8).unwrap();
-                    }
+                    self.parse_add_aice_command(
+                        compiler,
+                        stage1,
+                        ctx,
+                        aice_op::IMG_ON,
+                        params,
+                        rest,
+                        linked,
+                    )?;
                     Ok(())
                 }
                 CommandPrototype::Print => {
@@ -1553,6 +1512,101 @@ impl<'a> Parser<'a> {
             }
             _ => Ok(())
         }
+    }
+
+    /// Common parsing & command emitting for commands that mainly take integer/expression params
+    fn parse_add_aice_command(
+        &mut self,
+        compiler: &mut Compiler<'a>,
+        stage1: &ParseStage1<'a>,
+        ctx: &mut CompileContext<'_>,
+        command: u8,
+        param_types: &CommandParams,
+        params_unparsed: &[u8],
+        linked: LinkedBlock,
+    ) -> Result<(), Error> {
+        use AiceCommandParam::*;
+        let buffer = &mut self.command_build_buffer;
+        buffer.clear();
+
+        let mut rest = params_unparsed;
+        let exprs = &mut self.exprs;
+        let mut flags = 0u8;
+        let mut flags_pos = 1u8;
+        for (i, &param) in param_types.params.iter().enumerate() {
+            match param {
+                IntExpr => {
+                    let (expr, rest2) = parse_int_expr(rest, exprs, &compiler.variables)?;
+                    let id = compiler.expressions.int_expr_id(expr);
+                    rest = rest2;
+                    write_u32(buffer, id);
+                }
+                False => {
+                    flags_pos = flags_pos << 1;
+                }
+                True => {
+                    flags |= flags_pos;
+                    flags_pos = flags_pos << 1;
+                }
+                IntExprOrConstU8 | IntExprOrConstI8 | IntExprOrConstU16 => {
+                    let (expr, rest2) = parse_int_expr(rest, exprs, &compiler.variables)?;
+                    rest = rest2;
+                    if let Some(c) = is_constant_expr(&expr) {
+                        match param {
+                            IntExprOrConstU16 => {
+                                let val = u16::try_from(c)
+                                    .map_err(|_| {
+                                        Error::ParamRange(i, 0, 65535)
+                                    })?;
+                                write_u16(buffer, val);
+                            }
+                            IntExprOrConstI8 => {
+                                let val = i8::try_from(c)
+                                    .map_err(|_| {
+                                        Error::ParamRange(i, -128, 127)
+                                    })?;
+                                buffer.push(val as u8);
+                            }
+                            IntExprOrConstU8 => {
+                                let val = u8::try_from(c)
+                                    .map_err(|_| {
+                                        Error::ParamRange(i, 0, 255)
+                                    })?;
+                                buffer.push(val as u8);
+                            }
+                            _ => unreachable!(),
+                        }
+                        flags |= flags_pos;
+                    } else {
+                        let val = compiler.expressions.int_expr_id(expr);
+                        write_u32(buffer, val);
+                    };
+                    flags_pos = flags_pos << 1;
+                }
+                With => {
+                    let spritelocals = parse_with(rest, exprs, stage1, compiler, ctx, linked)?;
+                    rest = b"";
+                    write_u32(buffer, spritelocals.0);
+                }
+                UnitRef => {
+                    let (unit_ref, rest2) = exprs.parse_unit_ref_rest(rest)?;
+                    rest = rest2;
+                    write_u16(buffer, unit_ref.0);
+                }
+            }
+        }
+        if !rest.is_empty() {
+            return Err(
+                Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
+            );
+        }
+
+        compiler.add_aice_command(command);
+        if param_types.flag_count != 0 {
+            compiler.aice_bytecode.push(flags);
+        }
+        compiler.aice_bytecode.extend_from_slice(buffer);
+        Ok(())
     }
 }
 
@@ -2174,22 +2228,6 @@ fn parse_u8(text: &[u8]) -> Option<u8> {
         false => (10, text),
     };
     u8::from_str_radix(text.to_str().ok()?, base).ok()
-}
-
-fn parse_u8_rest(text: &[u8]) -> Result<(u8, &[u8]), Error> {
-    let space = text.iter().position(|&x| x == b' ' || x == b'\t')
-        .unwrap_or(text.len());
-    let (text, rest) = text.split_at(space);
-    let rest_pos = rest.iter().position(|&x| x != b' ' && x != b'\t')
-        .unwrap_or(text.len());
-    let (base, text) = match text.starts_with(b"0x") {
-        true => (16, &text[2..]),
-        false => (10, text),
-    };
-    let val = text.to_str().ok()
-        .and_then(|x| u8::from_str_radix(x, base).ok())
-        .ok_or_else(|| Error::CannotParse(text.into(), "uint8"))?;
-    Ok((val, &rest[rest_pos..]))
 }
 
 /// Supports both u8 and i8 forms, so returns as u8
@@ -3074,6 +3112,10 @@ impl<'a> Compiler<'a> {
                 animations,
             })
         }).collect::<Result<Vec<_>, Error>>()?;
+
+        // Add 7 bytes to aice_bytecode so that it's safe to do u64 reads that go partially
+        // out of bounds.
+        self.aice_bytecode.extend_from_slice(&[0u8; 8]);
         Ok(Iscript {
             bw_data: bw_data.into_boxed_slice(),
             aice_data: self.aice_bytecode,
@@ -3450,4 +3492,12 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
         }
     };
     Ok(script)
+}
+
+fn write_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes())
+}
+
+fn write_u16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_le_bytes())
 }

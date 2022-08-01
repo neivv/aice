@@ -1,0 +1,45 @@
+
+# ----------------------------------------------------------------------------- #
+# This header is used by images.dat entries:
+# 526 FusionCutter (bullet\scvspark.grp)
+.headerstart
+IsId            237
+Type            2
+Init            FusionCutterHitInit
+Death           FusionCutterHitDeath
+GndAttkInit     FusionCutterHitDeath
+AirAttkInit     [NONE]
+.headerend
+# ----------------------------------------------------------------------------- #
+
+FusionCutterHitInit:
+    wait            1
+    sigorder        1
+    wait            1
+FusionCutterHitDeath:
+    playfram        0
+    playsndbtwn     35 39   # terran\SCV\EDrRep00.wav, terran\SCV\EDrRep04.wav
+    domissiledmg
+    set global fake_irri = 1
+    imgol_on        bullet.target 384 + bullet.target.overlay_size default 0 0 0
+    set global fake_irri = 0
+    wait            1
+    playfram        1
+    wait            1
+    playfram        2
+    wait            1
+    playfram        3
+    wait            1
+    playfram        4
+    wait            1
+    playfram        5
+    wait            1
+    playfram        6
+    wait            1
+    playfram        7
+    wait            1
+    playfram        8
+    wait            1
+    playfram        9
+    wait            1
+    end

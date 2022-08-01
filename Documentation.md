@@ -226,7 +226,7 @@ issue_order <order_id> <x> <y>
 ```
 
 Issues order for the current unit. If the unit is currently dying, you cannot issue any new orders.
-The first argument must be a constant integer, `x` and `y` are [expressions][expr].
+`order`, `x` and `y` are [expressions][expr].
 
 ### call
 

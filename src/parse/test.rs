@@ -84,6 +84,22 @@ fn aice_params_for_line(iscript: &Iscript, line: u32, opcode: u8) -> &[u8] {
     &data[1..]
 }
 
+fn read_aice_params_for_line(
+    iscript: &Iscript,
+    line: u32,
+    opcode: u8,
+    params: &CommandParams,
+) -> ([i32; 8], [u8; 8], usize) {
+    let data = aice_code_for_line(iscript, line);
+    assert_eq!(
+        data[0], opcode,
+        "Expected opcode {opcode:02x} for line {line}, got {:02x}", data[0],
+    );
+
+    let opcode_start = (data.as_ptr() as usize) - (iscript.aice_data.as_ptr() as usize);
+    read_aice_params_next(&iscript, opcode_start, params)
+}
+
 fn set_place_for_line(iscript: &Iscript, line: u32) -> PlaceId {
     let data = aice_code_for_line(iscript, line);
     assert!(
@@ -142,6 +158,35 @@ fn unwrap_expr_default(expr: &IntExprTree) -> (&IntExprTree, &IntExprTree) {
         }
         x => panic!("Wrong expr {:?}", x),
     }
+}
+
+fn read_aice_params_next(
+    iscript: &Iscript,
+    opcode_start: usize,
+    params: &CommandParams,
+) -> ([i32; 8], [u8; 8], usize) {
+    let len = iscript.aice_data.len();
+    let end = iscript.aice_data.as_ptr().wrapping_add(len);
+
+    let ptr = iscript.aice_data.as_ptr().wrapping_add(opcode_start + 1);
+    assert!(ptr < end);
+    let mut result = [0i32; 8];
+    let mut exprs = [0u8; 8];
+    unsafe {
+        let (new_ptr, _) = super::read_aice_params(params, ptr, &mut result, &mut exprs);
+        assert!(new_ptr <= end);
+        let new_pos = new_ptr as usize - iscript.aice_data.as_ptr() as usize;
+        (result, exprs, new_pos)
+    }
+}
+
+fn read_aice_params(
+    iscript: &Iscript,
+    opcode_start: usize,
+    params: &CommandParams,
+) -> ([i32; 8], [u8; 8]) {
+    let (a, b, _) = read_aice_params_next(iscript, opcode_start, params);
+    (a, b)
 }
 
 #[test]
@@ -241,8 +286,11 @@ fn create_unit_expr_regression() {
         iscript.line_info.pos_to_line(CodePosition::aice(i)) == 47
     }).unwrap() as usize;
     assert_eq!(iscript.aice_data[aice_pos], aice_op::CREATE_UNIT);
-    let x = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 5)..]) as usize;
-    let y = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 9)..]) as usize;
+    let (values, exprs) = read_aice_params(&iscript, aice_pos, &aice_op::CREATE_UNIT_PARAMS);
+    assert!(exprs[1] != 0);
+    assert!(exprs[2] != 0);
+    let x = values[1] as usize;
+    let y = values[2] as usize;
     let with_set = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 17)..]);
     assert_eq!(with_set, 0);
     let x_place = PlaceId::new_flingy(FlingyVar::PositionX, UnitRefId::this());
@@ -266,10 +314,14 @@ fn issue_order() {
         iscript.line_info.pos_to_line(CodePosition::aice(i)) == 47
     }).unwrap() as usize;
     assert_eq!(iscript.aice_data[aice_pos], aice_op::ISSUE_ORDER);
-    let order = iscript.aice_data[aice_pos + 1] as usize;
+    let (values, exprs) = read_aice_params(&iscript, aice_pos, &aice_op::ISSUE_ORDER_PARAMS);
+    let order = values[0] as usize;
+    assert!(exprs[0] == 0);
+    assert!(exprs[1] != 0);
+    assert!(exprs[2] != 0);
+    let x = values[1] as usize;
+    let y = values[2] as usize;
     assert_eq!(order, 72);
-    let x = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 2)..]) as usize;
-    let y = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 6)..]) as usize;
     let x_place = PlaceId::new_flingy(FlingyVar::PositionX, UnitRefId::this());
     let y_place = PlaceId::new_flingy(FlingyVar::PositionY, UnitRefId::this());
     let x_expr = IntExprTree::Custom(Int::Variable(x_place, [None, None, None, None]));
@@ -283,9 +335,7 @@ fn issue_order() {
 
 #[test]
 fn issue_order_nonconst() {
-    let mut errors = compile_err("issue_order_nonconst.txt");
-    find_error(&mut errors, "Starting from + 1", 47);
-    assert!(errors.is_empty());
+    let _ = compile_success("issue_order_nonconst.txt");
 }
 
 #[test]
@@ -435,7 +485,7 @@ fn unit_refs_err() {
     find_error(&mut errors, "needs `default`", 61);
     find_error(&mut errors, "needs `default`", 62);
     find_error(&mut errors, "needs `default`", 63);
-    find_error(&mut errors, "X must be between", 78);
+    find_error(&mut errors, "Parameter 3 must be between", 78);
     assert!(errors.is_empty());
 }
 
@@ -478,7 +528,8 @@ fn with() {
         iscript.line_info.pos_to_line(CodePosition::aice(i)) == 48
     }).unwrap() as usize;
     assert_eq!(iscript.aice_data[aice_pos], aice_op::CREATE_UNIT);
-    let with_set = LittleEndian::read_u32(&iscript.aice_data[(aice_pos + 17)..]);
+    let (values, _) = read_aice_params(&iscript, aice_pos, &aice_op::CREATE_UNIT_PARAMS);
+    let with_set = values[4] as u32;
     assert_eq!(with_set, 1);
     let locals = iscript.sprite_local_set(SpriteLocalSetId(with_set));
     assert_eq!(locals.len(), 3);
@@ -618,4 +669,21 @@ fn set_copy() {
 fn bullet_vars() {
     // Just test that misc usage of the variables works
     let _ = compile_success("bullet_vars.txt");
+}
+
+#[test]
+fn imgul_on() {
+    let iscript = compile_success("imgul_on.txt");
+
+    let (params, expr, next_pos) =
+        read_aice_params_for_line(&iscript, 24, aice_op::IMG_ON, &aice_op::IMGUL_ON_PARAMS);
+    assert!(expr[0] == 0);
+    assert!(expr[1] == 0);
+    assert!(expr[2] != 0);
+    assert!(expr[3] == 0);
+    assert!(expr[4] == 0);
+    assert_eq!(params[0], 1);
+    assert_eq!(params[3], 0);
+    assert_eq!(params[4], 0);
+    assert_eq!(iscript.aice_data[next_pos], aice_op::SET);
 }
