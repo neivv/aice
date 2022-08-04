@@ -1324,7 +1324,7 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
         let command = line.fields().next().ok_or_else(|| Error::Msg("Empty line???"))?;
-        let rest = (&line[command.len()..]).trim_start();
+        let rest = (&line[command.len()..]).aice_trim_start();
         match self.command_map.get(&command) {
             Some(&command) => {
                 let mut linked = LinkedBlock::None;
@@ -1978,7 +1978,7 @@ impl<'a> TextParseContext<'a> {
             if let Some(comment_start) = line.find_byte(b'#') {
                 line = &line[..comment_start];
             };
-            let line = line.trim();
+            let line = line.aice_trim();
             if !line.is_empty() {
                 return Some(line);
             }
@@ -2026,7 +2026,7 @@ fn is_word_char(val: u8) -> bool {
 }
 
 fn split_first_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
-    debug_assert!(text.trim().len() == text.len(), "Untrimmed input {}", text.as_bstr());
+    debug_assert!(text.aice_trim().len() == text.len(), "Untrimmed input {}", text.as_bstr());
     let &first = text.first()?;
     let end = if !is_word_char(first) {
         1
@@ -2050,7 +2050,7 @@ fn expect_token<'a>(text: &'a [u8], token: &'static [u8]) -> Result<&'a [u8], Er
 }
 
 fn split_last_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
-    debug_assert!(text.trim().len() == text.len(), "Untrimmed input {}", text.as_bstr());
+    debug_assert!(text.aice_trim().len() == text.len(), "Untrimmed input {}", text.as_bstr());
     let &last = text.last()?;
     let rev_end = if !is_word_char(last) {
         1
@@ -3765,4 +3765,41 @@ fn write_u32(out: &mut Vec<u8>, value: u32) {
 
 fn write_u16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_le_bytes())
+}
+
+/// Treats anything less or equal than 0x20 as space, who is going
+/// to write ascii control codes anyway =)
+trait U8SliceExt {
+    fn aice_trim_start(self) -> Self;
+    fn aice_trim(self) -> Self;
+}
+
+impl<'a> U8SliceExt for &'a [u8] {
+    fn aice_trim_start(self) -> Self {
+        let mut result = self;
+        loop {
+            match result.split_first() {
+                Some((&first, rest)) if first <= b' ' => result = rest,
+                _ => break,
+            }
+        }
+        result
+    }
+
+    fn aice_trim(self) -> Self {
+        let mut result = self;
+        loop {
+            match result.split_first() {
+                Some((&first, rest)) if first <= b' ' => result = rest,
+                _ => break,
+            }
+        }
+        loop {
+            match result.split_last() {
+                Some((&last, rest)) if last <= b' ' => result = rest,
+                _ => break,
+            }
+        }
+        result
+    }
 }

@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use byteorder::{ByteOrder, LittleEndian};
 use fxhash::FxHashMap;
-use lazy_static::lazy_static;
 use libc::c_void;
+use once_cell::sync::OnceCell;
 use serde_derive::{Serialize, Deserialize};
 
 use bw_dat::{
@@ -26,8 +26,10 @@ use crate::recurse_checked_mutex::{Mutex};
 use crate::windows;
 
 static ISCRIPT: Mutex<Option<Iscript>> = Mutex::new(None);
-lazy_static! {
-    static ref SPRITE_OWNER_MAP: Mutex<SpriteOwnerMap> = Mutex::new(SpriteOwnerMap::new());
+static SPRITE_OWNER_MAP: OnceCell<Mutex<SpriteOwnerMap>> = OnceCell::new();
+
+pub fn init_sprite_owner_map() {
+    SPRITE_OWNER_MAP.get_or_init(|| Mutex::new(SpriteOwnerMap::new()));
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -150,12 +152,13 @@ pub unsafe extern fn run_aice_script(
     let active_bullet = Some(active_bullet).filter(|x| !x.is_null());
 
     let step_order_unit = CURRENT_ORDER_UNIT.load(Ordering::Relaxed);
+    let sprite_owner_map_mutex = SPRITE_OWNER_MAP.get().unwrap();
     if step_order_unit != 0 {
         let unit = Unit::from_ptr(step_order_unit as *mut bw::Unit).unwrap();
         if let Some(sprite) = unit.sprite() {
             let expected_sprite = CURRENT_ORDER_SPRITE.load(Ordering::Relaxed);
             if *sprite != expected_sprite as *mut bw::Sprite {
-                let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("run_aice_script");
+                let mut sprite_owner_map = sprite_owner_map_mutex.lock("run_aice_script");
                 sprite_owner_map.add_unit(unit, *sprite);
                 CURRENT_ORDER_SPRITE.store(*sprite as usize, Ordering::Relaxed);
             }
@@ -165,7 +168,7 @@ pub unsafe extern fn run_aice_script(
     loop {
         let mut globals_guard = Globals::get("run_aice_script");
         let globals = &mut *globals_guard;
-        let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("run_aice_script");
+        let mut sprite_owner_map = sprite_owner_map_mutex.lock("run_aice_script");
         let mut runner = IscriptRunner::new(
             this,
             &mut globals.iscript_state,
@@ -1877,6 +1880,9 @@ struct SpriteOwnerMap {
     bullet_mapping: FxHashMap<*mut bw::Sprite, *mut bw::Bullet>,
 }
 
+unsafe impl Sync for SpriteOwnerMap {}
+unsafe impl Send for SpriteOwnerMap {}
+
 impl SpriteOwnerMap {
     pub fn new() -> SpriteOwnerMap {
         SpriteOwnerMap {
@@ -1921,9 +1927,11 @@ impl SpriteOwnerMap {
 }
 
 pub fn rebuild_sprite_owners() {
-    let mut map = SPRITE_OWNER_MAP.lock("rebuild_sprite_owners");
-    map.unit_mapping.clear();
-    map.bullet_mapping.clear();
+    if let Some(map) = SPRITE_OWNER_MAP.get() {
+        let mut map = map.lock("rebuild_sprite_owners");
+        map.unit_mapping.clear();
+        map.bullet_mapping.clear();
+    }
 }
 
 unsafe fn invalid_aice_command(iscript: *mut bw::Iscript, image: *mut bw::Image, offset: CodePos) {
@@ -2047,10 +2055,12 @@ pub unsafe extern fn create_unit_hook(
             bw_print!("ERROR: Unit {:x} was created without a sprite", id);
             return null_mut();
         } else {
-            let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("create_unit_hook");
-            sprite_owner_map.add_unit(unit, sprite);
-            if let Some(subunit) = unit.subunit_linked() {
-                sprite_owner_map.add_unit(subunit, (**subunit).flingy.sprite);
+            if let Some(map) = SPRITE_OWNER_MAP.get() {
+                let mut sprite_owner_map = map.lock("create_unit_hook");
+                sprite_owner_map.add_unit(unit, sprite);
+                if let Some(subunit) = unit.subunit_linked() {
+                    sprite_owner_map.add_unit(subunit, (**subunit).flingy.sprite);
+                }
             }
         }
     }
@@ -2077,8 +2087,10 @@ pub unsafe extern fn create_bullet_hook(
             bw_print!("ERROR: Bullet {:x} was created without a sprite", id);
             return null_mut();
         } else {
-            let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("create_bullet_hook");
-            sprite_owner_map.add_bullet(bullet, sprite);
+            if let Some(map) = SPRITE_OWNER_MAP.get() {
+                let mut sprite_owner_map = map.lock("create_bullet_hook");
+                sprite_owner_map.add_bullet(bullet, sprite);
+            }
         }
     }
     result
@@ -2092,8 +2104,10 @@ pub unsafe extern fn order_hook(u: *mut c_void, orig: unsafe extern fn(*mut c_vo
     // (Probably a bit inefficient but unit can transform due to order (could be caught here),
     // but also player-sent command or even ai reacting to a hit)
     if let Some(sprite) = unit.sprite() {
-        let mut sprite_owner_map = SPRITE_OWNER_MAP.lock("order_hook");
-        sprite_owner_map.add_unit(unit, *sprite);
+        if let Some(map) = SPRITE_OWNER_MAP.get() {
+            let mut sprite_owner_map = map.lock("order_hook");
+            sprite_owner_map.add_unit(unit, *sprite);
+        }
         CURRENT_ORDER_SPRITE.store(*sprite as usize, Ordering::Relaxed);
     }
     CURRENT_ORDER_UNIT.store(u as usize, Ordering::Relaxed);

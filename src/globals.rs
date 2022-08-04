@@ -2,7 +2,7 @@ use std::ptr::null_mut;
 use std::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use lazy_static::lazy_static;
+use once_cell::sync::OnceCell;
 use serde_derive::{Serialize, Deserialize};
 use serde::{Serializer, Deserializer};
 
@@ -12,11 +12,9 @@ use crate::bw;
 use crate::iscript;
 use crate::recurse_checked_mutex::{Mutex, MutexGuard};
 
-lazy_static! {
-    static ref GLOBALS: Mutex<Globals> = Mutex::new(Globals::new());
-    static ref COLOR_CHOICES: Mutex<PreRandomizationColors> =
-        Mutex::new(PreRandomizationColors([(0, 0); 8]));
-}
+static GLOBALS: OnceCell<Mutex<Globals>> = OnceCell::new();
+static COLOR_CHOICES: Mutex<PreRandomizationColors> =
+    Mutex::new(PreRandomizationColors([(0, 0); 8]));
 
 #[derive(Serialize, Deserialize)]
 pub struct Globals {
@@ -72,6 +70,10 @@ impl PlayerColorChoices {
 }
 
 impl Globals {
+    pub fn init() {
+        GLOBALS.get_or_init(|| Mutex::new(Globals::new()));
+    }
+
     fn new() -> Globals {
         Globals {
             iscript_state: iscript::IscriptState::default(),
@@ -80,10 +82,9 @@ impl Globals {
     }
 
     // Should only be called on hook start to prevent deadlocks.
-    // Inline never since it keeps getting inlined and lazy_static init code is fat ;_;
     #[inline(never)]
     pub fn get(caller: &'static str) -> MutexGuard<'static, Globals> {
-        GLOBALS.lock(caller)
+        GLOBALS.get_or_init(|| Mutex::new(Globals::new())).lock(caller)
     }
 }
 
@@ -174,6 +175,11 @@ pub struct SerializableSprite(pub *mut bw::Sprite);
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
 pub struct SerializableImage(pub *mut bw::Image);
+
+unsafe impl Send for SerializableSprite {}
+unsafe impl Sync for SerializableSprite {}
+unsafe impl Send for SerializableImage {}
+unsafe impl Sync for SerializableImage {}
 
 static SAVE_SPRITE_ARRAY: AtomicUsize = AtomicUsize::new(0);
 static SAVE_IMAGE_ARRAY: AtomicUsize = AtomicUsize::new(0);

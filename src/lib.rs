@@ -55,6 +55,8 @@ fn init() {
         samase::crash_with_message(&msg);
     }));
 
+    iscript::init_sprite_owner_map();
+    globals::Globals::init();
     unsafe {
         iscript::load_iscript(false);
     }
