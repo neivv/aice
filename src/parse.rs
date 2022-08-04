@@ -3743,6 +3743,7 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
         blocks.iter_block_lines(block_id, |block, line| {
             parser.exprs.clear_current_error();
             ctx.error_line = line.line_number;
+            #[cfg(test)] test::set_test_line_ctx(line.line_number as u32);
             if let Err(error) =
                 parser.parse_line_pass3(line, &block, &mut compiler, stage1, ctx)
             {

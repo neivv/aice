@@ -1,14 +1,35 @@
 use super::*;
 
+use std::cell::Cell;
+
 use bw_dat::expr::{IntFunc, IntFuncType};
 
 fn read(filename: &str) -> Vec<u8> {
     std::fs::read(format!("test_scripts/{}", filename)).unwrap()
 }
 
+fn compile_catch(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
+    let result = std::panic::catch_unwind(|| compile_iscript_txt(&text));
+    match result {
+        Ok(o) => o,
+        Err(err) => {
+            let line = LINE_CTX.with(|x| x.get());
+            if let Some(msg) = err.downcast_ref::<String>() {
+                panic!("Panic at line {}: {}", line, msg);
+            } else if let Some(msg) = err.downcast_ref::<&'static str>() {
+                panic!("Panic at line {}: {}", line, msg);
+            } else {
+                panic!("Panic at line {} (No text payload)", line);
+            }
+        }
+    }
+}
+
 fn compile_success(filename: &str) -> Iscript {
+    set_test_line_ctx(!0);
     let text = read(filename);
-    match compile_iscript_txt(&text) {
+    let result = compile_catch(&text);
+    match result {
         Ok(o) => o,
         Err(errors) => {
             for e in &errors {
@@ -25,7 +46,8 @@ fn compile_success(filename: &str) -> Iscript {
 
 fn compile_err(filename: &str) -> Vec<ErrorWithLine> {
     let text = read(filename);
-    match compile_iscript_txt(&text) {
+    let result = compile_catch(&text);
+    match result {
         Ok(_) => panic!("Compilation succeeded"),
         Err(errors) => errors,
     }
@@ -669,6 +691,12 @@ fn set_copy() {
 fn bullet_vars() {
     // Just test that misc usage of the variables works
     let _ = compile_success("bullet_vars.txt");
+}
+
+thread_local!(static LINE_CTX: Cell<u32> = Cell::new(!0));
+
+pub fn set_test_line_ctx(line: u32) {
+    LINE_CTX.with(|x| x.set(line));
 }
 
 #[test]
