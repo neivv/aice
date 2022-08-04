@@ -2822,7 +2822,12 @@ impl CodePosition {
 }
 
 impl<'a> Compiler<'a> {
-    fn new() -> Compiler<'a> {
+    fn from_stage1_parse(
+        variables: &FxHashMap<&'a [u8], VariableType>,
+        // Error is out var instead of returning Result since Compiler is
+        // pretty large type and moving it out of result is likely ugh
+        error: &mut Option<Error>,
+    ) -> Compiler<'a> {
         Compiler {
             output: CompilerOutput {
                 bw_code: Vec::with_capacity(32768),
@@ -2849,10 +2854,7 @@ impl<'a> Compiler<'a> {
                     FxHashMap::with_capacity_and_hasher(16, Default::default()),
             },
             sprite_local_sets: VecOfVecs::new(),
-            variables: CompilerVariables {
-                variables: FxHashMap::default(),
-                variable_counts: [0; 2],
-            },
+            variables: CompilerVariables::new(variables, error),
         }
     }
 
@@ -2872,25 +2874,6 @@ impl<'a> Compiler<'a> {
         // flow_in_bw is used in earlier passes, not really related to code emitting.
         // Maybe it should be separate variablei instead of reusing the one in output?
         self.output.flow_to_aice()
-    }
-
-    fn add_variables(
-        &mut self,
-        variables: &FxHashMap<&'a [u8], VariableType>,
-    ) -> Result<(), Error> {
-        let vars = &mut self.variables;
-        vars.variables.reserve(variables.len());
-        for (&name, &ty) in variables {
-            let id = vars.variable_counts[ty as usize] as u32;
-            vars.variable_counts[ty as usize] += 1;
-            let place_id = match ty {
-                VariableType::Global => PlaceId::new_global(id),
-                VariableType::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
-            };
-            let place_id = place_id.ok_or_else(|| Error::Overflow)?;
-            vars.variables.insert(name, place_id);
-        }
-        Ok(())
     }
 
     /// Makes `label` located at current position.
@@ -3429,8 +3412,36 @@ impl<'a> CompilerLabels<'a> {
     }
 }
 
-#[cfg(test)]
 impl<'a> CompilerVariables<'a> {
+    fn new(
+        types: &FxHashMap<&'a [u8], VariableType>,
+        error: &mut Option<Error>,
+    ) -> Self {
+        let mut variables = FxHashMap::with_capacity_and_hasher(types.len(), Default::default());
+        let mut variable_counts = [0u32; 2];
+        for (&name, &ty) in types {
+            let id = variable_counts[ty as usize] as u32;
+            variable_counts[ty as usize] += 1;
+            let place_id = match ty {
+                VariableType::Global => PlaceId::new_global(id),
+                VariableType::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
+            };
+            let place_id = match place_id {
+                Some(s) => s,
+                None => {
+                    *error = Some(Error::Overflow);
+                    break;
+                }
+            };
+            variables.insert(name, place_id);
+        }
+        CompilerVariables {
+            variables,
+            variable_counts,
+        }
+    }
+
+    #[cfg(test)]
     fn for_test(input: &[(&'a [u8], VariableType)]) -> Self {
         let mut result = CompilerVariables {
             variables: Default::default(),
@@ -3687,23 +3698,28 @@ fn add_set_decl<'a>(
 }
 
 pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
-    let mut compiler = Compiler::new();
     let mut parser = Parser::new();
     let mut errors = Vec::new();
 
     let stage1 = parser.parse_text(text)?;
-    let blocks = &stage1.blocks;
-    if let Err(error) = compiler.add_variables(&stage1.variable_types) {
+    let stage1 = &stage1;
+    let mut error = None;
+    let mut compiler = Compiler::from_stage1_parse(
+        &stage1.variable_types,
+        &mut error,
+    );
+    if let Some(error) = error {
         errors.push(ErrorWithLine {
             error,
             line: None,
         });
         return Err(errors);
     }
+    let blocks = &stage1.blocks;
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
             parser.exprs.clear_current_error();
-            if let Err(error) = parser.parse_line_add_label(&stage1, line, &block, &mut compiler) {
+            if let Err(error) = parser.parse_line_add_label(stage1, line, &block, &mut compiler) {
                 let error = parser.exprs.current_error.take().unwrap_or(error);
                 errors.push(ErrorWithLine {
                     error,
@@ -3728,7 +3744,7 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
             parser.exprs.clear_current_error();
             ctx.error_line = line.line_number;
             if let Err(error) =
-                parser.parse_line_pass3(line, &block, &mut compiler, &stage1, ctx)
+                parser.parse_line_pass3(line, &block, &mut compiler, stage1, ctx)
             {
                 let error = parser.exprs.current_error.take().unwrap_or(error);
                 errors.push(ErrorWithLine {
