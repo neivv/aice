@@ -1175,7 +1175,6 @@ impl<'a> Parser<'a> {
     fn parse_text(
         &mut self,
         text: &'a [u8],
-        compiler: &mut Compiler<'a>,
     ) -> Result<ParseStage1<'a>, Vec<ErrorWithLine>> {
         let mut errors = Vec::new();
         let mut ctx = TextParseContext {
@@ -1197,6 +1196,9 @@ impl<'a> Parser<'a> {
             },
             sprite_local_sets: VecOfVecs::new(),
             variable_types: FxHashMap::with_capacity_and_hasher(32, Default::default()),
+            bw_required_labels: BwRequiredLabels {
+                set: FxHashSet::with_capacity_and_hasher(1024, Default::default()),
+            },
         };
         while let Some(line) = ctx.next_line() {
             ctx.error_line_number = ctx.line_number;
@@ -1213,7 +1215,7 @@ impl<'a> Parser<'a> {
                     });
                 }
             } else {
-                if let Err(error) = self.parse_line(line, compiler, &mut stage1, &mut ctx) {
+                if let Err(error) = self.parse_line(line, &mut stage1, &mut ctx) {
                     errors.push(ErrorWithLine {
                         error,
                         line: Some(ctx.error_line_number),
@@ -1250,7 +1252,6 @@ impl<'a> Parser<'a> {
     fn parse_line(
         &mut self,
         line: &'a [u8],
-        compiler: &mut Compiler<'a>,
         stage1: &mut ParseStage1<'a>,
         ctx: &mut TextParseContext<'a>,
     ) -> Result<(), Error> {
@@ -1297,14 +1298,13 @@ impl<'a> Parser<'a> {
             });
             Ok(())
         } else {
-            self.parse_line_command(line, compiler, stage1, ctx)
+            self.parse_line_command(line, stage1, ctx)
         }
     }
 
     fn parse_line_command(
         &mut self,
         line: &'a [u8],
-        compiler: &mut Compiler<'a>,
         stage1: &mut ParseStage1<'a>,
         ctx: &mut TextParseContext<'a>,
     ) -> Result<(), Error> {
@@ -1331,7 +1331,7 @@ impl<'a> Parser<'a> {
                 ctx.is_continuing_commands = true;
                 match command {
                     CommandPrototype::BwCommand(_, commands, ends_flow) => {
-                        mark_required_bw_labels(rest, commands, &mut compiler.labels, ctx)?;
+                        mark_required_bw_labels(rest, commands, stage1, ctx)?;
                         ctx.is_continuing_commands = !ends_flow;
                     }
                     CommandPrototype::End | CommandPrototype::Return => {
@@ -1398,13 +1398,14 @@ impl<'a> Parser<'a> {
 
     fn parse_line_add_label(
         &mut self,
+        stage1: &ParseStage1<'a>,
         line: &PartiallyParsedLine<'a>,
         block_scope: &BlockScope<'a, '_>,
         compiler: &mut Compiler<'a>,
     ) -> Result<(), Error> {
         match line.ty {
             BlockLine::Label(label) => {
-                compiler.add_label(label, block_scope)?;
+                compiler.add_label(stage1, label, block_scope)?;
             }
             BlockLine::Command(command, _, _) => {
                 match command {
@@ -1430,7 +1431,7 @@ impl<'a> Parser<'a> {
         match line.ty {
             BlockLine::Label(label) => {
                 let output = &mut compiler.output;
-                compiler.labels.set_label_position_to_current(output, label, block_scope);
+                compiler.labels.set_label_position_to_current(stage1, output, label, block_scope);
                 Ok(())
             }
             BlockLine::Command(ref command, params, linked_block) => {
@@ -2263,7 +2264,7 @@ fn parse_with<'a, 'text, 'c, 'd, 'e>(
 fn mark_required_bw_labels<'a>(
     text: &'a [u8],
     params: &[BwCommandParam],
-    labels: &mut CompilerLabels<'a>,
+    stage1: &mut ParseStage1<'a>,
     ctx: &mut TextParseContext<'a>,
 ) -> Result<(),  Error> {
     let mut tokens = text.fields();
@@ -2272,7 +2273,7 @@ fn mark_required_bw_labels<'a>(
             .ok_or_else(|| Error::Dynamic(format!("Expected {} arguments", params.len())))?;
         if let BwCommandParam::Label = param {
             let label = parse_label_ref(arg).ok_or_else(|| Error::Msg("Expected label"))?;
-            labels.require_bw_label(label, ctx);
+            stage1.bw_required_labels.require_bw_label(label, ctx);
         }
     }
     Ok(())
@@ -2410,7 +2411,6 @@ struct CompilerOutputRevert {
 
 struct CompilerLabels<'a> {
     labels: FxHashMap<(Label<'a>, BlockId), CodePosition>,
-    bw_required_labels: BwRequiredLabels<'a>,
 }
 
 struct Compiler<'a> {
@@ -2459,6 +2459,13 @@ impl<'a> BwRequiredLabels<'a> {
 
     fn contains(&self, label: Label<'a>, scope: &BlockScope<'a, '_>) -> bool {
         self.set.contains(&(label, scope.block_id()))
+    }
+
+    fn require_bw_label(&mut self, label: Label<'a>, ctx: &mut TextParseContext<'a>) {
+        self.insert(label, ctx.current_block.1);
+        for &(_, parent_id, _) in &ctx.block_stack {
+            self.insert(label, parent_id);
+        }
     }
 }
 
@@ -2832,9 +2839,6 @@ impl<'a> Compiler<'a> {
             bw_code_parts: Vec::with_capacity(4),
             labels: CompilerLabels {
                 labels: FxHashMap::with_capacity_and_hasher(1024, Default::default()),
-                bw_required_labels: BwRequiredLabels {
-                    set: FxHashSet::with_capacity_and_hasher(1024, Default::default()),
-                },
             },
             expressions: CompilerExprs {
                 conditions: Vec::with_capacity(16),
@@ -2890,8 +2894,13 @@ impl<'a> Compiler<'a> {
     }
 
     /// Makes `label` located at current position.
-    fn add_label(&mut self, label: Label<'a>, scope: &BlockScope<'a, '_>) -> Result<(), Error> {
-        let bw_required = self.labels.bw_required_labels.contains(label, scope);
+    fn add_label(
+        &mut self,
+        stage1: &ParseStage1<'a>,
+        label: Label<'a>,
+        scope: &BlockScope<'a, '_>,
+    ) -> Result<(), Error> {
+        let bw_required = stage1.bw_required_labels.contains(label, scope);
 
         if bw_required {
             self.flow_to_bw();
@@ -3392,11 +3401,12 @@ impl<'text> CompilerOutput<'text> {
 impl<'a> CompilerLabels<'a> {
     fn set_label_position_to_current<'s>(
         &'s mut self,
+        stage1: &ParseStage1<'a>,
         output: &mut CompilerOutput,
         label: Label<'a>,
         scope: &BlockScope<'a, '_>,
     ) {
-        if self.bw_required_labels.contains(label, scope) {
+        if stage1.bw_required_labels.contains(label, scope) {
             if !output.flow_in_bw {
                 output.emit_aice_jump_to_bw(output.bw_code.len() as u16);
                 output.flow_in_bw = true;
@@ -3416,13 +3426,6 @@ impl<'a> CompilerLabels<'a> {
             .filter_map(|block_id| self.labels.get(&(label, block_id)))
             .cloned()
             .next()
-    }
-
-    fn require_bw_label(&mut self, label: Label<'a>, ctx: &mut TextParseContext<'a>) {
-        self.bw_required_labels.insert(label, ctx.current_block.1);
-        for &(_, parent_id, _) in &ctx.block_stack {
-            self.bw_required_labels.insert(label, parent_id);
-        }
     }
 }
 
@@ -3500,6 +3503,7 @@ struct ParseStage1<'a> {
     /// Unparsed lines of `var_name = expr` and line number.
     sprite_local_sets: VecOfVecs<SpriteLocalSetId, (&'a [u8], usize)>,
     variable_types: FxHashMap<&'a [u8], VariableType>,
+    bw_required_labels: BwRequiredLabels<'a>,
 }
 
 /// Immutable variables for parse_line_pass3,
@@ -3687,7 +3691,7 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     let mut parser = Parser::new();
     let mut errors = Vec::new();
 
-    let stage1 = parser.parse_text(text, &mut compiler)?;
+    let stage1 = parser.parse_text(text)?;
     let blocks = &stage1.blocks;
     if let Err(error) = compiler.add_variables(&stage1.variable_types) {
         errors.push(ErrorWithLine {
@@ -3699,7 +3703,7 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
     for &block_id in &blocks.root_blocks {
         blocks.iter_block_lines(block_id, |block, line| {
             parser.exprs.clear_current_error();
-            if let Err(error) = parser.parse_line_add_label(line, &block, &mut compiler) {
+            if let Err(error) = parser.parse_line_add_label(&stage1, line, &block, &mut compiler) {
                 let error = parser.exprs.current_error.take().unwrap_or(error);
                 errors.push(ErrorWithLine {
                     error,
