@@ -1,6 +1,9 @@
 use bstr::{ByteSlice};
 
-use super::{AnyExpr, Compiler, Error, ParserExprs, VecIndex, VecOfVecs, parse_any_expr_allow_opt};
+use super::{
+    AnyExpr, CompilerExprs, CompilerVariables, Error, ParserExprs, VecIndex, VecOfVecs,
+    parse_any_expr_allow_opt,
+};
 
 pub struct FormatStringId(pub u32);
 
@@ -39,7 +42,8 @@ impl FormatStrings {
         &mut self,
         text: &'a [u8],
         parser: &mut ParserExprs,
-        vars: &mut Compiler<'a>,
+        vars: &CompilerVariables<'a>,
+        exprs: &mut CompilerExprs,
     ) -> Result<FormatStringId, Error> {
         if self.text_buffer.capacity() == 0 {
             self.text_buffer.reserve(0x800);
@@ -70,7 +74,8 @@ impl FormatStrings {
                         if len != 0 {
                             break;
                         }
-                        let (expr, rest) = parse_any_expr_allow_opt(&text[1..], parser, vars)?;
+                        let (expr, rest) =
+                            parse_any_expr_allow_opt(&text[1..], parser, vars, exprs)?;
                         if rest.get(0).copied() != Some(b'}') {
                             return Err(Error::Expected(rest.into(), b"}"));
                         }

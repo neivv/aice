@@ -19,6 +19,7 @@ mod aice_commands;
 mod anytype_expr;
 mod print_format;
 mod ref_builder;
+mod stage3_out;
 #[cfg(test)] mod test;
 
 use std::collections::hash_map::Entry;
@@ -38,6 +39,7 @@ use bw_dat::expr::{self, Expr, CustomBoolExpr, CustomIntExpr};
 
 use anytype_expr::{AnyTypeExpr, AnyTypeParser};
 use ref_builder::UnitRefBuilder;
+use stage3_out::ParseStage3Output;
 
 pub use aice_commands::{AiceCommandParam, CommandParams, read_aice_params};
 pub use anytype_expr::{AnyTypeRef, read_any_type};
@@ -757,6 +759,11 @@ struct VecOfVecs<Key, T> {
     key: std::marker::PhantomData<*const Key>,
 }
 
+struct VecOfVecsRevert {
+    data: usize,
+    offsets_lens: usize,
+}
+
 trait VecIndex: Sized {
     fn index(&self) -> Option<usize>;
     fn from_index(index: u32) -> Option<Self>;
@@ -824,6 +831,28 @@ impl<Key: VecIndex, T> VecOfVecs<Key, T> {
         self.offsets_lens.push((start, len));
         Ok(id)
     }
+
+    fn revert_pos(&self) -> VecOfVecsRevert {
+        let VecOfVecs {
+            data,
+            offsets_lens,
+            key: _,
+        } = self;
+        VecOfVecsRevert {
+            data: data.len(),
+            offsets_lens: offsets_lens.len(),
+        }
+    }
+
+    fn revert(&mut self, rev: &VecOfVecsRevert) {
+        let VecOfVecs {
+            data,
+            offsets_lens,
+            key: _,
+        } = self;
+        data.truncate(rev.data);
+        offsets_lens.truncate(rev.offsets_lens);
+    }
 }
 
 pub struct LineInfo {
@@ -862,9 +891,21 @@ struct LineInfoBuilder {
     aice: LineInfoLookupBuilder,
 }
 
+struct LineInfoBuilderRevert {
+    bw: LineInfoLookupBuilderRevert,
+    aice: LineInfoLookupBuilderRevert,
+}
+
 struct LineInfoLookupBuilder {
     sorted: Vec<SortedLookupEntry>,
     relative: Vec<RelativeLookupEntry>,
+    previous_pos: u32,
+    previous_line: u32,
+}
+
+struct LineInfoLookupBuilderRevert {
+    sorted: usize,
+    relative: usize,
     previous_pos: u32,
     previous_line: u32,
 }
@@ -955,6 +996,27 @@ impl LineInfoBuilder {
         }
     }
 
+    pub fn revert_pos(&self) -> LineInfoBuilderRevert {
+        let LineInfoBuilder {
+            bw,
+            aice,
+        } = self;
+        LineInfoBuilderRevert {
+            bw: bw.revert_pos(),
+            aice: aice.revert_pos(),
+        }
+    }
+
+    pub fn revert(&mut self, rev: &LineInfoBuilderRevert) {
+        let LineInfoBuilder {
+            bw,
+            aice,
+        } = self;
+        bw.revert(&rev.bw);
+        aice.revert(&rev.aice);
+    }
+
+
     pub fn finish(self) -> LineInfo {
         LineInfo {
             bw: self.bw.finish(),
@@ -964,6 +1026,34 @@ impl LineInfoBuilder {
 }
 
 impl LineInfoLookupBuilder {
+    fn revert_pos(&self) -> LineInfoLookupBuilderRevert {
+        let LineInfoLookupBuilder {
+            sorted,
+            relative,
+            previous_pos,
+            previous_line,
+        } = self;
+        LineInfoLookupBuilderRevert {
+            sorted: sorted.len(),
+            relative: relative.len(),
+            previous_pos: *previous_pos,
+            previous_line: *previous_line,
+        }
+    }
+
+    fn revert(&mut self, rev: &LineInfoLookupBuilderRevert) {
+        let LineInfoLookupBuilder {
+            sorted,
+            relative,
+            previous_pos,
+            previous_line,
+        } = self;
+        sorted.truncate(rev.sorted);
+        relative.truncate(rev.relative);
+        *previous_pos = rev.previous_pos;
+        *previous_line = rev.previous_line;
+    }
+
     /// Implicit assertion is that `pos` always increases
     pub fn push(&mut self, pos: u32, line: u32) {
         let relative_len = self.relative.len();
@@ -1045,7 +1135,6 @@ struct Parser<'a> {
     command_map: FxHashMap<&'static [u8], CommandPrototype>,
     exprs: ParserExprs,
     format_strings: FormatStrings,
-    command_build_buffer: Vec<u8>,
 }
 
 struct ParserExprs {
@@ -1079,7 +1168,6 @@ impl<'a> Parser<'a> {
                 image_vars: IMAGE_VARS.iter().cloned().collect(),
             },
             format_strings: FormatStrings::new(),
-            command_build_buffer: Vec::with_capacity(0x20),
         }
     }
 
@@ -1243,7 +1331,7 @@ impl<'a> Parser<'a> {
                 ctx.is_continuing_commands = true;
                 match command {
                     CommandPrototype::BwCommand(_, commands, ends_flow) => {
-                        mark_required_bw_labels(rest, commands, compiler, ctx)?;
+                        mark_required_bw_labels(rest, commands, &mut compiler.labels, ctx)?;
                         ctx.is_continuing_commands = !ends_flow;
                     }
                     CommandPrototype::End | CommandPrototype::Return => {
@@ -1339,205 +1427,235 @@ impl<'a> Parser<'a> {
         stage1: &ParseStage1<'a>,
         ctx: &mut CompileContext<'_>,
     ) -> Result<(), Error> {
-        compiler.set_current_line(line.line_number as u32);
         match line.ty {
             BlockLine::Label(label) => {
-                compiler.set_label_position_to_current(label, block_scope);
+                let output = &mut compiler.output;
+                compiler.labels.set_label_position_to_current(output, label, block_scope);
                 Ok(())
             }
-            BlockLine::Command(command, rest, linked) => match command {
-                CommandPrototype::BwCommand(op, params, ends_flow) => {
-                    compiler.add_bw_command(op, rest, params, ends_flow, block_scope)?;
-                    Ok(())
-                }
-                CommandPrototype::If => {
-                    let (condition, rest) =
-                        parse_bool_expr(rest, &mut self.exprs, &compiler.variables)?;
-                    let mut tokens = rest.fields();
-                    let next = tokens.next();
-                    let is_call = match next {
-                        Some(b"goto") => false,
-                        Some(b"call") => true,
-                        _ => {
-                            return Err(Error::Dynamic(
-                                format!("Expected 'goto' or 'call', got {:?}", next)
-                            ));
-                        }
-                    };
-                    let label = tokens.next()
-                        .and_then(|l| parse_label_ref(l))
-                        .ok_or_else(|| Error::Msg("Expected label after goto"))?;
-                    compiler.add_if(condition, label, block_scope, is_call)
-                }
-                CommandPrototype::Call => {
-                    let mut tokens = rest.fields();
-                    let label = tokens.next()
-                        .and_then(|l| parse_label_ref(l))
-                        .ok_or_else(|| Error::Msg("Expected label"))?;
-                    compiler.add_call(label, block_scope)
-                }
-                CommandPrototype::Return => {
-                    compiler.add_aice_command(aice_op::RETURN);
-                    Ok(())
-                }
-                CommandPrototype::FireWeapon => {
-                    self.parse_add_aice_command(
-                        compiler,
-                        stage1,
-                        ctx,
-                        aice_op::FIRE_WEAPON,
-                        &aice_op::FIRE_WEAPON_PARAMS,
-                        rest,
-                        linked,
-                    )?;
-                    // castspell
-                    compiler.add_bw_code(&[0x27]);
-                    compiler.add_aice_command(aice_op::RESET_ORDER_WEAPON);
-                    Ok(())
-                }
-                CommandPrototype::PlayFram => {
-                    self.parse_add_aice_command(
-                        compiler,
-                        stage1,
-                        ctx,
-                        aice_op::PLAY_FRAME,
-                        &aice_op::PLAY_FRAME_PARAMS,
-                        rest,
-                        linked,
-                    )?;
-                    Ok(())
-                }
-                CommandPrototype::Sigorder | CommandPrototype::OrderDone => {
-                    let mut tokens = rest.fields();
-                    let flags = tokens.next().and_then(|x| parse_u8(x));
-                    let has_next = tokens.next().is_some();
-                    let flags = match (flags, has_next) {
-                        (Some(s), false) => s,
-                        _ => return Err(Error::Dynamic(format!(
-                            "Expected single integer parameter, got '{}'", rest.as_bstr(),
-                        ))),
-                    };
-                    let op = match command {
-                        CommandPrototype::Sigorder => aice_op::SIGORDER,
-                        _ => aice_op::ORDER_DONE,
-                    };
-                    compiler.add_aice_command_u8(op, flags);
-                    Ok(())
-                }
-                CommandPrototype::GotoRepeatAttk => {
-                    compiler.add_aice_command(aice_op::CLEAR_ATTACKING_FLAG);
-                    Ok(())
-                }
-                CommandPrototype::CreateUnit => {
-                    self.parse_add_aice_command(
-                        compiler,
-                        stage1,
-                        ctx,
-                        aice_op::CREATE_UNIT,
-                        &aice_op::CREATE_UNIT_PARAMS,
-                        rest,
-                        linked,
-                    )?;
-                    Ok(())
-                }
-                CommandPrototype::IssueOrder => {
-                    self.parse_add_aice_command(
-                        compiler,
-                        stage1,
-                        ctx,
-                        aice_op::ISSUE_ORDER,
-                        &aice_op::ISSUE_ORDER_PARAMS,
-                        rest,
-                        linked,
-                    )?;
-                    Ok(())
-                }
-                CommandPrototype::End => {
-                    compiler.add_aice_command(aice_op::PRE_END);
-                    compiler.flow_to_bw();
-                    Ok(())
-                }
-                CommandPrototype::Set => {
-                    ctx.expr_buffer[0] = None;
-                    let vars = &compiler.variables;
-                    let exprs = &mut self.exprs;
-                    let (place, if_uninit, rest) =
-                        exprs.parse_set_place(rest, &mut ctx.expr_buffer, vars)?;
-                    let (expr, rest) = parse_set_expr(
-                        place,
-                        rest,
-                        exprs,
-                        vars,
-                        &mut ctx.anytype_parser,
-                    )?;
-                    if !rest.is_empty() {
-                        return Err(
-                            Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
-                        );
-                    }
-                    compiler.add_set(
-                        &mut ctx.write_buffer,
-                        place,
-                        if_uninit,
-                        expr,
-                        &mut ctx.expr_buffer,
-                    )?;
-                    Ok(())
-                }
-                CommandPrototype::ImgulOn | CommandPrototype::ImgolOn => {
-                    // op, flags, target, image, x, y
-                    // Flags 0x1 = Imgol, 0x2 = image is u16 const, 0x4 = x is i8 const
-                    // 0x8 = y is i8 const
-                    // Otherwise u32 expressions
-                    let params = match command {
-                        CommandPrototype::ImgulOn => &aice_op::IMGUL_ON_PARAMS,
-                        _ => &aice_op::IMGOL_ON_PARAMS,
-                    };
-                    self.parse_add_aice_command(
-                        compiler,
-                        stage1,
-                        ctx,
-                        aice_op::IMG_ON,
-                        params,
-                        rest,
-                        linked,
-                    )?;
-                    Ok(())
-                }
-                CommandPrototype::Print => {
-                    let format_id = self.format_strings.parse(rest, &mut self.exprs, compiler)?;
-                    compiler.add_aice_command_u32(aice_op::PRINT, format_id.0);
-                    Ok(())
-                }
+            BlockLine::Command(ref command, params, linked_block) => {
+                let labels = &compiler.labels;
+                let variables = &compiler.variables;
+                let input = ParseStage3Input {
+                    labels,
+                    variables,
+                    stage1,
+                    command,
+                    params,
+                    linked_block,
+                    block_scope,
+                };
+                let input = &input;
+                let mut output = stage3_out::ParseStage3OutputMain {
+                    out: &mut compiler.output,
+                    expr_ids: &mut compiler.expressions,
+                    sprite_local_set_builder: &mut compiler.sprite_local_sets,
+                };
+                output.revert_on_err(move |mut out| {
+                    out.set_current_line(line.line_number as u32);
+                    self.parse_add_command(input, out, ctx)
+                })
             }
-            _ => Ok(())
+            _ => Ok(()),
+        }
+    }
+
+    fn parse_add_command(
+        &mut self,
+        input: &ParseStage3Input<'_, 'a>,
+        mut out: ParseStage3Output<'_, '_, 'a>,
+        ctx: &mut CompileContext<'_>,
+    ) -> Result<(), Error> {
+        let variables = input.variables;
+        match *input.command {
+            CommandPrototype::BwCommand(op, params, ends_flow) => {
+                let labels = input.labels;
+                let block_scope = input.block_scope;
+                out.add_bw_command(labels, op, input.params, params, ends_flow, block_scope)?;
+                Ok(())
+            }
+            CommandPrototype::If => {
+                let (condition, rest) = parse_bool_expr(input.params, &mut self.exprs, variables)?;
+                let mut tokens = rest.fields();
+                let next = tokens.next();
+                let is_call = match next {
+                    Some(b"goto") => false,
+                    Some(b"call") => true,
+                    _ => {
+                        return Err(Error::Dynamic(
+                            format!("Expected 'goto' or 'call', got {:?}", next)
+                        ));
+                    }
+                };
+                let label = tokens.next()
+                    .and_then(|l| parse_label_ref(l))
+                    .ok_or_else(|| Error::Msg("Expected label after goto"))?;
+                out.add_if(input.labels, condition, label, input.block_scope, is_call)?;
+                Ok(())
+            }
+            CommandPrototype::Call => {
+                let mut tokens = input.params.fields();
+                let label = tokens.next()
+                    .and_then(|l| parse_label_ref(l))
+                    .ok_or_else(|| Error::Msg("Expected label"))?;
+                out.add_call(input.labels, label, input.block_scope)?;
+                Ok(())
+            }
+            CommandPrototype::Return => {
+                out.add_aice_command(aice_op::RETURN);
+                Ok(())
+            }
+            CommandPrototype::FireWeapon => {
+                let mut out = self.parse_add_aice_command(
+                    input,
+                    out,
+                    ctx,
+                    aice_op::FIRE_WEAPON,
+                    &aice_op::FIRE_WEAPON_PARAMS,
+                )?;
+                // castspell
+                out.add_bw_code(&[0x27]);
+                out.add_aice_command(aice_op::RESET_ORDER_WEAPON);
+                Ok(())
+            }
+            CommandPrototype::PlayFram => {
+                self.parse_add_aice_command(
+                    input,
+                    out,
+                    ctx,
+                    aice_op::PLAY_FRAME,
+                    &aice_op::PLAY_FRAME_PARAMS,
+                )?;
+                Ok(())
+            }
+            CommandPrototype::Sigorder | CommandPrototype::OrderDone => {
+                let mut tokens = input.params.fields();
+                let flags = tokens.next().and_then(|x| parse_u8(x));
+                let has_next = tokens.next().is_some();
+                let flags = match (flags, has_next) {
+                    (Some(s), false) => s,
+                    _ => return Err(Error::Dynamic(format!(
+                        "Expected single integer parameter, got '{}'", input.params.as_bstr(),
+                    ))),
+                };
+                let op = match input.command {
+                    CommandPrototype::Sigorder => aice_op::SIGORDER,
+                    _ => aice_op::ORDER_DONE,
+                };
+                out.add_aice_command_u8(op, flags);
+                Ok(())
+            }
+            CommandPrototype::GotoRepeatAttk => {
+                out.add_aice_command(aice_op::CLEAR_ATTACKING_FLAG);
+                Ok(())
+            }
+            CommandPrototype::CreateUnit => {
+                self.parse_add_aice_command(
+                    input,
+                    out,
+                    ctx,
+                    aice_op::CREATE_UNIT,
+                    &aice_op::CREATE_UNIT_PARAMS,
+                )?;
+                Ok(())
+            }
+            CommandPrototype::IssueOrder => {
+                self.parse_add_aice_command(
+                    input,
+                    out,
+                    ctx,
+                    aice_op::ISSUE_ORDER,
+                    &aice_op::ISSUE_ORDER_PARAMS,
+                )?;
+                Ok(())
+            }
+            CommandPrototype::End => {
+                out.add_aice_command(aice_op::PRE_END);
+                out.flow_to_bw();
+                Ok(())
+            }
+            CommandPrototype::Set => {
+                ctx.expr_buffer[0] = None;
+                let exprs = &mut self.exprs;
+                let (place, if_uninit, rest) =
+                    exprs.parse_set_place(input.params, &mut ctx.expr_buffer, variables)?;
+                let (expr, rest) = parse_set_expr(
+                    place,
+                    rest,
+                    exprs,
+                    variables,
+                    &mut ctx.anytype_parser,
+                )?;
+                if !rest.is_empty() {
+                    return Err(
+                        Error::Dynamic(format!("Trailing characters '{}'", rest.as_bstr()))
+                    );
+                }
+                out.add_set(
+                    &mut ctx.write_buffer,
+                    place,
+                    if_uninit,
+                    expr,
+                    &mut ctx.expr_buffer,
+                );
+                Ok(())
+            }
+            CommandPrototype::ImgulOn | CommandPrototype::ImgolOn => {
+                // op, flags, target, image, x, y
+                // Flags 0x1 = Imgol, 0x2 = image is u16 const, 0x4 = x is i8 const
+                // 0x8 = y is i8 const
+                // Otherwise u32 expressions
+                let params = match input.command {
+                    CommandPrototype::ImgulOn => &aice_op::IMGUL_ON_PARAMS,
+                    _ => &aice_op::IMGOL_ON_PARAMS,
+                };
+                self.parse_add_aice_command(
+                    input,
+                    out,
+                    ctx,
+                    aice_op::IMG_ON,
+                    params,
+                )?;
+                Ok(())
+            }
+            CommandPrototype::Print => {
+                let expr_ids = out.expr_ids();
+                let format_id =
+                    self.format_strings.parse(input.params, &mut self.exprs, variables, expr_ids)?;
+                out.add_aice_command_u32(aice_op::PRINT, format_id.0);
+                Ok(())
+            }
         }
     }
 
     /// Common parsing & command emitting for commands that mainly take integer/expression params
-    fn parse_add_aice_command(
+    fn parse_add_aice_command<'b, 'c>(
         &mut self,
-        compiler: &mut Compiler<'a>,
-        stage1: &ParseStage1<'a>,
+        input: &ParseStage3Input<'_, 'a>,
+        mut out: ParseStage3Output<'c, 'b, 'a>,
         ctx: &mut CompileContext<'_>,
         command: u8,
         param_types: &CommandParams,
-        params_unparsed: &[u8],
-        linked: LinkedBlock,
-    ) -> Result<(), Error> {
+    ) -> Result<ParseStage3Output<'c, 'b, 'a>, Error> {
         use AiceCommandParam::*;
-        let buffer = &mut self.command_build_buffer;
-        buffer.clear();
 
-        let mut rest = params_unparsed;
+        let variables = input.variables;
+        let buffer = &mut ctx.write_buffer;
+        buffer.clear();
+        buffer.push(command);
+        if param_types.flag_count != 0 {
+            buffer.push(0); // Will be flags if used
+        }
+
+        let mut rest = input.params;
         let exprs = &mut self.exprs;
         let mut flags = 0u8;
         let mut flags_pos = 1u8;
         for (i, &param) in param_types.params.iter().enumerate() {
             match param {
                 IntExpr => {
-                    let (expr, rest2) = parse_int_expr(rest, exprs, &compiler.variables)?;
-                    let id = compiler.expressions.int_expr_id(expr);
+                    let (expr, rest2) = parse_int_expr(rest, exprs, &variables)?;
+                    let id = out.expr_ids().int_expr_id(expr);
                     rest = rest2;
                     write_u32(buffer, id);
                 }
@@ -1549,7 +1667,7 @@ impl<'a> Parser<'a> {
                     flags_pos = flags_pos << 1;
                 }
                 IntExprOrConstU8 | IntExprOrConstI8 | IntExprOrConstU16 => {
-                    let (expr, rest2) = parse_int_expr(rest, exprs, &compiler.variables)?;
+                    let (expr, rest2) = parse_int_expr(rest, exprs, variables)?;
                     rest = rest2;
                     if let Some(c) = is_constant_expr(&expr) {
                         match param {
@@ -1578,13 +1696,22 @@ impl<'a> Parser<'a> {
                         }
                         flags |= flags_pos;
                     } else {
-                        let val = compiler.expressions.int_expr_id(expr);
+                        let val = out.expr_ids().int_expr_id(expr);
                         write_u32(buffer, val);
                     };
                     flags_pos = flags_pos << 1;
                 }
                 With => {
-                    let spritelocals = parse_with(rest, exprs, stage1, compiler, ctx, linked)?;
+                    let (spritelocals, out2) = parse_with(
+                        rest,
+                        exprs,
+                        input.stage1,
+                        variables,
+                        out,
+                        &mut ctx.error_line,
+                        input.linked_block,
+                    )?;
+                    out = out2;
                     rest = b"";
                     write_u32(buffer, spritelocals.0);
                 }
@@ -1601,12 +1728,11 @@ impl<'a> Parser<'a> {
             );
         }
 
-        compiler.add_aice_command(command);
         if param_types.flag_count != 0 {
-            compiler.aice_bytecode.push(flags);
+            buffer[1] = flags;
         }
-        compiler.aice_bytecode.extend_from_slice(buffer);
-        Ok(())
+        out.add_aice_code(&buffer);
+        Ok(out)
     }
 }
 
@@ -2012,23 +2138,24 @@ fn parse_int_expr<'a, 'b, 'c>(
     Ok((expr, rest))
 }
 
-fn parse_any_expr_allow_opt<'a, 'b, 'c>(
+fn parse_any_expr_allow_opt<'a, 'text, 'c>(
     text: &'a [u8],
     parser: &'c mut ParserExprs,
-    compiler: &'c mut Compiler<'b>,
+    variables: &CompilerVariables<'text>,
+    expressions: &mut CompilerExprs,
 ) -> Result<(AnyExpr, &'a [u8]), Error> {
-    let int_result = parse_int_expr_allow_opt(text, parser, &compiler.variables);
+    let int_result = parse_int_expr_allow_opt(text, parser, variables);
     if int_result.is_ok() {
         if let Ok(x) = int_result {
-            let expr = compiler.expressions.int_expr_id(x.0);
+            let expr = expressions.int_expr_id(x.0);
             return Ok((AnyExpr::Int(expr), x.1));
         }
     }
     let int_err = parser.current_error.take().unwrap_or(int_result.unwrap_err());
-    let bool_result = parse_bool_expr_allow_opt(text, parser, &compiler.variables);
+    let bool_result = parse_bool_expr_allow_opt(text, parser, variables);
     if bool_result.is_ok() {
         if let Ok(x) = bool_result {
-            let expr = compiler.expressions.bool_expr_id(x.0);
+            let expr = expressions.bool_expr_id(x.0);
             return Ok((AnyExpr::Bool(expr), x.1));
         }
     }
@@ -2073,16 +2200,21 @@ fn parse_set_expr<'a, 'b, 'c, 'bump>(
 
 /// Parses `with { spritelocal1 = expr, ... }`
 /// Accepts also empty input for empty set of spritelocals.
-fn parse_with<'a, 'b, 'c>(
+///
+/// Currently tied to ParseStage3Output, uses sprite_local_set_builder from there.
+/// But could just have sprite_local_set_builder be own revertable struct
+/// (expr_ids does not need reverting)
+fn parse_with<'a, 'text, 'c, 'd, 'e>(
     text: &'a [u8],
     parser: &'c mut ParserExprs,
-    stage1: &ParseStage1<'b>,
-    compiler: &'c mut Compiler<'b>,
-    ctx: &mut CompileContext<'_>,
+    stage1: &ParseStage1<'text>,
+    vars: &CompilerVariables<'text>,
+    out: ParseStage3Output<'e, 'd, 'text>,
+    ctx_error_line: &mut usize,
     linked: LinkedBlock,
-) -> Result<SpriteLocalSetId, Error> {
+) -> Result<(SpriteLocalSetId, ParseStage3Output<'e, 'd, 'text>), Error> {
     if text.is_empty() {
-        return Ok(SpriteLocalSetId(0));
+        return Ok((SpriteLocalSetId(0), out));
     }
 
     let parser_id = match linked {
@@ -2099,17 +2231,15 @@ fn parse_with<'a, 'b, 'c>(
         return Err(Error::Trailing(rest.into()));
     }
 
-    let prev_line = ctx.error_line;
+    let prev_line = *ctx_error_line;
     let mut input_sets = stage1.sprite_local_sets.get_or_empty(parser_id);
-    let vars = &compiler.variables;
-    let exprs = &mut compiler.expressions;
-    let id = compiler.sprite_local_sets.build(|| {
+    let (id, out) = out.build_sprite_local_set(|expr_ids| {
         let (&(text, line_no), rest) = match input_sets.split_first() {
             Some(s) => s,
             None => return Ok(None),
         };
         input_sets = rest;
-        ctx.error_line = line_no;
+        *ctx_error_line = line_no;
         let (var_name, rest) = split_first_token(text)
             .ok_or_else(|| Error::Msg("Expected variable name"))?;
         let rest = expect_token(rest, b"=")?;
@@ -2117,7 +2247,7 @@ fn parse_with<'a, 'b, 'c>(
         if !rest.is_empty() {
             return Err(Error::Trailing(rest.into()));
         }
-        let expr = exprs.int_expr_id(expr);
+        let expr = expr_ids.int_expr_id(expr);
         let var = vars.variables.get(var_name)
             .and_then(|x| match x.place() {
                 Place::SpriteLocal(_, x) => Some(x),
@@ -2126,14 +2256,14 @@ fn parse_with<'a, 'b, 'c>(
             .ok_or_else(|| Error::Internal("Var not added"))?;
         Ok(Some((var, expr)))
     })?;
-    ctx.error_line = prev_line;
-    Ok(id)
+    *ctx_error_line = prev_line;
+    Ok((id, out))
 }
 
 fn mark_required_bw_labels<'a>(
     text: &'a [u8],
     params: &[BwCommandParam],
-    compiler: &mut Compiler<'a>,
+    labels: &mut CompilerLabels<'a>,
     ctx: &mut TextParseContext<'a>,
 ) -> Result<(),  Error> {
     let mut tokens = text.fields();
@@ -2142,7 +2272,7 @@ fn mark_required_bw_labels<'a>(
             .ok_or_else(|| Error::Dynamic(format!("Expected {} arguments", params.len())))?;
         if let BwCommandParam::Label = param {
             let label = parse_label_ref(arg).ok_or_else(|| Error::Msg("Expected label"))?;
-            compiler.require_bw_label(label, ctx);
+            labels.require_bw_label(label, ctx);
         }
     }
     Ok(())
@@ -2252,25 +2382,46 @@ enum HeaderOpcode<'a> {
     Animation(u8, Label<'a>),
 }
 
-struct Compiler<'a> {
-    bw_bytecode: Vec<u8>,
-    aice_bytecode: Vec<u8>,
-    bw_offsets_in_aice: Vec<u32>,
+pub struct CompilerOutput<'text> {
+    bw_code: Vec<u8>,
+    aice_code: Vec<u8>,
+    needed_label_positions: Vec<(CodePosition, Label<'text>, BlockId)>,
+    bw_aice_cmd_offsets: Vec<(u16, u32)>,
     bw_offsets_in_bw: Vec<u16>,
+    bw_offsets_in_aice: Vec<u32>,
     bw_code_flow_ends: Vec<u16>,
-    /// Collects where bw_bytecode has been finally placed when compiled.
+    flow_in_bw: bool,
+    line_info: LineInfoBuilder,
+    current_line: u32,
+}
+
+struct CompilerOutputRevert {
+    bw_code: usize,
+    aice_code: usize,
+    needed_label_positions: usize,
+    bw_aice_cmd_offsets: usize,
+    bw_offsets_in_bw: usize,
+    bw_offsets_in_aice: usize,
+    bw_code_flow_ends: usize,
+    flow_in_bw: bool,
+    line_info: LineInfoBuilderRevert,
+    current_line: u32,
+}
+
+struct CompilerLabels<'a> {
+    labels: FxHashMap<(Label<'a>, BlockId), CodePosition>,
+    bw_required_labels: BwRequiredLabels<'a>,
+}
+
+struct Compiler<'a> {
+    output: CompilerOutput<'a>,
+    /// Collects where out.bw_code has been finally placed when compiled.
     /// (start_offset_in_final_bin, length)
     bw_code_parts: Vec<(u16, u16)>,
-    labels: FxHashMap<(Label<'a>, BlockId), CodePosition>,
-    needed_label_positions: Vec<(CodePosition, Label<'a>, BlockId)>,
-    bw_required_labels: BwRequiredLabels<'a>,
-    bw_aice_cmd_offsets: Vec<(u16, u32)>,
     sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, u32)>,
     expressions: CompilerExprs,
     variables: CompilerVariables<'a>,
-    flow_in_bw: bool,
-    current_line: u32,
-    line_info: LineInfoBuilder,
+    labels: CompilerLabels<'a>,
 }
 
 struct CompilerVariables<'a> {
@@ -2278,6 +2429,10 @@ struct CompilerVariables<'a> {
     variable_counts: [u32; 2],
 }
 
+/// This should not need to be revertable on error;
+/// Only thing that &mut CompilerExprs does is to allocate new
+/// expr -> u32 ids. And if there was valid expression that was
+/// parsed, it is expected to get an id unless the compilation itself fails.
 struct CompilerExprs {
     conditions: Vec<Rc<BoolExpr>>,
     existing_conditions: FxHashMap<Rc<BoolExpr>, u32>,
@@ -2662,17 +2817,24 @@ impl CodePosition {
 impl<'a> Compiler<'a> {
     fn new() -> Compiler<'a> {
         Compiler {
-            bw_aice_cmd_offsets: Vec::with_capacity(1024),
-            bw_bytecode: Vec::with_capacity(32768),
-            aice_bytecode: Vec::with_capacity(32768),
-            bw_offsets_in_aice: Vec::with_capacity(4096),
-            bw_offsets_in_bw: Vec::with_capacity(4096),
-            bw_code_flow_ends: Vec::with_capacity(1024),
+            output: CompilerOutput {
+                bw_code: Vec::with_capacity(32768),
+                aice_code: Vec::with_capacity(32768),
+                bw_aice_cmd_offsets: Vec::with_capacity(1024),
+                bw_offsets_in_bw: Vec::with_capacity(4096),
+                bw_offsets_in_aice: Vec::with_capacity(4096),
+                bw_code_flow_ends: Vec::with_capacity(1024),
+                needed_label_positions: Vec::with_capacity(128),
+                flow_in_bw: true,
+                line_info: LineInfoBuilder::new(),
+                current_line: 0,
+            },
             bw_code_parts: Vec::with_capacity(4),
-            labels: FxHashMap::with_capacity_and_hasher(1024, Default::default()),
-            needed_label_positions: Vec::with_capacity(128),
-            bw_required_labels: BwRequiredLabels {
-                set: FxHashSet::with_capacity_and_hasher(1024, Default::default()),
+            labels: CompilerLabels {
+                labels: FxHashMap::with_capacity_and_hasher(1024, Default::default()),
+                bw_required_labels: BwRequiredLabels {
+                    set: FxHashSet::with_capacity_and_hasher(1024, Default::default()),
+                },
             },
             expressions: CompilerExprs {
                 conditions: Vec::with_capacity(16),
@@ -2687,22 +2849,25 @@ impl<'a> Compiler<'a> {
                 variables: FxHashMap::default(),
                 variable_counts: [0; 2],
             },
-            flow_in_bw: true,
-            current_line: 0,
-            line_info: LineInfoBuilder::new(),
         }
     }
 
-    fn set_current_line(&mut self, line: u32) {
-        self.current_line = line;
+    fn flow_in_bw(&self) -> bool {
+        // flow_in_bw is used in earlier passes, not really related to code emitting.
+        // Maybe it should be separate variablei instead of reusing the one in output?
+        self.output.flow_in_bw
     }
 
-    fn code_position(&self) -> CodePosition {
-        if self.flow_in_bw {
-            CodePosition(self.bw_bytecode.len() as u32)
-        } else {
-            CodePosition(self.aice_bytecode.len() as u32 | 0x8000_0000)
-        }
+    fn flow_to_bw(&mut self) {
+        // flow_in_bw is used in earlier passes, not really related to code emitting.
+        // Maybe it should be separate variablei instead of reusing the one in output?
+        self.output.flow_to_bw()
+    }
+
+    fn flow_to_aice(&mut self) {
+        // flow_in_bw is used in earlier passes, not really related to code emitting.
+        // Maybe it should be separate variablei instead of reusing the one in output?
+        self.output.flow_to_aice()
     }
 
     fn add_variables(
@@ -2726,14 +2891,15 @@ impl<'a> Compiler<'a> {
 
     /// Makes `label` located at current position.
     fn add_label(&mut self, label: Label<'a>, scope: &BlockScope<'a, '_>) -> Result<(), Error> {
-        let bw_required = self.bw_required_labels.contains(label, scope);
+        let bw_required = self.labels.bw_required_labels.contains(label, scope);
 
         if bw_required {
             self.flow_to_bw();
         }
-        match self.labels.entry((label, scope.block_id())) {
+        let flow_in_bw = self.flow_in_bw();
+        match self.labels.labels.entry((label, scope.block_id())) {
             Entry::Vacant(e) => {
-                if self.flow_in_bw {
+                if flow_in_bw {
                     e.insert(CodePosition(0xffff));
                 } else {
                     e.insert(CodePosition(0xffff_ffff));
@@ -2746,263 +2912,19 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn require_bw_label(&mut self, label: Label<'a>, ctx: &mut TextParseContext<'a>) {
-        self.bw_required_labels.insert(label, ctx.current_block.1);
-        for &(_, parent_id, _) in &ctx.block_stack {
-            self.bw_required_labels.insert(label, parent_id);
-        }
-    }
-
-    fn set_label_position_to_current<'s>(&'s mut self, label: Label<'a>, scope: &BlockScope<'a, '_>) {
-        if self.bw_required_labels.contains(label, scope) {
-            if !self.flow_in_bw {
-                self.emit_aice_jump_to_bw(self.bw_bytecode.len() as u16);
-                self.flow_in_bw = true;
-            }
-        }
-        let code_position = self.code_position();
-        for block_id in scope.this_and_ancestor_ids() {
-            if let Some(label) = self.labels.get_mut(&(label, block_id)) {
-                *label = code_position;
-                break;
-            }
-        }
-    }
-
-    fn label_location(&self, label: Label<'a>, scope: &BlockScope<'a, '_>) -> Option<CodePosition> {
-        scope.this_and_ancestor_ids()
-            .filter_map(|block_id| self.labels.get(&(label, block_id)))
-            .cloned()
-            .next()
-    }
-
-    fn add_bw_code(&mut self, code: &[u8]) {
-        if !self.flow_in_bw {
-            self.emit_aice_jump_to_bw(self.bw_bytecode.len() as u16);
-            self.flow_in_bw = true;
-        }
-        self.line_info.bw.push(self.bw_bytecode.len() as u32, self.current_line);
-        self.bw_bytecode.extend_from_slice(code);
-    }
-
-    fn add_aice_code(&mut self, code: &[u8]) {
-        self.line_info.aice.push(self.aice_bytecode.len() as u32, self.current_line);
-        self.aice_bytecode.extend_from_slice(code);
-    }
-
-    fn emit_aice_jump_to_bw(&mut self, to: u16) {
-        self.bw_offsets_in_aice.push(self.aice_bytecode.len() as u32 + 1);
-        self.add_aice_code(&[aice_op::JUMP_TO_BW, to as u8, (to >> 8) as u8]);
-    }
-
-    fn emit_bw_jump_to_aice(&mut self, to: u32) {
-        self.bw_aice_cmd_offsets.push((self.bw_bytecode.len() as u16, to));
-        self.bw_bytecode.push(AICE_COMMAND);
-    }
-
-    fn flow_to_bw(&mut self) {
-        self.flow_in_bw = true;
-    }
-
-    fn flow_to_aice(&mut self) {
-        self.flow_in_bw = false;
-    }
-
-    fn add_flow_to_aice(&mut self) {
-        if self.flow_in_bw {
-            self.emit_bw_jump_to_aice(self.aice_bytecode.len() as u32);
-            self.flow_in_bw = false;
-        }
-    }
-
-    fn add_set(
-        &mut self,
-        write_buffer: &mut Vec<u8>,
-        place: PlaceId,
-        if_uninit: bool,
-        value: SetExpr<'_>,
-        place_vars: &mut [Option<Box<IntExpr>>; 4],
-    ) -> Result<(), Error> {
-        self.add_flow_to_aice();
-        let var_id = if if_uninit {
-            place.0 | 0x2000_0000
-        } else {
-            place.0
-        };
-        write_buffer.clear();
-        match value {
-            SetExpr::Int(value) => {
-                let index = self.expressions.int_expr_id(value);
-                write_buffer.push(aice_op::SET);
-                write_buffer.write_u32::<LE>(var_id).unwrap();
-                write_buffer.write_u32::<LE>(index as u32).unwrap();
-                for var in place_vars.iter_mut()
-                    .take_while(|x| x.is_some()).filter_map(|x| x.take())
-                {
-                    let index = self.expressions.int_expr_id(*var);
-                    write_buffer.write_u32::<LE>(index as u32).unwrap();
-                }
-            }
-            SetExpr::AnyType(ref ty) => {
-                write_buffer.push(aice_op::SET_COPY);
-                write_buffer.write_u32::<LE>(var_id).unwrap();
-                anytype_expr::write_any_type(write_buffer, ty);
-            }
-        }
-        self.add_aice_code(&write_buffer);
-        Ok(())
-    }
-
-    fn add_if(
-        &mut self,
-        condition: BoolExpr,
-        dest: Label<'a>,
-        block_scope: &BlockScope<'a, '_>,
-        is_call: bool,
-    ) -> Result<(), Error> {
-        self.add_flow_to_aice();
-        let index = self.expressions.bool_expr_id(condition);
-        let pos = self.label_location(dest, block_scope)
-            .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
-
-        let mut buffer = [0u8; 9];
-        buffer[0] = if is_call { aice_op::IF_CALL } else { aice_op::IF };
-        LittleEndian::write_u32(&mut buffer[1..], index as u32);
-        LittleEndian::write_u32(&mut buffer[5..], pos.0);
-        let offset = self.aice_bytecode.len() as u32 + 5;
-        if pos.is_unknown() {
-            let block_id = block_scope.block_id();
-            self.needed_label_positions.push((CodePosition::aice(offset), dest, block_id));
-        }
-        if pos.if_bw_pos().is_some() {
-            self.bw_offsets_in_aice.push(offset);
-        }
-        self.add_aice_code(&buffer);
-        Ok(())
-    }
-
-    fn add_call(
-        &mut self,
-        dest: Label<'a>,
-        block_scope: &BlockScope<'a, '_>
-    ) -> Result<(), Error> {
-        self.add_flow_to_aice();
-        let pos = self.label_location(dest, block_scope)
-            .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
-
-        let mut buffer = [0u8; 5];
-        buffer[0] = aice_op::CALL;
-        LittleEndian::write_u32(&mut buffer[1..], pos.0);
-        let offset = self.aice_bytecode.len() as u32 + 1;
-        if pos.is_unknown() {
-            let block_id = block_scope.block_id();
-            self.needed_label_positions.push((CodePosition::aice(offset), dest, block_id));
-        }
-        if pos.if_bw_pos().is_some() {
-            self.bw_offsets_in_aice.push(offset);
-        }
-        self.add_aice_code(&buffer);
-        Ok(())
-    }
-
-    fn add_aice_command(&mut self, byte: u8) {
-        self.add_flow_to_aice();
-        self.add_aice_code(&[byte]);
-    }
-
-    fn add_aice_command_u8(&mut self, byte: u8, param: u8) {
-        self.add_flow_to_aice();
-        self.add_aice_code(&[byte, param]);
-    }
-
-    fn add_aice_command_u32(&mut self, byte: u8, param: u32) {
-        self.add_flow_to_aice();
-        let mut buffer = [0u8; 5];
-        buffer[0] = byte;
-        LittleEndian::write_u32(&mut buffer[1..], param);
-        self.add_aice_code(&buffer);
-    }
-
-    fn add_bw_command(
-        &mut self,
-        byte: u8,
-        param_text: &'a [u8],
-        params: &[BwCommandParam],
-        ends_flow: bool,
-        block_scope: &BlockScope<'a, '_>,
-    ) -> Result<(), Error> {
-        let code = &mut [0u8; 16];
-        let code_len = code.len();
-        code[0] = byte;
-        let mut out = &mut code[1..];
-        let mut tokens = param_text.fields();
-        for param in params {
-            let arg = tokens.next()
-                .ok_or_else(|| Error::Dynamic(format!("Expected {} arguments", params.len())))?;
-            match param {
-                BwCommandParam::I8 => {
-                    let val = parse_i8(arg).ok_or_else(|| Error::Msg("Expected I8"))?;
-                    (&mut out).write_u8(val).unwrap();
-                }
-                BwCommandParam::U8 => {
-                    let val = parse_u8(arg).ok_or_else(|| Error::Msg("Expected U8"))?;
-                    (&mut out).write_u8(val).unwrap();
-                }
-                BwCommandParam::U16 => {
-                    let val = parse_u16(arg).ok_or_else(|| Error::Msg("Expected U16"))?;
-                    (&mut out).write_u16::<LE>(val).unwrap();
-                }
-                BwCommandParam::U16VarLen => {
-                    let amt = parse_u8(arg).ok_or_else(|| Error::Msg("Expected U8"))?;
-                    (&mut out).write_u8(amt).unwrap();
-                    for _ in 0..amt {
-                        let arg = tokens.next().ok_or_else(|| Error::Msg("Expected more arguments"))?;
-                        let val = parse_u16(arg).ok_or_else(|| Error::Msg("Expected U16"))?;
-                        (&mut out).write_u16::<LE>(val).unwrap();
-                    }
-                }
-                BwCommandParam::Label => {
-                    let label = parse_label_ref(arg).ok_or_else(|| Error::Msg("Expected label"))?;
-                    let pos = self.label_location(label, block_scope)
-                        .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", label.0)))?;
-                    if let Some(pos) = pos.if_bw_pos() {
-                        let offset_in_command = code_len - out.len();
-                        let offset = (self.bw_bytecode.len() + offset_in_command) as u16;
-                        self.bw_offsets_in_bw.push(offset);
-                        (&mut out).write_u16::<LE>(pos).unwrap();
-                        if pos == 0xffff {
-                            let pos = CodePosition::bw(offset);
-                            let block_id = block_scope.block_id();
-                            self.needed_label_positions.push((pos, label, block_id));
-                        }
-                    } else {
-                        panic!("BW jumped label was not in BW?");
-                    }
-                }
-            }
-        }
-        let len = code_len - out.len();
-        if tokens.next().is_some() {
-            return Err(Error::Dynamic(format!("Expected {} arguments", params.len())));
-        }
-        self.add_bw_code(&code[..len]);
-        if ends_flow {
-            self.bw_code_flow_ends.push(self.bw_bytecode.len() as u16);
-        }
-        Ok(())
-    }
-
     fn fixup_missing_label_positions(&mut self, blocks: &Blocks<'a>) {
-        for &(pos, label, block_id) in &self.needed_label_positions {
-            let label_pos = self.label_location(label, &blocks.scope(block_id))
+        for &(pos, label, block_id) in &self.output.needed_label_positions {
+            let label_pos = self.labels.label_location(label, &blocks.scope(block_id))
                 .unwrap_or_else(|| panic!("Label {} disappeared?", label.0));
-            let mut arr = match pos.to_enum() {
-                CodePos::Bw(offset) => &mut self.bw_bytecode[offset as usize..],
-                CodePos::Aice(offset) => &mut self.aice_bytecode[offset as usize..],
+            let arr = match pos.to_enum() {
+                CodePos::Bw(offset) => &mut self.output.bw_code[offset as usize..],
+                CodePos::Aice(offset) => &mut self.output.aice_code[offset as usize..],
             };
             let _ = match label_pos.to_enum() {
-                CodePos::Bw(offset) => arr.write_u16::<LE>(offset),
-                CodePos::Aice(offset) => arr.write_u32::<LE>(offset | 0x8000_0000),
+                CodePos::Bw(offset) => LittleEndian::write_u16(&mut arr[..2], offset),
+                CodePos::Aice(offset) => {
+                    LittleEndian::write_u32(&mut arr[..4], offset | 0x8000_0000)
+                }
             };
         }
     }
@@ -3016,10 +2938,10 @@ impl<'a> Compiler<'a> {
     ) -> Result<Iscript, Error> {
         self.fixup_missing_label_positions(blocks);
 
-        if self.bw_bytecode.len() >= 0x10000 {
+        if self.output.bw_code.len() >= 0x10000 {
             return Err(Error::Msg("Iscript too large"));
         }
-        debug_assert!(self.bw_code_flow_ends.windows(2).all(|x| x[0] < x[1]));
+        debug_assert!(self.output.bw_code_flow_ends.windows(2).all(|x| x[0] < x[1]));
 
         let mut bw_data = Vec::with_capacity(32768);
         bw_data.resize(0x1c, AICE_COMMAND);
@@ -3077,9 +2999,9 @@ impl<'a> Compiler<'a> {
         bw_data.write_u16::<LE>(0x0000).unwrap();
 
         // Write aice animation start cmd and link the few places to it
-        let anim_start_cmd_offset = self.aice_bytecode.len() as u32;
-        self.aice_bytecode.push(aice_op::ANIMATION_START);
-        let mut bw_aice_cmd_offsets = self.bw_aice_cmd_offsets.iter()
+        let anim_start_cmd_offset = self.output.aice_code.len() as u32;
+        self.output.aice_code.push(aice_op::ANIMATION_START);
+        let mut bw_aice_cmd_offsets = self.output.bw_aice_cmd_offsets.iter()
             .map(|&(bw, aice)| (bw_code_offset_to_data_offset(&self.bw_code_parts, bw), aice))
             .collect::<FxHashMap<u16, u32>>();
         bw_aice_cmd_offsets.insert(0x0000, anim_start_cmd_offset);
@@ -3095,7 +3017,7 @@ impl<'a> Compiler<'a> {
                     if label.0 == &b"[NONE]"[..] {
                         Ok(None)
                     } else {
-                        self.label_location(label, &root_scope).ok_or_else(|| {
+                        self.labels.label_location(label, &root_scope).ok_or_else(|| {
                             Error::Dynamic(format!("Header label '{}' not found", label.0))
                         }).map(|pos| Some(match pos.to_enum() {
                             CodePos::Bw(pos) => CodePosition::bw(
@@ -3113,19 +3035,19 @@ impl<'a> Compiler<'a> {
             })
         }).collect::<Result<Vec<_>, Error>>()?;
 
-        // Add 7 bytes to aice_bytecode so that it's safe to do u64 reads that go partially
+        // Add 7 bytes to aice_code so that it's safe to do u64 reads that go partially
         // out of bounds.
-        self.aice_bytecode.extend_from_slice(&[0u8; 8]);
+        self.output.aice_code.extend_from_slice(&[0u8; 8]);
         Ok(Iscript {
             bw_data: bw_data.into_boxed_slice(),
-            aice_data: self.aice_bytecode,
+            aice_data: self.output.aice_code,
             conditions: self.expressions.conditions,
             int_expressions: self.expressions.int_expressions,
             sprite_local_sets: self.sprite_local_sets,
             bw_aice_cmd_offsets,
             headers,
             global_count: self.variables.variable_counts[VariableType::Global as usize],
-            line_info: self.line_info.finish(),
+            line_info: self.output.line_info.finish(),
             unit_refs,
             format_strings,
         })
@@ -3134,46 +3056,373 @@ impl<'a> Compiler<'a> {
     fn fixup_bw_offsets(&mut self, bw_data: &mut [u8]) {
         let code_parts = &self.bw_code_parts;
         // Old offset -> offset in bw_data
-        for &offset in &self.bw_offsets_in_bw {
+        for &offset in &self.output.bw_offsets_in_bw {
             let offset = bw_code_offset_to_data_offset(code_parts, offset) as usize;
             let old = (&bw_data[offset..]).read_u16::<LE>().unwrap();
             let new = bw_code_offset_to_data_offset(code_parts, old);
-            (&mut bw_data[offset..]).write_u16::<LE>(new).unwrap();
+            LittleEndian::write_u16(&mut bw_data[offset..][..2], new);
         }
-        for &offset in &self.bw_offsets_in_aice {
+        for &offset in &self.output.bw_offsets_in_aice {
             let offset = offset as usize;
-            let old = (&self.aice_bytecode[offset..]).read_u16::<LE>().unwrap();
+            let old = (&self.output.aice_code[offset..]).read_u16::<LE>().unwrap();
             let new = bw_code_offset_to_data_offset(code_parts, old);
-            (&mut self.aice_bytecode[offset..]).write_u16::<LE>(new).unwrap();
+            LittleEndian::write_u16(&mut self.output.aice_code[offset..][..2], new);
         }
     }
 
     fn write_bw_code(&mut self, out: &mut Vec<u8>, start: usize, length: usize) -> usize {
-        let write_length = if start + length > self.bw_bytecode.len() {
-            self.bw_bytecode.len() - start
+        let bw_code = &self.output.bw_code;
+        let write_length = if start + length > bw_code.len() {
+            bw_code.len() - start
         } else {
-            let index = self.bw_code_flow_ends.binary_search(&((start + length) as u16))
+            let bw_code_flow_ends = &mut self.output.bw_code_flow_ends;
+            let index = bw_code_flow_ends.binary_search(&((start + length) as u16))
                 .unwrap_or_else(|e| e);
             if index == 0 {
                 0
             } else {
-                self.bw_code_flow_ends[index - 1] as usize - start
+                self.output.bw_code_flow_ends[index - 1] as usize - start
             }
         };
         assert!(write_length <= length);
         self.bw_code_parts.push((out.len() as u16, write_length as u16));
-        out.extend_from_slice(&self.bw_bytecode[start..start + write_length]);
+        out.extend_from_slice(&bw_code[start..start + write_length]);
         out.extend((write_length..length).map(|_| AICE_COMMAND));
         start + write_length
     }
 
     fn write_bw_code_rest(&mut self, out: &mut Vec<u8>, start: usize) {
-        let write_length = self.bw_bytecode.len() - start;
+        let bw_code = &self.output.bw_code;
+        let write_length = bw_code.len() - start;
         if write_length == 0 {
             return;
         }
         self.bw_code_parts.push((out.len() as u16, write_length as u16));
-        out.extend_from_slice(&self.bw_bytecode[start..start + write_length]);
+        out.extend_from_slice(&bw_code[start..start + write_length]);
+    }
+}
+
+impl<'text> CompilerOutput<'text> {
+    fn revert_pos(&self) -> CompilerOutputRevert {
+        let CompilerOutput {
+            bw_code,
+            aice_code,
+            needed_label_positions,
+            bw_aice_cmd_offsets,
+            bw_offsets_in_bw,
+            bw_offsets_in_aice,
+            bw_code_flow_ends,
+            flow_in_bw,
+            line_info,
+            current_line,
+        } = self;
+        CompilerOutputRevert {
+            line_info: line_info.revert_pos(),
+            bw_code: bw_code.len(),
+            aice_code: aice_code.len(),
+            needed_label_positions: needed_label_positions.len(),
+            bw_aice_cmd_offsets: bw_aice_cmd_offsets.len(),
+            bw_offsets_in_bw: bw_offsets_in_bw.len(),
+            bw_offsets_in_aice: bw_offsets_in_aice.len(),
+            bw_code_flow_ends: bw_code_flow_ends.len(),
+            flow_in_bw: *flow_in_bw,
+            current_line: *current_line,
+        }
+    }
+
+    fn revert(&mut self, rev: &CompilerOutputRevert) {
+        let CompilerOutput {
+            bw_code,
+            aice_code,
+            needed_label_positions,
+            bw_aice_cmd_offsets,
+            bw_offsets_in_bw,
+            bw_offsets_in_aice,
+            bw_code_flow_ends,
+            flow_in_bw,
+            line_info,
+            current_line,
+        } = self;
+        line_info.revert(&rev.line_info);
+        bw_code.truncate(rev.bw_code);
+        aice_code.truncate(rev.aice_code);
+        needed_label_positions.truncate(rev.needed_label_positions);
+        bw_aice_cmd_offsets.truncate(rev.bw_aice_cmd_offsets);
+        bw_offsets_in_bw.truncate(rev.bw_offsets_in_bw);
+        bw_offsets_in_aice.truncate(rev.bw_offsets_in_aice);
+        bw_code_flow_ends.truncate(rev.bw_code_flow_ends);
+        *flow_in_bw = rev.flow_in_bw;
+        *current_line = rev.current_line;
+    }
+
+    fn set_current_line(&mut self, line: u32) {
+        self.current_line = line;
+    }
+
+    fn code_position(&self) -> CodePosition {
+        if self.flow_in_bw {
+            CodePosition(self.bw_code.len() as u32)
+        } else {
+            CodePosition(self.aice_code.len() as u32 | 0x8000_0000)
+        }
+    }
+
+    fn flow_to_bw(&mut self) {
+        self.flow_in_bw = true;
+    }
+
+    fn flow_to_aice(&mut self) {
+        self.flow_in_bw = false;
+    }
+
+    fn add_flow_to_aice(&mut self) {
+        if self.flow_in_bw {
+            self.emit_bw_jump_to_aice(self.aice_code.len() as u32);
+            self.flow_in_bw = false;
+        }
+    }
+
+    fn emit_bw_jump_to_aice(&mut self, to: u32) {
+        self.bw_aice_cmd_offsets.push((self.bw_code.len() as u16, to));
+        self.bw_code.push(AICE_COMMAND);
+    }
+
+    fn emit_aice_jump_to_bw(&mut self, to: u16) {
+        self.bw_offsets_in_aice.push(self.aice_code.len() as u32 + 1);
+        // Not calling add_aice_code to not add line info for these jumps
+        self.aice_code.extend_from_slice(&[aice_op::JUMP_TO_BW, to as u8, (to >> 8) as u8]);
+    }
+
+    fn add_aice_command(&mut self, byte: u8) {
+        self.add_flow_to_aice();
+        self.add_aice_code(&[byte]);
+    }
+
+    fn add_aice_command_u8(&mut self, byte: u8, param: u8) {
+        self.add_flow_to_aice();
+        self.add_aice_code(&[byte, param]);
+    }
+
+    fn add_aice_command_u32(&mut self, byte: u8, param: u32) {
+        self.add_flow_to_aice();
+        let mut buffer = [0u8; 5];
+        buffer[0] = byte;
+        LittleEndian::write_u32(&mut buffer[1..], param);
+        self.add_aice_code(&buffer);
+    }
+
+    fn add_aice_code(&mut self, code: &[u8]) {
+        self.line_info.aice.push(self.aice_code.len() as u32, self.current_line);
+        self.aice_code.extend_from_slice(code);
+    }
+
+    fn add_bw_code(&mut self, code: &[u8]) {
+        if !self.flow_in_bw {
+            self.emit_aice_jump_to_bw(self.bw_code.len() as u16);
+            self.flow_in_bw = true;
+        }
+        self.line_info.bw.push(self.bw_code.len() as u32, self.current_line);
+        self.bw_code.extend_from_slice(code);
+    }
+
+    fn add_call(
+        &mut self,
+        labels: &CompilerLabels<'text>,
+        dest: Label<'text>,
+        block_scope: &BlockScope<'text, '_>
+    ) -> Result<(), Error> {
+        self.add_flow_to_aice();
+        let pos = labels.label_location(dest, block_scope)
+            .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
+
+        let mut buffer = [0u8; 5];
+        buffer[0] = aice_op::CALL;
+        LittleEndian::write_u32(&mut buffer[1..], pos.0);
+        let offset = self.aice_code.len() as u32 + 1;
+        if pos.is_unknown() {
+            let block_id = block_scope.block_id();
+            self.needed_label_positions.push((CodePosition::aice(offset), dest, block_id));
+        }
+        if pos.if_bw_pos().is_some() {
+            self.bw_offsets_in_aice.push(offset);
+        }
+        self.add_aice_code(&buffer);
+        Ok(())
+    }
+
+    fn add_if(
+        &mut self,
+        expr_ids: &mut CompilerExprs,
+        labels: &CompilerLabels<'text>,
+        condition: BoolExpr,
+        dest: Label<'text>,
+        block_scope: &BlockScope<'text, '_>,
+        is_call: bool,
+    ) -> Result<(), Error> {
+        self.add_flow_to_aice();
+        let index = expr_ids.bool_expr_id(condition);
+        let pos = labels.label_location(dest, block_scope)
+            .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", dest.0)))?;
+
+        let mut buffer = [0u8; 9];
+        buffer[0] = if is_call { aice_op::IF_CALL } else { aice_op::IF };
+        LittleEndian::write_u32(&mut buffer[1..], index as u32);
+        LittleEndian::write_u32(&mut buffer[5..], pos.0);
+        let offset = self.aice_code.len() as u32 + 5;
+        if pos.is_unknown() {
+            let block_id = block_scope.block_id();
+            self.needed_label_positions.push((CodePosition::aice(offset), dest, block_id));
+        }
+        if pos.if_bw_pos().is_some() {
+            self.bw_offsets_in_aice.push(offset);
+        }
+        self.add_aice_code(&buffer);
+        Ok(())
+    }
+
+    fn add_set(
+        &mut self,
+        expr_ids: &mut CompilerExprs,
+        write_buffer: &mut Vec<u8>,
+        place: PlaceId,
+        if_uninit: bool,
+        value: SetExpr<'_>,
+        place_vars: &mut [Option<Box<IntExpr>>; 4],
+    ) {
+        self.add_flow_to_aice();
+        let var_id = if if_uninit {
+            place.0 | 0x2000_0000
+        } else {
+            place.0
+        };
+        write_buffer.clear();
+        match value {
+            SetExpr::Int(value) => {
+                let index = expr_ids.int_expr_id(value);
+                write_buffer.push(aice_op::SET);
+                write_u32(write_buffer, var_id);
+                write_u32(write_buffer, index as u32);
+                for var in place_vars.iter_mut()
+                    .take_while(|x| x.is_some()).filter_map(|x| x.take())
+                {
+                    let index = expr_ids.int_expr_id(*var);
+                    write_u32(write_buffer, index as u32);
+                }
+            }
+            SetExpr::AnyType(ref ty) => {
+                write_buffer.push(aice_op::SET_COPY);
+                write_u32(write_buffer, var_id);
+                anytype_expr::write_any_type(write_buffer, ty);
+            }
+        }
+        self.add_aice_code(&write_buffer);
+    }
+
+    fn add_bw_command(
+        &mut self,
+        labels: &CompilerLabels<'text>,
+        byte: u8,
+        param_text: &'text [u8],
+        params: &[BwCommandParam],
+        ends_flow: bool,
+        block_scope: &BlockScope<'text, '_>,
+    ) -> Result<(), Error> {
+        let code = &mut [0u8; 16];
+        let code_len = code.len();
+        code[0] = byte;
+        let mut out = &mut code[1..];
+        let mut tokens = param_text.fields();
+        for param in params {
+            let arg = tokens.next()
+                .ok_or_else(|| Error::Dynamic(format!("Expected {} arguments", params.len())))?;
+            match param {
+                BwCommandParam::I8 => {
+                    let val = parse_i8(arg).ok_or_else(|| Error::Msg("Expected I8"))?;
+                    (&mut out).write_u8(val).unwrap();
+                }
+                BwCommandParam::U8 => {
+                    let val = parse_u8(arg).ok_or_else(|| Error::Msg("Expected U8"))?;
+                    (&mut out).write_u8(val).unwrap();
+                }
+                BwCommandParam::U16 => {
+                    let val = parse_u16(arg).ok_or_else(|| Error::Msg("Expected U16"))?;
+                    (&mut out).write_u16::<LE>(val).unwrap();
+                }
+                BwCommandParam::U16VarLen => {
+                    let amt = parse_u8(arg).ok_or_else(|| Error::Msg("Expected U8"))?;
+                    (&mut out).write_u8(amt).unwrap();
+                    for _ in 0..amt {
+                        let arg = tokens.next().ok_or_else(|| Error::Msg("Expected more arguments"))?;
+                        let val = parse_u16(arg).ok_or_else(|| Error::Msg("Expected U16"))?;
+                        (&mut out).write_u16::<LE>(val).unwrap();
+                    }
+                }
+                BwCommandParam::Label => {
+                    let label = parse_label_ref(arg).ok_or_else(|| Error::Msg("Expected label"))?;
+                    let pos = labels.label_location(label, block_scope)
+                        .ok_or_else(|| Error::Dynamic(format!("Label '{}' not defined", label.0)))?;
+                    if let Some(pos) = pos.if_bw_pos() {
+                        let offset_in_command = code_len - out.len();
+                        let offset = (self.bw_code.len() + offset_in_command) as u16;
+                        self.bw_offsets_in_bw.push(offset);
+                        (&mut out).write_u16::<LE>(pos).unwrap();
+                        if pos == 0xffff {
+                            let pos = CodePosition::bw(offset);
+                            let block_id = block_scope.block_id();
+                            self.needed_label_positions.push((pos, label, block_id));
+                        }
+                    } else {
+                        panic!("BW jumped label was not in BW?");
+                    }
+                }
+            }
+        }
+        let len = code_len - out.len();
+        if tokens.next().is_some() {
+            return Err(Error::Dynamic(format!("Expected {} arguments", params.len())));
+        }
+        self.add_bw_code(&code[..len]);
+        if ends_flow {
+            self.bw_code_flow_ends.push(self.bw_code.len() as u16);
+        }
+        Ok(())
+    }
+}
+
+impl<'a> CompilerLabels<'a> {
+    fn set_label_position_to_current<'s>(
+        &'s mut self,
+        output: &mut CompilerOutput,
+        label: Label<'a>,
+        scope: &BlockScope<'a, '_>,
+    ) {
+        if self.bw_required_labels.contains(label, scope) {
+            if !output.flow_in_bw {
+                output.emit_aice_jump_to_bw(output.bw_code.len() as u16);
+                output.flow_in_bw = true;
+            }
+        }
+        let code_position = output.code_position();
+        for block_id in scope.this_and_ancestor_ids() {
+            if let Some(label) = self.labels.get_mut(&(label, block_id)) {
+                *label = code_position;
+                break;
+            }
+        }
+    }
+
+    fn label_location(&self, label: Label<'a>, scope: &BlockScope<'a, '_>) -> Option<CodePosition> {
+        scope.this_and_ancestor_ids()
+            .filter_map(|block_id| self.labels.get(&(label, block_id)))
+            .cloned()
+            .next()
+    }
+
+    fn require_bw_label(&mut self, label: Label<'a>, ctx: &mut TextParseContext<'a>) {
+        self.bw_required_labels.insert(label, ctx.current_block.1);
+        for &(_, parent_id, _) in &ctx.block_stack {
+            self.bw_required_labels.insert(label, parent_id);
+        }
     }
 }
 
@@ -3251,6 +3500,18 @@ struct ParseStage1<'a> {
     /// Unparsed lines of `var_name = expr` and line number.
     sprite_local_sets: VecOfVecs<SpriteLocalSetId, (&'a [u8], usize)>,
     variable_types: FxHashMap<&'a [u8], VariableType>,
+}
+
+/// Immutable variables for parse_line_pass3,
+/// or more specifically parse_add_command
+struct ParseStage3Input<'a, 'text> {
+    stage1: &'a ParseStage1<'text>,
+    variables: &'a CompilerVariables<'text>,
+    labels: &'a CompilerLabels<'text>,
+    block_scope: &'a BlockScope<'text, 'a>,
+    command: &'a CommandPrototype,
+    params: &'text [u8],
+    linked_block: LinkedBlock,
 }
 
 struct Blocks<'a> {
