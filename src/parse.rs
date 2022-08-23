@@ -169,10 +169,10 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
             let (next, rest) = split_first_token(rest)?;
             if next == b"has_flingy" {
                 Some((Bool::HasFlingy, rest))
-            } else if word == b"has_unit" {
+            } else if next == b"has_unit" {
                 let ref_id = UnitRefId::this();
                 Some((Bool::Has(ref_id), rest))
-            } else if word == b"has_bullet" {
+            } else if next == b"has_bullet" {
                 Some((Bool::HasBullet, rest))
             } else {
                 None

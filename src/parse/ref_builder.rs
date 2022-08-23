@@ -68,7 +68,7 @@ impl UnitRefBuilder {
 
     pub fn parse<'a>(&mut self, text: &'a [u8]) -> Result<(UnitRefId, &'a [u8]), Error> {
         let error = || {
-            Error::Dynamic(format!("Cannot parse '{}' as object place", text.as_bstr()))
+            Error::CannotParse(text.into(), "object place")
         };
 
         let (first, rest) = split_first_token(text)

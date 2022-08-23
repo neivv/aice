@@ -299,6 +299,11 @@ fn if_call() {
 }
 
 #[test]
+fn if_regression() {
+    compile_success("if3.txt");
+}
+
+#[test]
 fn create_unit_expr_regression() {
     let iscript = compile_success("create_unit_expr.txt");
     // The pos_to_line currently returns next aice line for any position
