@@ -1246,6 +1246,23 @@ impl<'a> IscriptRunner<'a> {
                     let order = unit.order().0 as usize;
                     let new_value;
                     if opcode == FIRE_WEAPON {
+                        if unit.order() == bw_dat::order::DIE && unit.order_state() == 1 {
+                            // First frame of death order is still fine. Detect that by
+                            // checking for unit being currently in step_order.
+                            // Dying units don't run their orders anymore.
+                            let current_order_unit = CURRENT_ORDER_UNIT.load(Ordering::Relaxed);
+                            if current_order_unit as *mut bw::Unit != *unit {
+                                bw_print!(
+                                    "ERROR {}: Unit 0x{:x} used fireweapon while dying",
+                                    self.current_line(), unit.id().0,
+                                );
+                                // Global infloop. Wouldn't be fully necessary but seems
+                                // that iscript is doing something incorrectly so better stop it.
+                                (*self.bw_script).pos = 0x5;
+                                self.in_aice_code = false;
+                                continue 'op_loop;
+                            }
+                        }
                         let old = match orders_dat_weapon.entry_size {
                             1 => *(orders_dat_weapon.data as *mut u8).add(order) as u32,
                             2 => *(orders_dat_weapon.data as *mut u16).add(order) as u32,
