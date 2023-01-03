@@ -405,6 +405,17 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::OrderState => (**unit).order_state as i32,
                             UnitVar::RankIncrease => (**unit).rank as i32,
                             UnitVar::MineAmount => unit.mine_amount(self.parent.game) as i32,
+                            UnitVar::RallyX | UnitVar::RallyY => {
+                                if unit.id().is_building() && unit.id() != bw_dat::unit::PYLON {
+                                    if ty == UnitVar::RallyX {
+                                        (**unit).rally_pylon.rally.pos.x as i32
+                                    } else {
+                                        (**unit).rally_pylon.rally.pos.y as i32
+                                    }
+                                } else {
+                                    0
+                                }
+                            }
                         }
                     },
                     Place::Image(ty) => unsafe {
@@ -1155,6 +1166,15 @@ impl<'a> IscriptRunner<'a> {
                                         bw_dat::unit::JIM_RAYNOR_VULTURE
                                     ) {
                                         (**unit).unit_specific.vulture.mines = val_u8;
+                                    }
+                                }
+                                UnitVar::RallyX | UnitVar::RallyY => {
+                                    if unit.id().is_building() && unit.id() != bw_dat::unit::PYLON {
+                                        if ty == UnitVar::RallyX {
+                                            (**unit).rally_pylon.rally.pos.x = val_u16 as i16;
+                                        } else {
+                                            (**unit).rally_pylon.rally.pos.y = val_u16 as i16;
+                                        }
                                     }
                                 }
                             }

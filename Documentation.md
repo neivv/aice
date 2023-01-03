@@ -102,7 +102,7 @@ position, and owning player are printed. Or `NONE` if the unit reference does no
 You can also include color codes with `<hex>` syntax similar to SCMDraft.
 
 If you need to have `{` or `}` in the message, you can refer to them with their hex codes
-`<7b>` for `{` and `<7d>` for `}`. `<` and `>` can be escaped with `<3c> and `<3e>`, though
+`<7b>` for `{` and `<7d>` for `}`. `<` and `>` can be escaped with `<3c>` and `<3e>`, though
 as long as they aren't part of a hex code they'll be printed normally anyway.
 
 Similarly, regular spaces after `print` and at end of the line are not included in message,
@@ -530,6 +530,12 @@ variables instead)
     This seems to be unused functionality that may still work.
 - `unit.mine_amount` Spider mines remaining for vulture units. Note that if the tech isn't usable,
     reading this value returns 0, but writing this value sets mine amount once tech becomes usable.
+- `unit.rally_x`, `unit.rally_y` Rally point coordinates.
+    * If both are 0 then there is no rally point (Can't rally to topleftmost pixel of the map).
+    * If the rally was set to an unit, these coordinates stay at the value the unit's position was
+        at when the rally was set if unit moves, and will take effect only after unit dies / goes
+        out of player's vision.
+    * Pylons and non-buildings cannot have a rally point.
 - `image.frame` The latest frameset base that was specified with `playfram`, or copied from
     the primary overlay by using `followmaingraphic`, `engset`, or `engframe`.
     * This value cannot be modified with `set`, use `playfram <value>` instead.
