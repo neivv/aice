@@ -624,6 +624,9 @@ static UNIT_VARS: &[(&[u8], UnitVar)] = {
         (b"mine_amount", MineAmount),
         (b"rally_x", RallyX),
         (b"rally_y", RallyY),
+        (b"flags", Flags),
+        (b"detection_status", DetectionStatus),
+        (b"pathing_flags", PathingFlags),
     ]
 };
 
@@ -2547,6 +2550,9 @@ pub enum UnitVar {
     MineAmount,
     RallyX,
     RallyY,
+    Flags,
+    DetectionStatus,
+    PathingFlags,
 }
 
 #[repr(u8)]

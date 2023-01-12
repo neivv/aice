@@ -536,6 +536,51 @@ variables instead)
         at when the rally was set if unit moves, and will take effect only after unit dies / goes
         out of player's vision.
     * Pylons and non-buildings cannot have a rally point.
+- `unit.flags` Flags related to individual unit's state. Modifying is allowed, but it may cause
+    unstability in some situations.
+    * 0x1 Completed
+    * 0x2 Landed building
+    * 0x4 Air
+    * 0x8 Disabled
+    * 0x10 Burrowed
+    * 0x20 In building
+    * 0x40 In transport
+    * 0x80 Unknown, AI targeting-related?
+    * 0x100 Begin invisibility
+    * 0x200 Invisibility done
+    * 0x400 Disabled
+    * 0x800 Energy-free invisibility (Arbiter cloak or burrowing)
+    * 0x1000 Uninterruptable order
+    * 0x2000 nobrkcodestart active
+    * 0x4000 Has creep that should disappear
+        (Only set on dead units when lot of creep is disappearing)
+    * 0x8000 Under disruption web (BW recalculates this each frame; writing from iscript may end up
+        being useless if the recalculation code is ran between write and unit attacking)
+    * 0x00010000 Can turn?
+    * 0x00020000 Reacts? "Intelligent"?
+    * 0x00040000 Unstacking
+    * 0x00080000 Movement target updated?
+    * 0x00100000 Unit collision
+    * 0x00200000 No collision
+    * 0x00400000 Unknown collision flag
+    * 0x00800000 Harvesting? Harvesting collision?
+    * 0x01000000 Subunit turret moving?
+    * 0x02000000 Subunit turret following parent?
+    * 0x04000000 Invincible
+    * 0x08000000 Attack move
+    * 0x10000000 Has movement speed upgrade
+    * 0x20000000 Has attack speed upgrade
+    * 0x40000000 Hallucination
+    * 0x80000000 Suiciding
+- `unit.detection_status` Flags signifying which players are able to detect this unit.
+    Can be written but BW will most likely quickly write the normal value again, making
+    writing pretty useless.
+    0x1 = Player 1, 0x2 = Player 2, 0x4 = Player 3, etc. to 0x80 = Player 8.
+    0x80000000 means that the detection status is out of date and needs updating.
+- `unit.pathing_flags` Flags related to pathing. Not sure if these are useful at all.
+    * 0x1 Collides?
+    * 0x2 Unstacking?
+    * 0x4 Is stacked?
 - `image.frame` The latest frameset base that was specified with `playfram`, or copied from
     the primary overlay by using `followmaingraphic`, `engset`, or `engframe`.
     * This value cannot be modified with `set`, use `playfram <value>` instead.

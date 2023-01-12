@@ -416,6 +416,9 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                     0
                                 }
                             }
+                            UnitVar::Flags => (**unit).flags as i32,
+                            UnitVar::DetectionStatus => (**unit).detection_status as i32,
+                            UnitVar::PathingFlags => (**unit).path.pathing_flags as i32,
                         }
                     },
                     Place::Image(ty) => unsafe {
@@ -1177,6 +1180,11 @@ impl<'a> IscriptRunner<'a> {
                                         }
                                     }
                                 }
+                                UnitVar::Flags => (**unit).flags = value as u32,
+                                UnitVar::DetectionStatus => {
+                                    (**unit).detection_status = value as u32;
+                                }
+                                UnitVar::PathingFlags => (**unit).path.pathing_flags = val_u8,
                             }
                         },
                         Place::Image(ty) => {
