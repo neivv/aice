@@ -23,7 +23,7 @@ lto = true
 bincode = "=1.2.1"
 bitflags = "1.0"
 bstr = { version = "0.2.7", default-features = false, features = ["std"] }
-bumpalo = { version = "3.9", features = ["collections"] }
+bumpalo = { version = "3.11", features = ["collections"] }
 byteorder = "1.1"
 chrono = "0.4"
 fern = "0.6"
