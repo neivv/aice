@@ -715,6 +715,11 @@ static GAME_VARS: &[(&[u8], GameVar)] = {
         (b"factories_razed", FactoriesRazed),
         (b"custom_score", CustomScore),
         (b"player_color_choice", PlayerColorChoice),
+        (b"leaderboard_type", LeaderboardType),
+        (b"leaderboard_location", LeaderboardLocation),
+        (b"leaderboard_parameter", LeaderboardParameter),
+        (b"leaderboard_goal", LeaderboardGoal),
+        (b"leaderboard_computers", LeaderboardComputers),
     ]
 };
 
@@ -2633,6 +2638,11 @@ pub enum GameVar {
     FactoriesRazed,
     CustomScore,
     PlayerColorChoice,
+    LeaderboardType,
+    LeaderboardLocation,
+    LeaderboardParameter,
+    LeaderboardGoal,
+    LeaderboardComputers,
 }
 
 /// 0xc000_0000 == tag
@@ -2773,6 +2783,8 @@ impl Place {
                     BuildingsConstructed | BuildingsOwned | BuildingsLost | BuildingsRazed |
                     BuildingsScore | BuildingsRazedScore | FactoriesConstructed | FactoriesOwned |
                     FactoriesLost | FactoriesRazed | CustomScore | PlayerColorChoice => 1,
+                LeaderboardType | LeaderboardLocation | LeaderboardParameter | LeaderboardGoal |
+                    LeaderboardComputers => 0,
             },
             Place::Unit(_, var) => match var {
                 UnitVar::BuildQueue => 1,

@@ -524,6 +524,11 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                     LocationBottom | _ => location.area.bottom as i32,
                                 }
                             }
+                            LeaderboardType => (**game).leaderboard_type as i32,
+                            LeaderboardLocation => (**game).leaderboard_location as i32,
+                            LeaderboardParameter => (**game).leaderboard_parameter as i32,
+                            LeaderboardGoal => (**game).leaderboard_goal as i32,
+                            LeaderboardComputers => (**game).computers_in_leaderboard as i32,
                         }
                     },
                 }
@@ -1645,6 +1650,21 @@ impl<'a> IscriptRunner<'a> {
                 }
             },
             PlayerColorChoice => bw_print!("Cannot set player_color_choice"),
+            LeaderboardType => unsafe {
+                (**game).leaderboard_type = u8::try_from(value).unwrap_or(0)
+            }
+            LeaderboardLocation => unsafe {
+                (**game).leaderboard_location = u8::try_from(value).unwrap_or(0)
+            }
+            LeaderboardParameter => unsafe {
+                (**game).leaderboard_parameter = clamp_i32_u16(value)
+            }
+            LeaderboardGoal => unsafe {
+                (**game).leaderboard_goal = value as u32
+            }
+            LeaderboardComputers => unsafe {
+                (**game).computers_in_leaderboard = value as u32
+            }
         }
     }
 

@@ -656,6 +656,37 @@ There are three ways to unset a flag:
 - `game.custom_score(p)` Custom score (Which can be accessed through triggers) of player `p`.
     * I don't know what's the difference between "total" and "owned" values. Maybe "owned" only
       includes units that are currently alive? Making "total" similar to "produced?
+- `game.leaderboard_type` Leaderboard type. These values are trigger action IDs.
+    * `0` No leaderboard
+    * `17` Control
+    * `18` Control at location
+    * `19` Resources
+    * `20` Kills
+    * `21` Points
+    * `33` Control with goal
+    * `34` Control at location with goal
+    * `35` Resources with goal
+    * `36` Kills with goal
+    * `37` Points with goal
+    * `40` Greed
+- `game.leaderboard_location` Location ID for Control at location leaderboard
+- `game.leaderboard_parameter` Leaderboard parameter, meaning depends on `game.leaderboard_type`
+    * For Control / Kill leaderboards, this is Unit ID
+    * For Resource leaderboards:
+        * `0` = Minerals
+        * `1` = Gas
+        * `2` = Both
+    * For Points leaderboards:
+        * `0` = Total
+        * `1` = Units
+        * `2` = Buildings
+        * `3` = Units and Buildings
+        * `4` = Kills
+        * `5` = Razings
+        * `6` = Kills and Razings
+        * `7` = Custom
+- `game.leaderboard_goal` Leaderboard goal, if using a leaderboard type which has a goal
+- `game.leaderboard_computers` `0` to disable computers in leaderboard, `1` to enable.
 - `game.player_color_choice(p)` Color selected for player `p` in SC:R lobby. Not sure if the values
   are sensible when the map isn't configured to allow player select their color in lobby. Always
   returns 23 for single player games.
