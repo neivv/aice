@@ -186,36 +186,54 @@ static SAVE_IMAGE_ARRAY: AtomicUsize = AtomicUsize::new(0);
 
 impl serde::Serialize for SerializableSprite {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let offset = (self.0 as usize).wrapping_sub(SAVE_SPRITE_ARRAY.load(Ordering::Relaxed));
-        let index = offset as isize / 0x28;
-        (index as u32).serialize(serializer)
+        use serde::ser::Error;
+        let value = if self.0.is_null() {
+            -1i32
+        } else {
+            let offset = (self.0 as usize).wrapping_sub(SAVE_SPRITE_ARRAY.load(Ordering::Relaxed));
+            i32::try_from(offset as isize)
+                .map_err(|_| S::Error::custom("Invalid sprite offset"))?
+        };
+        value.serialize(serializer)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for SerializableSprite {
     fn deserialize<S: Deserializer<'de>>(deserializer: S) -> Result<Self, S::Error> {
-        let index = u32::deserialize(deserializer)?;
-        let offset = index as i32 as isize * 0x28;
-        let ptr = (SAVE_SPRITE_ARRAY.load(Ordering::Relaxed) as usize)
-            .wrapping_add(offset as usize) as *mut bw::Sprite;
-        Ok(SerializableSprite(ptr))
+        let offset = i32::deserialize(deserializer)? as isize;
+        if offset == -1 {
+            Ok(SerializableSprite(null_mut()))
+        } else {
+            let ptr = (SAVE_SPRITE_ARRAY.load(Ordering::Relaxed) as usize)
+                .wrapping_add(offset as usize) as *mut bw::Sprite;
+            Ok(SerializableSprite(ptr))
+        }
     }
 }
 
 impl serde::Serialize for SerializableImage {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let offset = (self.0 as usize).wrapping_sub(SAVE_IMAGE_ARRAY.load(Ordering::Relaxed));
-        let index = offset as isize / 0x40;
-        (index as u32).serialize(serializer)
+        use serde::ser::Error;
+        let value = if self.0.is_null() {
+            -1i32
+        } else {
+            let offset = (self.0 as usize).wrapping_sub(SAVE_IMAGE_ARRAY.load(Ordering::Relaxed));
+            i32::try_from(offset as isize)
+                .map_err(|_| S::Error::custom("Invalid image offset"))?
+        };
+        value.serialize(serializer)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for SerializableImage {
     fn deserialize<S: Deserializer<'de>>(deserializer: S) -> Result<Self, S::Error> {
-        let index = u32::deserialize(deserializer)?;
-        let offset = index as i32 as isize * 0x40;
-        let ptr = (SAVE_IMAGE_ARRAY.load(Ordering::Relaxed) as usize)
-            .wrapping_add(offset as usize) as *mut bw::Image;
-        Ok(SerializableImage(ptr))
+        let offset = i32::deserialize(deserializer)?;
+        if offset == -1 {
+            Ok(SerializableImage(null_mut()))
+        } else {
+            let ptr = (SAVE_IMAGE_ARRAY.load(Ordering::Relaxed) as usize)
+                .wrapping_add(offset as usize) as *mut bw::Image;
+            Ok(SerializableImage(ptr))
+        }
     }
 }
