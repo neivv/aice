@@ -3,6 +3,7 @@ extern crate log;
 
 #[macro_use] mod macros;
 
+#[cfg(target_pointer_width = "32")]
 pub mod mpqdraft;
 pub mod samase;
 
@@ -74,6 +75,7 @@ fn is_scr() -> bool {
 
 #[no_mangle]
 #[allow(non_snake_case)]
+#[cfg(target_pointer_width = "32")]
 pub extern fn Initialize() {
     IS_1161.store(true, Ordering::Relaxed);
     // 1.16.1 init
