@@ -627,6 +627,7 @@ static UNIT_VARS: &[(&[u8], UnitVar)] = {
         (b"flags", Flags),
         (b"detection_status", DetectionStatus),
         (b"pathing_flags", PathingFlags),
+        (b"movement_state", MovementState),
     ]
 };
 
@@ -2558,6 +2559,7 @@ pub enum UnitVar {
     Flags,
     DetectionStatus,
     PathingFlags,
+    MovementState,
 }
 
 #[repr(u8)]

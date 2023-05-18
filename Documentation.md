@@ -590,6 +590,8 @@ There are three ways to unset a flag:
     * 0x1 Collides?
     * 0x2 Unstacking?
     * 0x4 Is stacked?
+- `unit.movement_state` An integer specifying in which of various different states that the pathing
+    system uses the unit is in.
 - `image.frame` The latest frameset base that was specified with `playfram`, or copied from the
   primary overlay by using `followmaingraphic`, `engset`, or `engframe`.
     * This value cannot be modified with `set`, use `playfram <value>` instead.
