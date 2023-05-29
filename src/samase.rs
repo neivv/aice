@@ -343,6 +343,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     if result == 0 {
         ((*api).warn_unsupported_feature)(b"Saving\0".as_ptr());
     }
+    ((*api).hook_init_units)(crate::globals::init_units_hook);
 
     let ok =
         ((*api).hook_iscript_opcode)(parse::AICE_COMMAND as u32, iscript::run_aice_script);

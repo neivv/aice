@@ -100,16 +100,24 @@ pub unsafe fn init_for_lobby_map_preview() -> crate::parse::Iscript {
 }
 
 pub unsafe extern fn init_game() {
-    let players = crate::samase::players();
     let mut globals = Globals::new();
     let iscript = iscript::load_iscript(true);
     globals.iscript_state = iscript::IscriptState::from_script(&iscript);
     iscript::set_as_bw_script(iscript);
-    let colors = COLOR_CHOICES.lock("init").clone();
-    globals.player_lobby_color_choices = PlayerColorChoices::init(&colors, players);
     *Globals::get("init") = globals;
     iscript::rebuild_sprite_owners();
     bw::init_game_start_vars();
+}
+
+/// This happens after slot randomization, init_game hook is before.
+/// At least init_game is sometimes before? May depend on patch-specific inlining.
+/// But this is guaranteed to be after slot randomization.
+pub unsafe extern fn init_units_hook(init_units: unsafe extern fn()) {
+    let players = crate::samase::players();
+    let colors = COLOR_CHOICES.lock("init").clone();
+    let choices = PlayerColorChoices::init(&colors, players);
+    Globals::get("init_units").player_lobby_color_choices = choices;
+    init_units();
 }
 
 pub unsafe extern fn on_game_loop() {
