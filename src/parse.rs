@@ -659,6 +659,7 @@ static BULLET_VARS: &[(&[u8], BulletVar)] = {
         (b"bounces_remaining", BouncesRemaining),
         (b"order_target_x", OrderTargetX),
         (b"order_target_y", OrderTargetY),
+        (b"flags", Flags),
     ]
 };
 
@@ -2508,6 +2509,7 @@ pub enum BulletVar {
     BouncesRemaining,
     OrderTargetX,
     OrderTargetY,
+    Flags,
 }
 
 #[repr(u8)]

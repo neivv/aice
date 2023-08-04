@@ -313,6 +313,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             BulletVar::DeathTimer => (*bullet).death_timer as i32,
                             BulletVar::OrderTargetX => (*bullet).target.pos.x as i32,
                             BulletVar::OrderTargetY => (*bullet).target.pos.y as i32,
+                            BulletVar::Flags => (*bullet).flags as i32,
                         }
                     },
                     Place::Unit(unit_ref, ty) => unsafe {
@@ -1088,6 +1089,7 @@ impl<'a> IscriptRunner<'a> {
                                 BulletVar::OrderTargetY => {
                                     (*bullet).target.pos.y = value as i16;
                                 }
+                                BulletVar::Flags => (*bullet).flags = value as u8,
                             }
                         }
                         Place::Unit(unit_ref, ty) => {

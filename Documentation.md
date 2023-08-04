@@ -436,6 +436,11 @@ bullets accelerate one unit per frame.
     * `6` Bullet is moving near a unit (Valkyrie attack).
 - `bullet.bounces_remaining` Amount of bounces remaining. Only used if `bullet.state` is 3.
 - `bullet.order_target_x` and `bullet.order_target_y` The point which bullet is targeting.
+- `bullet.flags` Flags controlling bullet's behaviour
+    * 0x1 Will miss (No damage to target with non-splash behaviours).
+        - Note that when the bullet is set to miss, `order_target_x` and `order_target_y` are
+        offset as well to make the bullet appear at a different point.
+    * 0x2 Hallucination.
 - `unit.kills` How many kills the unit has.
 - `unit.carried_resource_amount` How many resources a worker is carrying (That is, usually 8, 2, or 0).
 - `unit.ground_cooldown` How many frames of cooldown are remaining before the unit can attack again
