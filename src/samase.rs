@@ -6,7 +6,7 @@ use libc::c_void;
 use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
 
 use bw_dat::{OrderId, UnitId, ImageId};
-use samase_plugin::PluginApi;
+use samase_plugin::{FuncId, PluginApi};
 
 use crate::bw;
 use crate::iscript;
@@ -259,6 +259,49 @@ pub fn read_file(name: &str) -> Option<SamaseBox> {
     })
 }
 
+static KILL_UNIT: AtomicUsize = AtomicUsize::new(0);
+static UNIT_SET_HP: AtomicUsize = AtomicUsize::new(0);
+static GIVE_UNIT: AtomicUsize = AtomicUsize::new(0);
+static TRANSFORM_UNIT: AtomicUsize = AtomicUsize::new(0);
+
+#[cold]
+fn func_fatal(value: usize) -> ! {
+    if value == 1 {
+        fatal("Newer samase is required to use this feature");
+    } else {
+        fatal("A required function was not accessible");
+    }
+}
+
+#[inline]
+fn load_func<T: Copy>(global: &AtomicUsize) -> T {
+    let value = global.load(Ordering::Relaxed);
+    if value < 2 {
+        func_fatal(value);
+    }
+    debug_assert!(value != 0);
+    assert!(mem::size_of::<T>() == mem::size_of::<fn()>());
+    unsafe {
+        mem::transmute_copy(&value)
+    }
+}
+
+pub unsafe fn kill_unit(unit: *mut bw::Unit) {
+    load_func::<unsafe extern fn(*mut bw::Unit)>(&KILL_UNIT)(unit)
+}
+
+pub unsafe fn unit_set_hp(unit: *mut bw::Unit, value: i32) {
+    load_func::<unsafe extern fn(*mut bw::Unit, i32)>(&UNIT_SET_HP)(unit, value)
+}
+
+pub unsafe fn give_unit(unit: *mut bw::Unit, player: u8) {
+    load_func::<unsafe extern fn(*mut bw::Unit, usize)>(&GIVE_UNIT)(unit, player as usize)
+}
+
+pub unsafe fn transform_unit(unit: *mut bw::Unit, id: UnitId) {
+    load_func::<unsafe extern fn(*mut bw::Unit, usize)>(&TRANSFORM_UNIT)(unit, id.0 as usize)
+}
+
 #[no_mangle]
 pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     bw_dat::set_is_scr(crate::is_scr());
@@ -366,6 +409,23 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         fatal("Couldn't hook step_order");
     }
     ((*api).hook_game_loop_start)(crate::globals::on_game_loop);
+
+    static FUNCS: &[(&AtomicUsize, FuncId)] = &[
+        (&KILL_UNIT, FuncId::KillUnit),
+        (&UNIT_SET_HP, FuncId::UnitSetHp),
+        (&GIVE_UNIT, FuncId::GiveUnit),
+        (&TRANSFORM_UNIT, FuncId::TransformUnit),
+    ];
+    for &(global, func_id) in FUNCS {
+        if func_id as u16 >= (*api).max_func_id {
+            global.store(1, Ordering::Relaxed);
+            continue;
+        }
+        let func = ((*api).get_func)(func_id as u16);
+        if let Some(f) = func {
+            global.store(f as usize, Ordering::Relaxed);
+        }
+    }
 
     crate::init();
 }

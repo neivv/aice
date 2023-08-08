@@ -378,6 +378,11 @@ pub mod aice_op {
     pub static FIRE_WEAPON_PARAMS: CommandParams = CommandParams::new(&[IntExprOrConstU16, With]);
     pub const PRINT: u8 = 0x11;
     pub const SET_COPY: u8 = 0x12;
+    pub const GIVE_UNIT: u8 = 0x13;
+    pub static GIVE_UNIT_PARAMS: CommandParams = CommandParams::new(&[UnitRef, IntExpr]);
+    pub const TRANSFORM_UNIT: u8 = 0x14;
+    pub static TRANSFORM_UNIT_PARAMS: CommandParams =
+        CommandParams::new(&[UnitRef, IntExprOrConstU16]);
 }
 
 quick_error! {
@@ -575,6 +580,8 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"imgul_on", ImgulOn),
         (b"imgol_on", ImgolOn),
         (b"print", Print),
+        (b"give_unit", GiveUnit),
+        (b"transform", TransformUnit),
     ]
 };
 
@@ -743,6 +750,8 @@ enum CommandPrototype {
     ImgulOn,
     ImgolOn,
     Print,
+    GiveUnit,
+    TransformUnit,
 }
 
 pub struct Iscript {
@@ -1579,6 +1588,26 @@ impl<'a> Parser<'a> {
                     ctx,
                     aice_op::ISSUE_ORDER,
                     &aice_op::ISSUE_ORDER_PARAMS,
+                )?;
+                Ok(())
+            }
+            CommandPrototype::GiveUnit => {
+                self.parse_add_aice_command(
+                    input,
+                    out,
+                    ctx,
+                    aice_op::GIVE_UNIT,
+                    &aice_op::GIVE_UNIT_PARAMS,
+                )?;
+                Ok(())
+            }
+            CommandPrototype::TransformUnit => {
+                self.parse_add_aice_command(
+                    input,
+                    out,
+                    ctx,
+                    aice_op::TRANSFORM_UNIT,
+                    &aice_op::TRANSFORM_UNIT_PARAMS,
                 )?;
                 Ok(())
             }

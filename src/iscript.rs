@@ -212,6 +212,18 @@ pub unsafe extern fn run_aice_script(
                 drop(this_guard);
                 crate::samase::add_overlay_iscript(*base, image_id, x, y, above);
             }
+            Ok(ScriptRunResult::GiveUnit(unit, player)) => {
+                drop(globals_guard);
+                drop(sprite_owner_map);
+                drop(this_guard);
+                crate::samase::give_unit(*unit, player);
+            }
+            Ok(ScriptRunResult::TransformUnit(unit, id)) => {
+                drop(globals_guard);
+                drop(sprite_owner_map);
+                drop(this_guard);
+                crate::samase::transform_unit(*unit, id);
+            }
             Err(pos) => {
                 invalid_aice_command(iscript, image, CodePos::Aice(pos));
                 return;
@@ -599,6 +611,8 @@ enum ScriptRunResult {
     CreateUnit(UnitId, bw::Point, u8),
     IssueOrder(Unit, OrderId, bw::Point),
     AddOverlay(Image, ImageId, i8, i8, bool),
+    GiveUnit(Unit, u8),
+    TransformUnit(Unit, UnitId)
 }
 
 impl<'a> IscriptRunner<'a> {
@@ -1117,7 +1131,13 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::PlagueTimer => (**unit).plague_timer = val_u8,
                                 UnitVar::MaelstormTimer => (**unit).maelstrom_timer = val_u8,
                                 UnitVar::IsBlind => (**unit).is_blind = val_u8,
-                                UnitVar::Hitpoints => (**unit).flingy.hitpoints = value,
+                                UnitVar::Hitpoints => {
+                                    if value <= 0 {
+                                        crate::samase::kill_unit(*unit);
+                                    } else {
+                                        crate::samase::unit_set_hp(*unit, value);
+                                    }
+                                }
                                 UnitVar::Shields => (**unit).shields = value,
                                 UnitVar::Energy => (**unit).energy = val_u16,
                                 UnitVar::MaxHitpoints => bw_print!("Cannot set max hitpoints"),
@@ -1438,6 +1458,30 @@ impl<'a> IscriptRunner<'a> {
 
                     if let Some(base_image) = base_image {
                         return Ok(ScriptRunResult::AddOverlay(base_image, image_id, x, y, above));
+                    }
+                }
+                GIVE_UNIT | TRANSFORM_UNIT => {
+                    let values = if opcode == GIVE_UNIT {
+                        self.read_aice_params(&GIVE_UNIT_PARAMS)?
+                    } else {
+                        self.read_aice_params(&TRANSFORM_UNIT_PARAMS)?
+                    };
+                    if self.dry_run {
+                        continue;
+                    }
+                    let unit_ref = UnitRefId(values[0] as u16);
+                    let unit = match self.resolve_unit_ref(unit_ref) {
+                        Some(s) => s,
+                        None => continue 'op_loop,
+                    };
+                    if opcode == GIVE_UNIT {
+                        let player = values[1] as u8;
+                        if player >= 12 {
+                            continue 'op_loop;
+                        }
+                        return Ok(ScriptRunResult::GiveUnit(unit, player));
+                    } else {
+                        return Ok(ScriptRunResult::TransformUnit(unit, UnitId(values[1] as u16)));
                     }
                 }
                 PRINT => {

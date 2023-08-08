@@ -216,6 +216,25 @@ ghosts can be created through other ways which don't init these three variables,
 to use `set if_uninit spritelocal something = 0` to initialize the variables in ghost's init
 animation.
 
+### give\_unit
+
+```
+give_unit <unit> <player>
+```
+
+Gives a [unit][other-units] for a player. This functions like 'Give Unit' trigger action,
+with same behaviour related to loaded units, interceptors, addons, etc. `player` is an
+[expression][expr].
+
+### transform
+
+```
+give_unit <unit> <unit_id>
+```
+
+Transforms a [unit][other-units] to new unit type. `unit_id` is an [expression][expr].
+
+
 ### issue\_order
 
 ```
