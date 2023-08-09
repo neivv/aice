@@ -224,6 +224,16 @@ pub unsafe extern fn run_aice_script(
                 drop(this_guard);
                 crate::samase::transform_unit(*unit, id);
             }
+            Ok(ScriptRunResult::SetHp(unit, value)) => {
+                drop(globals_guard);
+                drop(sprite_owner_map);
+                drop(this_guard);
+                if value <= 0 {
+                    crate::samase::kill_unit(*unit);
+                } else {
+                    crate::samase::unit_set_hp(*unit, value);
+                }
+            }
             Err(pos) => {
                 invalid_aice_command(iscript, image, CodePos::Aice(pos));
                 return;
@@ -612,7 +622,8 @@ enum ScriptRunResult {
     IssueOrder(Unit, OrderId, bw::Point),
     AddOverlay(Image, ImageId, i8, i8, bool),
     GiveUnit(Unit, u8),
-    TransformUnit(Unit, UnitId)
+    TransformUnit(Unit, UnitId),
+    SetHp(Unit, i32),
 }
 
 impl<'a> IscriptRunner<'a> {
@@ -1132,10 +1143,8 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::MaelstormTimer => (**unit).maelstrom_timer = val_u8,
                                 UnitVar::IsBlind => (**unit).is_blind = val_u8,
                                 UnitVar::Hitpoints => {
-                                    if value <= 0 {
-                                        crate::samase::kill_unit(*unit);
-                                    } else {
-                                        crate::samase::unit_set_hp(*unit, value);
+                                    if value != unit.hitpoints() {
+                                        return Ok(ScriptRunResult::SetHp(unit, value));
                                     }
                                 }
                                 UnitVar::Shields => (**unit).shields = value,
