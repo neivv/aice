@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 use std::io::Write;
 use std::mem;
 use std::ptr::{self, null_mut};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
 
 use byteorder::{ByteOrder, LittleEndian};
 use fxhash::FxHashMap;
@@ -27,6 +27,7 @@ use crate::windows;
 
 static ISCRIPT: Mutex<Option<Iscript>> = Mutex::new(None);
 static SPRITE_OWNER_MAP: OnceCell<Mutex<SpriteOwnerMap>> = OnceCell::new();
+static QUEUED_TRANSFORMS: AtomicU32 = AtomicU32::new(0);
 
 pub fn init_sprite_owner_map() {
     SPRITE_OWNER_MAP.get_or_init(|| Mutex::new(SpriteOwnerMap::new()));
@@ -37,6 +38,7 @@ pub struct IscriptState {
     sprite_locals: FxHashMap<SerializableSprite, Vec<SpriteLocal>>,
     image_locals: FxHashMap<SerializableImage, FxHashMap<u32, u32>>,
     globals: Vec<i32>,
+    queued_transforms: Vec<(u32, UnitId)>,
     dry_run_call_stack: Vec<u32>,
     #[serde(skip)]
     with_vars: Vec<SpriteLocal>,
@@ -113,12 +115,23 @@ impl IscriptState {
         IscriptState {
             sprite_locals: FxHashMap::default(),
             image_locals: FxHashMap::default(),
+            queued_transforms: Vec::new(),
             globals: vec![0; iscript.global_count as usize],
             dry_run_call_stack: Vec::new(),
             with_vars: Vec::new(),
             with_image: None,
             format_buffer: Vec::new(),
         }
+    }
+
+    fn queue_transform(&mut self, unit_array: UnitArray, unit: Unit, dest: UnitId) {
+        let unit_uid = unit_array.to_unique_id(unit);
+        self.queued_transforms.push((unit_uid, dest));
+        QUEUED_TRANSFORMS.store(self.queued_transforms.len() as u32, Ordering::Relaxed);
+    }
+
+    pub fn after_load(&self) {
+        QUEUED_TRANSFORMS.store(self.queued_transforms.len() as u32, Ordering::Relaxed);
     }
 }
 
@@ -219,10 +232,22 @@ pub unsafe extern fn run_aice_script(
                 crate::samase::give_unit(*unit, player);
             }
             Ok(ScriptRunResult::TransformUnit(unit, id)) => {
-                drop(globals_guard);
-                drop(sprite_owner_map);
-                drop(this_guard);
-                crate::samase::transform_unit(*unit, id);
+                // When transforming unit, the sprite will be deleted and reset,
+                // so iscript has to stop.
+                // This check may have to be more thorough too, check subunits etc?
+                // Maybe this iscript loop will have to check if inner callback has transformed
+                // the current unit too?
+                let is_active = Some(unit) == active_unit;
+                if is_active {
+                    let unit_array = runner.unit_array();
+                    globals.iscript_state.queue_transform(unit_array, unit, id);
+                    drop(this_guard);
+                } else {
+                    drop(globals_guard);
+                    drop(sprite_owner_map);
+                    drop(this_guard);
+                    crate::samase::transform_unit(*unit, id);
+                }
             }
             Ok(ScriptRunResult::SetHp(unit, value)) => {
                 drop(globals_guard);
@@ -2219,6 +2244,8 @@ pub unsafe extern fn create_bullet_hook(
 }
 
 pub unsafe extern fn order_hook(u: *mut c_void, orig: unsafe extern fn(*mut c_void)) {
+    do_queued_transforms();
+
     let unit = Unit::from_ptr(u as *mut bw::Unit).unwrap();
 
     // Account for unit's sprite having changed due to transforming
@@ -2245,4 +2272,30 @@ pub unsafe extern fn order_hook(u: *mut c_void, orig: unsafe extern fn(*mut c_vo
     }
     CURRENT_ORDER_UNIT.store(0, Ordering::Relaxed);
     CURRENT_ORDER_SPRITE.store(0, Ordering::Relaxed);
+}
+
+fn do_queued_transforms() {
+    if QUEUED_TRANSFORMS.load(Ordering::Relaxed) != 0 {
+        // Note: Will handle also any new queues from transforming too.
+        let unit_array = bw::unit_array();
+        for i in 0.. {
+            let (unit, dest) = {
+                let mut globals_guard = Globals::get("do_queued_transforms");
+                let globals = &mut *globals_guard;
+                match globals.iscript_state.queued_transforms.get(i)  {
+                    Some(&s) => s,
+                    None => {
+                        globals.iscript_state.queued_transforms.clear();
+                        break;
+                    }
+                }
+            };
+            if let Some(unit) = unit_array.get_by_unique_id(unit) {
+                unsafe {
+                    crate::samase::transform_unit(*unit, dest);
+                }
+            }
+        }
+        QUEUED_TRANSFORMS.store(0, Ordering::Relaxed);
+    }
 }

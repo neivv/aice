@@ -229,7 +229,7 @@ with same behaviour related to loaded units, interceptors, addons, etc. `player`
 ### transform
 
 ```
-give_unit <unit> <unit_id>
+transform <unit> <unit_id>
 ```
 
 Transforms a [unit][other-units] to new unit type. `unit_id` is an [expression][expr].
