@@ -23,6 +23,7 @@ use crate::parse::{
     FormatStringId, AnyExpr, AnyTypeRef, AiceCommandParam, CommandParams,
 };
 use crate::recurse_checked_mutex::{Mutex};
+use crate::unit::UnitExt;
 use crate::windows;
 
 static ISCRIPT: Mutex<Option<Iscript>> = Mutex::new(None);
@@ -217,7 +218,11 @@ pub unsafe extern fn run_aice_script(
                 drop(globals_guard);
                 drop(sprite_owner_map);
                 drop(this_guard);
-                bw::issue_order(*unit, order, pos, null_mut(), bw_dat::unit::NONE);
+                if order.is_secondary() {
+                    unit.issue_secondary_order(order);
+                } else {
+                    bw::issue_order(*unit, order, pos, null_mut(), bw_dat::unit::NONE);
+                }
             }
             Ok(ScriptRunResult::AddOverlay(base, image_id, x, y, above)) => {
                 drop(globals_guard);
