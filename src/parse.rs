@@ -654,6 +654,7 @@ static FLINGY_VARS: &[(&[u8], FlingyVar)] = {
         (b"speed", Speed),
         (b"player", Player),
         (b"flingy_id", FlingyId),
+        (b"movement_flags", Flags),
     ]
 };
 
@@ -2527,6 +2528,7 @@ pub enum FlingyVar {
     // Not really a flingy var but too lazy to implement entity just for this
     Player,
     FlingyId,
+    Flags,
 }
 
 #[repr(u8)]

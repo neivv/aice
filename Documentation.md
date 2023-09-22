@@ -162,7 +162,7 @@ gotorepeatattk
 
 Aice overrides the original behaviour of `gotorepeatattk`, arguably fixing a bug: if a unit's
 cooldown had expired before `gotorepeatattk` was used to reset its attack sequence, the unit would
-only check for next attack cycle every 8th (9th?) frame, causing cooldowns be surprisingly off from
+only check for next attack cycle every 9th frame, causing cooldowns be surprisingly off from
 what was expected.
 
 Aice changes the behaviour so the unit immediately attacks again if its cooldown had expired before
@@ -441,6 +441,15 @@ bullets accelerate one unit per frame.
 - `flingy.player` Flingy's player.
 - `flingy.flingy_id` Flingy's flingy.dat ID:
     * This value can be modified, though exact effects are not known.
+- `flingy.movement_flags` Flags related to flingy's state.
+    * 0x1 Turning
+    * 0x2 Moving
+    * 0x4 Braking (?)
+    * 0x8 Attacking
+    * 0x10 Has path? Has complex path?
+    * 0x20 Don't slow down at move target (When move waypoints are shift-queued)
+    * 0x40 Short path?
+    * 0x80 ?
 - `bullet.weapon_id` Bullet's weapons.dat ID.
 - `bullet.death_timer` Death timer for a bullet (frames). If BW decrements it to 0 the bullet
   automatically dies unless it is a bouncing bullet.
