@@ -263,6 +263,7 @@ static KILL_UNIT: AtomicUsize = AtomicUsize::new(0);
 static UNIT_SET_HP: AtomicUsize = AtomicUsize::new(0);
 static GIVE_UNIT: AtomicUsize = AtomicUsize::new(0);
 static TRANSFORM_UNIT: AtomicUsize = AtomicUsize::new(0);
+static PLACE_FINISHED_UNIT_CREEP: AtomicUsize = AtomicUsize::new(0);
 
 #[cold]
 fn func_fatal(value: usize) -> ! {
@@ -300,6 +301,10 @@ pub unsafe fn give_unit(unit: *mut bw::Unit, player: u8) {
 
 pub unsafe fn transform_unit(unit: *mut bw::Unit, id: UnitId) {
     load_func::<unsafe extern fn(*mut bw::Unit, usize)>(&TRANSFORM_UNIT)(unit, id.0 as usize)
+}
+
+pub unsafe fn place_finished_unit_creep(unit_id: u32, x: i32, y: i32) {
+    load_func::<unsafe extern fn(u32, i32, i32)>(&PLACE_FINISHED_UNIT_CREEP)(unit_id, x, y)
 }
 
 #[no_mangle]
@@ -415,6 +420,7 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         (&UNIT_SET_HP, FuncId::UnitSetHp),
         (&GIVE_UNIT, FuncId::GiveUnit),
         (&TRANSFORM_UNIT, FuncId::TransformUnit),
+        (&PLACE_FINISHED_UNIT_CREEP, FuncId::PlaceFinishedUnitCreep),
     ];
     for &(global, func_id) in FUNCS {
         if func_id as u16 >= (*api).max_func_id {

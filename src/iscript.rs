@@ -208,6 +208,7 @@ pub unsafe extern fn run_aice_script(
                     bw::finish_unit_pre(unit);
                     bw::finish_unit_post(unit);
                     bw::give_ai(unit);
+                    bw::place_finished_unit_creep(unit_id, &pos);
                 } else {
                     let mut globals_guard = Globals::get("run_aice_script");
                     let globals = &mut *globals_guard;

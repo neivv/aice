@@ -60,6 +60,16 @@ pub fn give_ai(unit: bw_dat::Unit) {
     unsafe { samase::give_ai(*unit) }
 }
 
+pub fn place_finished_unit_creep(id: UnitId, pos: &Point) {
+    unsafe {
+        samase::place_finished_unit_creep(
+            id.0 as u32,
+            pos.x as i32,
+            pos.y as i32,
+        );
+    }
+}
+
 pub unsafe fn issue_order(
     unit: *mut Unit,
     order: OrderId,
