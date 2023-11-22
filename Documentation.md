@@ -768,6 +768,18 @@ enabled with iscript, but nothing has been confirmed.
 - `unit.matrix_timer` steps of defensive matrix remaining.
 - `unit.death_timer` steps until the unit dies. 0 to not make unit die.
 - `unit.matrix_hitpoints` Current hitpoints for defensive matrix (256 times displayed value).
+- `unit.spell_update_timer` Frames until next step of decrementing all spell-specific timers by 1.
+- `unit.parasite_players` Is nonzero if the unit has parasite.
+    * Bit 0x1 = First player, 0x2 = Second, 0x4 = Third, etc.
+- `unit.is_blind` Is nonzero if the unit has been blinded.
+    * Does track blinding player like parasite does, even if the game doesn't use that
+      functionality.
+- `unit.is_being_healed` Used to prevent multiple medics from healing a single unit.
+    * This is set to 0 on every frame during unit timer handling (before the iscript animation of
+        the unit is ran), and to 1 once a medic with heal order heals the unit.
+- `unit.is_under_storm` Gives temporary psi storm immunity
+    * Game sets this to 1 after being damaged by psi storm.
+    * Game zeroes this after few frames. (At next `spell_update_timer` check?)
 
 ### Other units
 

@@ -394,6 +394,10 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::PlagueTimer => (**unit).plague_timer as i32,
                             UnitVar::MaelstormTimer => (**unit).maelstrom_timer as i32,
                             UnitVar::IsBlind => (**unit).is_blind as i32,
+                            UnitVar::SpellUpdateTimer => (**unit).master_spell_timer as i32,
+                            UnitVar::ParasitePlayers => (**unit).parasited_by_players as i32,
+                            UnitVar::IsBeingHealed => (**unit).path._unk107 as i32,
+                            UnitVar::IsUnderStorm => (**unit).is_under_storm as i32,
                             UnitVar::Hitpoints => unit.hitpoints(),
                             UnitVar::Shields => unit.shields(),
                             UnitVar::Energy => unit.energy() as i32,
@@ -1174,6 +1178,10 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::PlagueTimer => (**unit).plague_timer = val_u8,
                                 UnitVar::MaelstormTimer => (**unit).maelstrom_timer = val_u8,
                                 UnitVar::IsBlind => (**unit).is_blind = val_u8,
+                                UnitVar::SpellUpdateTimer => (**unit).master_spell_timer = val_u8,
+                                UnitVar::ParasitePlayers => (**unit).parasited_by_players = val_u8,
+                                UnitVar::IsBeingHealed => (**unit).path._unk107 = val_u8,
+                                UnitVar::IsUnderStorm => (**unit).is_under_storm = val_u8,
                                 UnitVar::Hitpoints => {
                                     if value != unit.hitpoints() {
                                         return Ok(ScriptRunResult::SetHp(unit, value));
