@@ -396,7 +396,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::IsBlind => (**unit).is_blind as i32,
                             UnitVar::SpellUpdateTimer => (**unit).master_spell_timer as i32,
                             UnitVar::ParasitePlayers => (**unit).parasited_by_players as i32,
-                            UnitVar::IsBeingHealed => (**unit).path._unk107 as i32,
+                            UnitVar::IsBeingHealed => (**unit).is_being_healed as i32,
                             UnitVar::IsUnderStorm => (**unit).is_under_storm as i32,
                             UnitVar::Hitpoints => unit.hitpoints(),
                             UnitVar::Shields => unit.shields(),
@@ -477,7 +477,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             }
                             UnitVar::Flags => (**unit).flags as i32,
                             UnitVar::DetectionStatus => (**unit).detection_status as i32,
-                            UnitVar::PathingFlags => (**unit).path.pathing_flags as i32,
+                            UnitVar::PathingFlags => (**unit).pathing_flags as i32,
                             UnitVar::MovementState => (**unit).movement_state as i32,
                         }
                     },
@@ -1180,7 +1180,7 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::IsBlind => (**unit).is_blind = val_u8,
                                 UnitVar::SpellUpdateTimer => (**unit).master_spell_timer = val_u8,
                                 UnitVar::ParasitePlayers => (**unit).parasited_by_players = val_u8,
-                                UnitVar::IsBeingHealed => (**unit).path._unk107 = val_u8,
+                                UnitVar::IsBeingHealed => (**unit).is_being_healed = val_u8,
                                 UnitVar::IsUnderStorm => (**unit).is_under_storm = val_u8,
                                 UnitVar::Hitpoints => {
                                     if value != unit.hitpoints() {
@@ -1261,7 +1261,7 @@ impl<'a> IscriptRunner<'a> {
                                 UnitVar::DetectionStatus => {
                                     (**unit).detection_status = value as u32;
                                 }
-                                UnitVar::PathingFlags => (**unit).path.pathing_flags = val_u8,
+                                UnitVar::PathingFlags => (**unit).pathing_flags = val_u8,
                                 UnitVar::MovementState => (**unit).movement_state = val_u8,
                             }
                         },
