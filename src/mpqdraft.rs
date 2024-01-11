@@ -20,7 +20,7 @@ struct Vtable {
 
 #[repr(C, packed)]
 pub struct MpqdraftPlugin {
-    vtable: *mut Vtable,
+    vtable: *const Vtable,
 }
 
 static VTABLE: Vtable = Vtable {
@@ -35,8 +35,7 @@ static VTABLE: Vtable = Vtable {
 };
 
 static mut PLUGIN: MpqdraftPlugin = MpqdraftPlugin {
-    // Wonder if there's a simpler way to do this
-    vtable: &VTABLE as *const Vtable as *mut Vtable,
+    vtable: &VTABLE,
 };
 
 unsafe extern "stdcall" fn identify(_plugin: *mut MpqdraftPlugin, plugin_id: *mut u32) -> u32 {
@@ -101,7 +100,7 @@ unsafe extern "stdcall" fn terminate_plugin(_plugin: *mut MpqdraftPlugin) -> u32
 #[allow(non_snake_case)]
 pub extern "stdcall" fn GetMPQDraftPlugin(out: *mut *mut MpqdraftPlugin) -> u32 {
     unsafe {
-        *out = &mut PLUGIN;
+        *out = std::ptr::addr_of_mut!(PLUGIN);
     }
     1
 }
