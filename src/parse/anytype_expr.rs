@@ -92,12 +92,12 @@ impl<'a> AnyTypeParser<'a> {
             }
             let (var, rest2) = match parser.parse_place_expr_pre_params(rest, variable_decls)
                 .ok()
-                .filter(|x| x.0.is_variable())
+                .filter(|x| x.0.place_id.is_variable())
             {
                 Some(s) => s,
                 None => return Ok(None),
             };
-            stack.push(AnyTypeExpr::Variable(var));
+            stack.push(AnyTypeExpr::Variable(var.place_id));
             rest = rest2;
             'op_loop: loop {
                 let (next, rest2) = match split_first_token(rest) {
@@ -277,19 +277,19 @@ fn test_write_read_any_type() {
 
 #[test]
 fn parse_any_type() {
-    use super::VariableType;
+    use super::VariableStorage;
     let mut parser = super::Parser::new();
     let mut variable_decls = CompilerVariables::for_test(&[
-        (b"var1", VariableType::SpriteLocal),
-        (b"var2", VariableType::SpriteLocal),
-        (b"global1", VariableType::Global),
-        (b"global2", VariableType::Global),
+        (b"var1", VariableStorage::SpriteLocal),
+        (b"var2", VariableStorage::SpriteLocal),
+        (b"global1", VariableStorage::Global),
+        (b"global2", VariableStorage::Global),
     ]);
 
-    let var1_id = *variable_decls.variables.get(&b"var1"[..]).unwrap();
-    let var2_id = *variable_decls.variables.get(&b"var2"[..]).unwrap();
-    let global1_id = *variable_decls.variables.get(&b"global1"[..]).unwrap();
-    let global2_id = *variable_decls.variables.get(&b"global2"[..]).unwrap();
+    let var1_id = variable_decls.variables.get(&b"var1"[..]).unwrap().place_id;
+    let var2_id = variable_decls.variables.get(&b"var2"[..]).unwrap().place_id;
+    let global1_id = variable_decls.variables.get(&b"global1"[..]).unwrap().place_id;
+    let global2_id = variable_decls.variables.get(&b"global2"[..]).unwrap().place_id;
 
     let p = &mut parser.exprs;
     let v = &mut variable_decls;

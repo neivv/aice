@@ -87,8 +87,10 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
     fn parse_int<'a>(&mut self, input: &'a [u8]) -> Option<(Int, &'a [u8])> {
         let mut out = [None, None, None, None];
         match self.parser.parse_place_expr(input, &mut out, self.variables) {
-            Ok((var_id, rest)) => {
-                return Some((Int::Variable(var_id, out), rest));
+            Ok((var, rest)) => {
+                if var.ty == VariableType::Int {
+                    return Some((Int::Variable(var.place_id, out), rest));
+                }
             }
             Err(CanRecoverError::No(e)) => {
                 self.parser.set_current_error(e);
@@ -1377,10 +1379,14 @@ impl<'a> Parser<'a> {
                                     .ok_or_else(|| Error::Msg("Expected var name"))?;
                                 // Checking this early for better errors
                                 let _ = expect_token(rest, b"=")?;
+                                let ty = VariableType::Int;
                                 add_set_decl(
                                     &mut stage1.variable_types,
                                     name,
-                                    VariableType::SpriteLocal,
+                                    VariableTypeStorage {
+                                        ty,
+                                        storage: VariableStorage::SpriteLocal,
+                                    },
                                 )?;
                             }
                             ctx.error_line_number = main_line_no;
@@ -1621,10 +1627,10 @@ impl<'a> Parser<'a> {
             CommandPrototype::Set => {
                 ctx.expr_buffer[0] = None;
                 let exprs = &mut self.exprs;
-                let (place, if_uninit, rest) =
+                let (type_place, if_uninit, rest) =
                     exprs.parse_set_place(input.params, &mut ctx.expr_buffer, variables)?;
                 let (expr, rest) = parse_set_expr(
-                    place,
+                    type_place,
                     rest,
                     exprs,
                     variables,
@@ -1637,7 +1643,7 @@ impl<'a> Parser<'a> {
                 }
                 out.add_set(
                     &mut ctx.write_buffer,
-                    place,
+                    type_place.place_id,
                     if_uninit,
                     expr,
                     &mut ctx.expr_buffer,
@@ -1799,7 +1805,7 @@ impl ParserExprs {
     fn var_name_type_from_set_place<'a>(
         &mut self,
         text: &'a [u8],
-    ) -> Result<Option<(&'a [u8], VariableType)>, Error> {
+    ) -> Result<Option<(&'a [u8], VariableTypeStorage)>, Error> {
         let (mut place, mut rest) = split_first_token_brace_aware(text)
             .ok_or_else(|| CanRecoverError::Yes(Error::Msg("Expected place")))?;
         if place == b"if_uninit" {
@@ -1808,10 +1814,15 @@ impl ParserExprs {
             place = place2;
             rest = rest2;
         }
-        let ty = match place {
-            x if x == b"global" => VariableType::Global,
-            x if x == b"spritelocal" => VariableType::SpriteLocal,
+        let ty = VariableType::Int;
+        let storage = match place {
+            x if x == b"global" => VariableStorage::Global,
+            x if x == b"spritelocal" => VariableStorage::SpriteLocal,
             _ => return Ok(None),
+        };
+        let ty = VariableTypeStorage {
+            ty,
+            storage,
         };
         let (name, _rest) = field_name_from_projection(rest)?;
         Ok(Some((name, ty)))
@@ -1822,9 +1833,9 @@ impl ParserExprs {
         text: &'text [u8],
         var_out: &mut [Option<Box<IntExpr>>; 4],
         variable_decls: &CompilerVariables<'a>,
-    ) -> Result<(PlaceId, &'text [u8]), CanRecoverError> {
+    ) -> Result<(VariableTypePlace, &'text [u8]), CanRecoverError> {
         let (mut bw, rest) = self.parse_place_expr_pre_params(text, variable_decls)?;
-        let var_count = bw.place().var_count();
+        let var_count = bw.place_id.place().var_count();
         if var_count == 0 {
             if rest.get(0).copied() == Some(b'(') {
                 return Err(Error::Dynamic(
@@ -1853,12 +1864,12 @@ impl ParserExprs {
                 }
             };
             // Parse what location coord it actually is
-            if matches!(bw.place(), Place::Game(GameVar::LocationLeft)) {
+            if matches!(bw.place_id.place(), Place::Game(GameVar::LocationLeft)) {
                 params = expect_token(params, b".")?;
                 let (next, rest) = split_first_token(params)
                     .ok_or_else(|| Error::Msg("Expected location coord"))?;
                 params = rest;
-                bw = match next {
+                bw.place_id = match next {
                     b"left" => PlaceId::new_game(GameVar::LocationLeft),
                     b"top" => PlaceId::new_game(GameVar::LocationTop),
                     b"right" => PlaceId::new_game(GameVar::LocationRight),
@@ -1878,7 +1889,7 @@ impl ParserExprs {
         mut text: &'a [u8],
         result_variables: &mut [Option<Box<IntExpr>>; 4],
         variable_decls: &CompilerVariables<'a>,
-    ) -> Result<(PlaceId, bool, &'a [u8]), Error> {
+    ) -> Result<(VariableTypePlace, bool, &'a [u8]), Error> {
         let mut uninit = false;
         if let Some((first, rest)) = split_first_token(text) {
             if first == b"if_uninit" {
@@ -1896,7 +1907,7 @@ impl ParserExprs {
         let (expr, rest) = self.parse_place_expr(text, result_variables, variable_decls)?;
         let rest = expect_token(rest, b"=")?;
         if uninit {
-            match expr.place() {
+            match expr.place_id.place() {
                 Place::SpriteLocal(..) => (),
                 _ => return Err(
                     Error::Msg("`if_uninit` can only be used for spritelocal variables")
@@ -1912,7 +1923,7 @@ impl ParserExprs {
         &mut self,
         place: &'text [u8],
         variable_decls: &CompilerVariables<'_>,
-    ) -> Result<(PlaceId, &'text [u8]), CanRecoverError> {
+    ) -> Result<(VariableTypePlace, &'text [u8]), CanRecoverError> {
         let error = || {
             CanRecoverError::Yes(
                 Error::Dynamic(format!("Unknown place/variable type '{}'", place.as_bstr()))
@@ -1922,45 +1933,53 @@ impl ParserExprs {
         let (first, rest) = split_first_token(place)
             .ok_or_else(error)?;
         if rest.get(0).copied() != Some(b'.') {
-            if let Some(&var_id) = variable_decls.variables.get(first) {
-                return Ok((var_id, rest));
+            if let Some(&var) = variable_decls.variables.get(first) {
+                return Ok((var, rest));
             }
         }
         let rest_dot = rest;
         let rest = expect_token(rest, b".")
             .map_err(CanRecoverError::Yes)?;
-        match first {
+        let simple_bw_place: Option<Result<_, CanRecoverError>> = match first {
             b"flingy" => {
                 let (field, rest) = split_first_token(rest)
                     .ok_or_else(error)?;
-                return self.flingy_vars.get(field)
+                Some(self.flingy_vars.get(field)
                     .map(|&var| (PlaceId::new_flingy(var, UnitRefId::this()), rest))
-                    .ok_or_else(error);
+                    .ok_or_else(error))
             }
             b"bullet" => {
                 let (field, rest) = split_first_token(rest)
                     .ok_or_else(error)?;
                 match self.bullet_vars.get(field) {
-                    Some(&var) => return Ok((PlaceId::new_bullet(var), rest)),
+                    Some(&var) => Some(Ok((PlaceId::new_bullet(var), rest))),
                     // keep going for bullet.target.x etc
-                    None => (),
+                    None => None,
                 }
             }
             b"image" => {
                 let (field, rest) = split_first_token(rest)
                     .ok_or_else(error)?;
-                return self.image_vars.get(field)
+                Some(self.image_vars.get(field)
                     .map(|&var| (PlaceId::new_image(var), rest))
-                    .ok_or_else(error);
+                    .ok_or_else(error))
             }
             b"game" => {
                 let (field, rest) = split_first_token(rest)
                     .ok_or_else(error)?;
-                return self.game_vars.get(field)
+                Some(self.game_vars.get(field)
                     .map(|&var| (PlaceId::new_game(var), rest))
-                    .ok_or_else(error);
+                    .ok_or_else(error))
             }
-            _ => (),
+            _ => None,
+        };
+        if let Some(result) = simple_bw_place {
+            return result.map(|(place_id, rest)| {
+                (VariableTypePlace {
+                    place_id,
+                    ty: VariableType::Int,
+                }, rest)
+            })
         }
 
         let (unit_ref, rest) = self.unit_refs.parse_pre_split(first, rest, rest_dot)?;
@@ -1973,10 +1992,21 @@ impl ParserExprs {
                 self.flingy_vars.get(field.as_bytes()).copied()
                     .map(|var| PlaceId::new_flingy(var, unit_ref))
             })
+            .map(|place_id| {
+                VariableTypePlace {
+                    place_id,
+                    ty: VariableType::Int,
+                }
+            })
             .or_else(|| {
                 variable_decls.variables.get(field.as_bytes())
-                    .and_then(|x| match x.place() {
-                        Place::SpriteLocal(_, id) => PlaceId::new_spritelocal(id, unit_ref),
+                    .and_then(|x| match x.place_id.place() {
+                        Place::SpriteLocal(_, id) => {
+                            Some(VariableTypePlace {
+                                place_id: PlaceId::new_spritelocal(id, unit_ref)?,
+                                ty: x.ty,
+                            })
+                        }
                         _ => None,
                     })
             })
@@ -2227,13 +2257,14 @@ fn parse_any_expr_allow_opt<'a, 'text, 'c>(
 }
 
 fn parse_set_expr<'a, 'b, 'c, 'bump>(
-    dest_place: PlaceId,
+    dest_place: VariableTypePlace,
     text: &'a [u8],
     parser: &'c mut ParserExprs,
     variable_decls: &'c CompilerVariables<'b>,
     anytype_parser: &mut AnyTypeParser<'bump>,
 ) -> Result<(SetExpr<'bump>, &'a [u8]), Error> {
-    if dest_place.is_variable() {
+    if dest_place.place_id.is_variable() {
+        // TODO probably unneeded code in the end..
         if let Some((expr, rest)) =
             anytype_parser.try_parse_anytype_expr(text, parser, variable_decls)?
         {
@@ -2242,8 +2273,12 @@ fn parse_set_expr<'a, 'b, 'c, 'bump>(
             }
         }
     }
-    parse_int_expr(text, parser, variable_decls)
-        .map(|x| (SetExpr::Int(x.0), x.1))
+    match dest_place.ty {
+        VariableType::Int => {
+            parse_int_expr(text, parser, variable_decls)
+                .map(|x| (SetExpr::Int(x.0), x.1))
+        }
+    }
 }
 
 /// Parses `with { spritelocal1 = expr, ... }`
@@ -2290,18 +2325,20 @@ fn parse_with<'a, 'text, 'c, 'd, 'e>(
         *ctx_error_line = line_no;
         let (var_name, rest) = split_first_token(text)
             .ok_or_else(|| Error::Msg("Expected variable name"))?;
+        let (var, var_type) = vars.variables.get(var_name)
+            .and_then(|var| match var.place_id.place() {
+                Place::SpriteLocal(_, x) => Some((x, var.ty)),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Internal("Var not added"))?;
         let rest = expect_token(rest, b"=")?;
-        let (expr, rest) = parse_int_expr(rest, parser, vars)?;
+        let (expr, rest) = match var_type {
+            VariableType::Int => parse_int_expr(rest, parser, vars)?,
+        };
         if !rest.is_empty() {
             return Err(Error::Trailing(rest.into()));
         }
         let expr = expr_ids.int_expr_id(expr);
-        let var = vars.variables.get(var_name)
-            .and_then(|x| match x.place() {
-                Place::SpriteLocal(_, x) => Some(x),
-                _ => None,
-            })
-            .ok_or_else(|| Error::Internal("Var not added"))?;
         Ok(Some((var, expr)))
     })?;
     *ctx_error_line = prev_line;
@@ -2472,7 +2509,7 @@ struct Compiler<'a> {
 }
 
 struct CompilerVariables<'a> {
-    variables: FxHashMap<&'a [u8], PlaceId>,
+    variables: FxHashMap<&'a [u8], VariableTypePlace>,
     variable_counts: [u32; 2],
 }
 
@@ -2699,8 +2736,25 @@ pub enum GameVar {
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
 pub struct PlaceId(pub u32);
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct VariableTypePlace {
+    ty: VariableType,
+    place_id: PlaceId,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct VariableTypeStorage {
+    ty: VariableType,
+    storage: VariableStorage,
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum VariableType {
+    Int,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum VariableStorage {
     Global,
     SpriteLocal,
 }
@@ -2889,7 +2943,7 @@ impl CodePosition {
 
 impl<'a> Compiler<'a> {
     fn from_stage1_parse(
-        variables: &FxHashMap<&'a [u8], VariableType>,
+        variables: &FxHashMap<&'a [u8], VariableTypeStorage>,
         // Error is out var instead of returning Result since Compiler is
         // pretty large type and moving it out of result is likely ugh
         error: &mut Option<Error>,
@@ -3104,7 +3158,7 @@ impl<'a> Compiler<'a> {
             sprite_local_sets: self.sprite_local_sets,
             bw_aice_cmd_offsets,
             headers,
-            global_count: self.variables.variable_counts[VariableType::Global as usize],
+            global_count: self.variables.variable_counts[VariableStorage::Global as usize],
             line_info: self.output.line_info.finish(),
             unit_refs,
             format_strings,
@@ -3480,17 +3534,17 @@ impl<'a> CompilerLabels<'a> {
 
 impl<'a> CompilerVariables<'a> {
     fn new(
-        types: &FxHashMap<&'a [u8], VariableType>,
+        types: &FxHashMap<&'a [u8], VariableTypeStorage>,
         error: &mut Option<Error>,
     ) -> Self {
         let mut variables = FxHashMap::with_capacity_and_hasher(types.len(), Default::default());
         let mut variable_counts = [0u32; 2];
         for (&name, &ty) in types {
-            let id = variable_counts[ty as usize] as u32;
-            variable_counts[ty as usize] += 1;
-            let place_id = match ty {
-                VariableType::Global => PlaceId::new_global(id),
-                VariableType::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
+            let id = variable_counts[ty.storage as usize] as u32;
+            variable_counts[ty.storage as usize] += 1;
+            let place_id = match ty.storage {
+                VariableStorage::Global => PlaceId::new_global(id),
+                VariableStorage::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
             };
             let place_id = match place_id {
                 Some(s) => s,
@@ -3499,7 +3553,7 @@ impl<'a> CompilerVariables<'a> {
                     break;
                 }
             };
-            variables.insert(name, place_id);
+            variables.insert(name, VariableTypePlace { place_id, ty: ty.ty } );
         }
         CompilerVariables {
             variables,
@@ -3508,7 +3562,7 @@ impl<'a> CompilerVariables<'a> {
     }
 
     #[cfg(test)]
-    fn for_test(input: &[(&'a [u8], VariableType)]) -> Self {
+    fn for_test(input: &[(&'a [u8], VariableStorage)]) -> Self {
         let mut result = CompilerVariables {
             variables: Default::default(),
             variable_counts: [0, 0],
@@ -3517,11 +3571,12 @@ impl<'a> CompilerVariables<'a> {
             let id = result.variable_counts[ty as usize] as u32;
             result.variable_counts[ty as usize] += 1;
             let place_id = match ty {
-                VariableType::Global => PlaceId::new_global(id),
-                VariableType::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
+                VariableStorage::Global => PlaceId::new_global(id),
+                VariableStorage::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
             };
             let place_id = place_id.ok_or_else(|| Error::Overflow).unwrap();
-            result.variables.insert(name, place_id);
+            let ty = VariableType::Int;
+            result.variables.insert(name, VariableTypePlace { place_id, ty });
         }
         result
     }
@@ -3579,7 +3634,7 @@ struct ParseStage1<'a> {
     blocks: Blocks<'a>,
     /// Unparsed lines of `var_name = expr` and line number.
     sprite_local_sets: VecOfVecs<SpriteLocalSetId, (&'a [u8], usize)>,
-    variable_types: FxHashMap<&'a [u8], VariableType>,
+    variable_types: FxHashMap<&'a [u8], VariableTypeStorage>,
     bw_required_labels: BwRequiredLabels<'a>,
 }
 
@@ -3747,16 +3802,16 @@ impl<'a> Blocks<'a> {
 }
 
 fn add_set_decl<'a>(
-    variable_types: &mut FxHashMap<&'a [u8], VariableType>,
+    variable_types: &mut FxHashMap<&'a [u8], VariableTypeStorage>,
     var_name: &'a [u8],
-    ty: VariableType,
+    ty: VariableTypeStorage,
 ) -> Result<(), Error> {
     let old = variable_types.entry(var_name)
         .or_insert(ty);
     if *old != ty {
         Err(Error::Dynamic(format!(
-            "Conflicting variable type for '{}', was previously used with {:?}",
-            var_name.as_bstr(), old,
+            "Conflicting variable type for '{}', was previously used with {:?}/{:?}",
+            var_name.as_bstr(), old.ty, old.storage,
         )))
     } else {
         Ok(())
