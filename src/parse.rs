@@ -97,13 +97,11 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
         }
         // Special case player / speed to flingy.player and flingy.speed
         // so that they're also usable from bullet iscripts
-        if input.starts_with(b"player") {
-            let rest = expect_token(input, b"player").ok()?;
+        if let Some(rest) = maybe_token(input, b"player") {
             const VAR: PlaceId = PlaceId::new_flingy(FlingyVar::Player, UnitRefId::this());
             return Some((Int::Variable(VAR, out), rest));
         }
-        if input.starts_with(b"speed") {
-            let rest = expect_token(input, b"speed").ok()?;
+        if let Some(rest) = maybe_token(input, b"speed") {
             const VAR: PlaceId = PlaceId::new_flingy(FlingyVar::Speed, UnitRefId::this());
             return Some((Int::Variable(VAR, out), rest));
         }
@@ -111,9 +109,8 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
     }
 
     fn parse_operator<'a>(&mut self, input: &'a [u8]) -> Option<(u16, &'a [u8])> {
-        let compare = b"default ";
-        if input.starts_with(compare) {
-            Some((0, &input[compare.len()..]))
+        if let Some(rest) = maybe_token(input, b"default") {
+            Some((0, rest))
         } else {
             None
         }
@@ -2088,10 +2085,14 @@ fn split_first_token(text: &[u8]) -> Option<(&[u8], &[u8])> {
     })
 }
 
-fn expect_token<'a>(text: &'a [u8], token: &'static [u8]) -> Result<&'a [u8], Error> {
+fn maybe_token<'a>(text: &'a [u8], token: &'static [u8]) -> Option<&'a [u8]> {
     split_first_token(text)
         .filter(|x| x.0 == token)
         .map(|x| x.1)
+}
+
+fn expect_token<'a>(text: &'a [u8], token: &'static [u8]) -> Result<&'a [u8], Error> {
+    maybe_token(text, token)
         .ok_or_else(|| Error::Expected(text.into(), token))
 }
 
