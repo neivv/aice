@@ -846,7 +846,7 @@ The following units can be accesed:
         but is no longer attached once it appears above the nuke dot.
     * For a Nuclear Silo, the stored nuke once it's been completed.
 - `unit.currently_building`
-    * or a SCV, the building it is currently constructing.
+    * For a SCV, the building it is currently constructing.
     * For any production building, the hidden unit that is being trained.
     * For a Terran building constructing addon, the addon.
     * For a nuke silo, the nuke that is being constructed.
