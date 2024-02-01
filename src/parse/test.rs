@@ -4,6 +4,19 @@ use std::cell::Cell;
 
 use bw_dat::expr::{IntFunc, IntFuncType};
 
+trait ExprIdExt {
+    fn expect_int(self) -> usize;
+}
+
+impl ExprIdExt for super::ExprId {
+    fn expect_int(self) -> usize {
+        match self.unpack() {
+            UnpackedExprId::Int(i) => i,
+            x => panic!("Expected integer ExprId, got {x:?}"),
+        }
+    }
+}
+
 fn read(filename: &str) -> Vec<u8> {
     std::fs::read(format!("test_scripts/{}", filename)).unwrap()
 }
@@ -137,6 +150,10 @@ fn assert_place_obj(
     var: UnitVar,
     object: &[UnitObject],
 ) {
+    let object = object.iter()
+        .map(|&o| UnitObjectOrVariable::new_object(o))
+        .collect::<Vec<_>>();
+    let object = &object[..];
     match place.place() {
         Place::Unit(unit, x) if x == var  => {
             match iscript.unit_ref_object(unit) {
@@ -157,6 +174,10 @@ fn assert_spritelocal_place_obj(
     place: PlaceId,
     object: &[UnitObject],
 ) -> u32 {
+    let object = object.iter()
+        .map(|&o| UnitObjectOrVariable::new_object(o))
+        .collect::<Vec<_>>();
+    let object = &object[..];
     match place.place() {
         Place::SpriteLocal(unit, x) => {
             match iscript.unit_ref_object(unit) {
@@ -380,7 +401,8 @@ fn unit_refs() {
     match place.place() {
         Place::Flingy(unit, FlingyVar::TurnSpeed) => {
             match iscript.unit_ref_object(unit) {
-                UnitRefParts::Single(UnitObject::UnitTarget) => (),
+                UnitRefParts::Single(x)
+                    if x.if_unit_object() == Some(UnitObject::UnitTarget) => (),
                 x => panic!("Wrong unit ref parts {:?}", x),
             }
         }
@@ -563,7 +585,7 @@ fn with() {
     assert_ne!(locals[0].0, locals[1].0);
     assert_ne!(locals[0].0, locals[2].0);
     // deaths = deaths + 1
-    let expr1 = locals[0].1 as usize;
+    let expr1 = locals[0].1.expect_int();
     match *iscript.int_expressions[expr1].inner() {
         IntExprTree::Add(ref pair) => {
             assert_eq!(&pair.1, &IntExprTree::Integer(1));
@@ -583,13 +605,13 @@ fn with() {
         ref x => panic!("Wrong expr {:?}", x),
     }
     // miscstuff = 50
-    let expr2 = locals[1].1 as usize;
+    let expr2 = locals[1].1.expect_int();
     match *iscript.int_expressions[expr2].inner() {
         IntExprTree::Integer(50) => (),
         ref x => panic!("Wrong expr {:?}", x),
     }
     // rest = unit.target.hitpoints default 0
-    let expr3 = locals[2].1 as usize;
+    let expr3 = locals[2].1.expect_int();
     let (l, r) = unwrap_expr_default(iscript.int_expressions[expr3].inner());
     match *l {
         IntExprTree::Custom(Int::Variable(place, _)) => {
@@ -719,4 +741,23 @@ fn imgul_on() {
     assert_eq!(params[3], 0);
     assert_eq!(params[4], 0);
     assert_eq!(iscript.aice_data[next_pos], aice_op::SET);
+}
+
+#[test]
+fn unit_vars() {
+    let _ = compile_success("unit_vars.txt");
+}
+
+#[test]
+fn unit_vars_eqq() {
+    let mut errors = compile_err("unit_vars_err.txt");
+    find_error(&mut errors, "Conflicting variable type", 63);
+    find_error(&mut errors, "Conflicting variable type", 64);
+    assert!(errors.is_empty());
+
+    let mut errors = compile_err("unit_vars_err2.txt");
+    find_error(&mut errors, "Cannot parse", 60);
+    find_error(&mut errors, "Cannot parse", 61);
+    find_error(&mut errors, "default is not currently", 62);
+    assert!(errors.is_empty());
 }

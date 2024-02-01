@@ -55,9 +55,9 @@ expression, see [Expressions][expr] for the syntax on expressions.
 
 ```
 set <bw_place> = <expression>
-set spritelocal <var> = <expression>
-set if_uninit spritelocal <var> = <expression>
-set global <var> = <expression>
+set spritelocal [type] <var> = <expression>
+set if_uninit spritelocal [type] <var> = <expression>
+set global [type] <var> = <expression>
 ```
 
 Evaluates [`expression`][expr] and assigns it to a place.
@@ -69,8 +69,8 @@ assigned to.
 If the place cannot be assigned to due to it being from [another unit][other-units] that does not
 exist, nothing happens.
 
-When assigning to a variable, the variable's type must be declared; using different types with a
-single name will be a compile error. The variable types are:
+When assigning to a variable, the variable's storage type must be declared; using different types
+with a single name will be a compile error. The variable types are:
 
 - `spritelocal` A variable that is shared between images of a single sprite;
 - `if_uninit spritelocal` Only sets the spritelocal variable if it has not already been set
@@ -81,8 +81,22 @@ single name will be a compile error. The variable types are:
   first frame of the child's iscript will execute immediately before execution continues from parent's
   iscript.
 
-Anything that was assigned with `set` can be evaluated later in any [expression][expr], as
+Additionally specifying `unit` after `spritelocal` or `global` makes the variable store a
+reference to an unit instead of an integer, in which case `expression` must be refering to an
+[another unit][other-units]. Unit variable can be explicitly reset to no unit by assigning `null`
+to it.
+
+Integers that was assigned with `set` can be evaluated later in any [expression][expr], as
 expressions can use variables and BW-visible memory.
+
+#### Examples
+
+```
+set spritelocal integer_var = 100
+set spritelocal integer_var = unit.hitpoints / 256 + 600
+set spritelocal unit some_unit_var = unit.target
+set spritelocal unit some_unit_var = null
+```
 
 ### print
 
@@ -787,6 +801,9 @@ In addition to just prefixing `unit.` or `flingy.` to access the current unit's 
 following names can be used to access other unit's, such as the current target as `unit.target`. Any
 objects accessible from `unit.` can be chained if wished, such as`bullet.target.target.addon`.
 
+Additionally an variables that were assigned with [`unit` type][set-opcode] can be used in any point
+of chain, e.g. `spritelocal_variable1.target.addon.spritelocal_variable2` as an extreme example.
+
 Note that any expression using these other units [needs to provide a default value][opt-expr] when
 the other unit is missing.
 
@@ -1110,3 +1127,4 @@ Orders.dat:
 [opt-expr]: #default-expressions
 [dat-fields]: #dat-table-fields
 [with-example]: #create_unit-examples
+[set-opcode]: #set

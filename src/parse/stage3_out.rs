@@ -1,13 +1,13 @@
 use super::{
     BwCommandParam, CompilerLabels, CompilerOutput, CompilerExprs, SpriteLocalSetId, Error,
-    VecOfVecs, PlaceId, SetExpr, BoolExpr, IntExpr, BlockScope, Label,
+    VecOfVecs, PlaceId, SetExpr, BoolExpr, IntExpr, BlockScope, Label, ExprId,
 };
 
 /// Output (or in-out mutable state) for parse_add_command.
 pub(super) struct ParseStage3OutputMain<'a, 'text> {
     pub out: &'a mut CompilerOutput<'text>,
     pub expr_ids: &'a mut CompilerExprs,
-    pub sprite_local_set_builder: &'a mut VecOfVecs<SpriteLocalSetId, (u32, u32)>,
+    pub sprite_local_set_builder: &'a mut VecOfVecs<SpriteLocalSetId, (u32, ExprId)>,
 }
 
 impl<'a, 'text> ParseStage3OutputMain<'a, 'text> {
@@ -82,7 +82,7 @@ impl<'a, 'b, 'text> ParseStage3Output<'a, 'b, 'text> {
     }
 
     pub fn build_sprite_local_set<F>(self, mut fun: F) -> Result<(SpriteLocalSetId, Self), Error>
-    where F: FnMut(&mut CompilerExprs) -> Result<Option<(u32, u32)>, Error>
+    where F: FnMut(&mut CompilerExprs) -> Result<Option<(u32, ExprId)>, Error>
     {
         let expr_ids = &mut *self.inner.expr_ids;
         self.inner.sprite_local_set_builder.build(|| fun(expr_ids)).map(|x| (x, self))

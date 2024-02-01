@@ -74,6 +74,7 @@ pub enum Bool {
 
 enum SetExpr<'a> {
     Int(IntExpr),
+    Unit(UnitRefId),
     AnyType(AnyTypeExpr<'a>),
 }
 
@@ -152,7 +153,7 @@ impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
         if word == b"has" {
             let result = expect_token(rest, b"(")
                 .and_then(|rest| {
-                    let (ref_id, rest) = self.parser.unit_refs.parse(rest)?;
+                    let (ref_id, rest) = self.parser.parse_unit_ref_rest(rest, self.variables)?;
                     let rest = expect_token(rest, b")")?;
                     Ok((Bool::Has(ref_id), rest))
                 });
@@ -382,6 +383,7 @@ pub mod aice_op {
     pub const TRANSFORM_UNIT: u8 = 0x14;
     pub static TRANSFORM_UNIT_PARAMS: CommandParams =
         CommandParams::new(&[UnitRef, IntExprOrConstU16]);
+    pub const SET_UNIT: u8 = 0x15;
 }
 
 quick_error! {
@@ -767,9 +769,18 @@ pub struct Iscript {
     pub int_expressions: Vec<Rc<IntExpr>>,
     pub global_count: u32,
     pub line_info: LineInfo,
-    unit_refs: Vec<Vec<UnitObject>>,
-    sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, u32)>,
+    unit_refs: Vec<Vec<UnitObjectOrVariable>>,
+    sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, ExprId)>,
     pub format_strings: FormatStrings,
+    variable_types: VariableTypes,
+}
+
+struct VariableTypes {
+    /// Global id for variables that store an unit
+    unit_type_globals: Vec<u32>,
+    /// Lookup for spritelocal id -> bool (bits)
+    /// if the variable is unit type.
+    unit_type_spritelocals: Vec<u8>,
 }
 
 pub enum AnyExpr {
@@ -796,14 +807,15 @@ trait VecIndex: Sized {
 
 #[derive(Copy, Clone, Debug)]
 pub enum UnitRefParts<'a> {
-    Single(UnitObject),
-    Many(&'a [UnitObject]),
+    Single(UnitObjectOrVariable),
+    Many(&'a [UnitObjectOrVariable]),
 }
 
 impl Iscript {
     pub fn unit_ref_object(&self, unit: UnitRefId) -> UnitRefParts<'_> {
         if unit.0 < UnitObject::_Last as u16 {
-            UnitRefParts::Single(unsafe { mem::transmute(unit.0 as u8) })
+            let object = unsafe { mem::transmute(unit.0 as u8) };
+            UnitRefParts::Single(UnitObjectOrVariable::new_object(object))
         } else {
             let index = (unit.0 - UnitObject::_Last as u16) as usize;
             UnitRefParts::Many(&self.unit_refs[index])
@@ -811,7 +823,7 @@ impl Iscript {
     }
 
     /// Returns list of `(spritelocal id, int expr id)`
-    pub fn sprite_local_set(&self, id: SpriteLocalSetId) -> &[(u32, u32)] {
+    pub fn sprite_local_set(&self, id: SpriteLocalSetId) -> &[(u32, ExprId)] {
         self.sprite_local_sets.get_or_empty(id)
     }
 
@@ -821,6 +833,17 @@ impl Iscript {
             Place::SpriteLocal(..) => true,
             _ => false,
         }
+    }
+
+    pub fn unit_type_globals(&self) -> &[u32] {
+        &self.variable_types.unit_type_globals
+    }
+
+    pub fn is_unit_sprite_local(&self, sprite_local_id: u32) -> bool {
+        let index = sprite_local_id / 8;
+        let bit = 1 << (sprite_local_id & 7);
+        self.variable_types.unit_type_spritelocals
+            .get(index as usize).copied().unwrap_or(0) & bit != 0
     }
 }
 
@@ -1766,7 +1789,7 @@ impl<'a> Parser<'a> {
                     write_u32(buffer, spritelocals.0);
                 }
                 UnitRef => {
-                    let (unit_ref, rest2) = exprs.parse_unit_ref_rest(rest)?;
+                    let (unit_ref, rest2) = exprs.parse_unit_ref_rest(rest, variables)?;
                     rest = rest2;
                     write_u16(buffer, unit_ref.0);
                 }
@@ -1795,11 +1818,25 @@ impl ParserExprs {
         self.current_error = Some(error);
     }
 
-    fn parse_unit_ref_rest<'text>(
+    fn parse_unit_ref_rest<'text, 'a>(
         &mut self,
         text: &'text [u8],
+        variables: &CompilerVariables<'a>,
     ) -> Result<(UnitRefId, &'text [u8]), Error> {
-        self.unit_refs.parse(text)
+        self.unit_refs.parse(text, variables)
+    }
+
+    /// Accepts "null" in addition to normal refs
+    fn parse_unit_ref_rest_or_null<'text, 'a>(
+        &mut self,
+        text: &'text [u8],
+        variables: &CompilerVariables<'a>,
+    ) -> Result<(UnitRefId, &'text [u8]), Error> {
+        if let Some(rest) = maybe_token(text, b"null") {
+            Ok((UnitRefId::null(), rest))
+        } else {
+            self.unit_refs.parse(text, variables)
+        }
     }
 
     fn var_name_type_from_set_place<'a>(
@@ -1814,11 +1851,22 @@ impl ParserExprs {
             place = place2;
             rest = rest2;
         }
-        let ty = VariableType::Int;
         let storage = match place {
             x if x == b"global" => VariableStorage::Global,
             x if x == b"spritelocal" => VariableStorage::SpriteLocal,
             _ => return Ok(None),
+        };
+        let (ty, rest) = match split_first_token_brace_aware(rest) {
+            Some((token, rest2)) => {
+                if token == b"int" {
+                    (VariableType::Int, rest2)
+                } else if token == b"unit" && !rest2.starts_with(b".") {
+                    (VariableType::Unit, rest2)
+                } else {
+                    (VariableType::Int, rest)
+                }
+            }
+            None => (VariableType::Int, rest),
         };
         let ty = VariableTypeStorage {
             ty,
@@ -1904,6 +1952,14 @@ impl ParserExprs {
             x if x == b"spritelocal" => rest,
             _ => text,
         };
+        let text = match split_first_token_brace_aware(text) {
+            Some((ty, rest)) => match ty {
+                x if x == b"int" => rest,
+                x if x == b"unit" && !rest.starts_with(b".") => rest,
+                _ => text,
+            },
+            None => text,
+        };
         let (expr, rest) = self.parse_place_expr(text, result_variables, variable_decls)?;
         let rest = expect_token(rest, b"=")?;
         if uninit {
@@ -1982,7 +2038,8 @@ impl ParserExprs {
             })
         }
 
-        let (unit_ref, rest) = self.unit_refs.parse_pre_split(first, rest, rest_dot)?;
+        let (unit_ref, rest) =
+            self.unit_refs.parse_pre_split(first, rest, rest_dot, variable_decls)?;
         let rest = expect_token(rest, b".")?;
         let (field, rest) = split_first_token(rest)
             .ok_or_else(error)?;
@@ -2238,7 +2295,7 @@ fn parse_any_expr_allow_opt<'a, 'text, 'c>(
         }
     }
     let bool_err = parser.current_error.take().unwrap_or(bool_result.unwrap_err());
-    let unit_ref_result = parser.parse_unit_ref_rest(text);
+    let unit_ref_result = parser.parse_unit_ref_rest(text, variables);
     if unit_ref_result.is_ok() {
         if let Ok(x) = unit_ref_result {
             return Ok((AnyExpr::UnitRef(x.0), x.1));
@@ -2277,6 +2334,14 @@ fn parse_set_expr<'a, 'b, 'c, 'bump>(
         VariableType::Int => {
             parse_int_expr(text, parser, variable_decls)
                 .map(|x| (SetExpr::Int(x.0), x.1))
+        }
+        VariableType::Unit => {
+            let result = parser.parse_unit_ref_rest_or_null(text, variable_decls)
+                .map(|x| (SetExpr::Unit(x.0), x.1))?;
+            if let Some(_) = maybe_token(result.1, b"default") {
+                return Err(Error::Msg("default is not currently supported with unit variables"));
+            }
+            Ok(result)
         }
     }
 }
@@ -2332,14 +2397,21 @@ fn parse_with<'a, 'text, 'c, 'd, 'e>(
             })
             .ok_or_else(|| Error::Internal("Var not added"))?;
         let rest = expect_token(rest, b"=")?;
-        let (expr, rest) = match var_type {
-            VariableType::Int => parse_int_expr(rest, parser, vars)?,
+        let (expr_id, rest) = match var_type {
+            VariableType::Int => {
+                let (expr, rest) = parse_int_expr(rest, parser, vars)?;
+                let expr = expr_ids.int_expr_id(expr);
+                (ExprId::new_int(expr), rest)
+            }
+            VariableType::Unit => {
+                let (expr, rest) = parser.parse_unit_ref_rest(rest, vars)?;
+                (ExprId::new_unit(expr), rest)
+            }
         };
         if !rest.is_empty() {
             return Err(Error::Trailing(rest.into()));
         }
-        let expr = expr_ids.int_expr_id(expr);
-        Ok(Some((var, expr)))
+        Ok(Some((var, expr_id)))
     })?;
     *ctx_error_line = prev_line;
     Ok((id, out))
@@ -2502,7 +2574,7 @@ struct Compiler<'a> {
     /// Collects where out.bw_code has been finally placed when compiled.
     /// (start_offset_in_final_bin, length)
     bw_code_parts: Vec<(u16, u16)>,
-    sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, u32)>,
+    sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, ExprId)>,
     expressions: CompilerExprs,
     variables: CompilerVariables<'a>,
     labels: CompilerLabels<'a>,
@@ -2641,6 +2713,10 @@ pub enum UnitVar {
     MovementState,
 }
 
+/// 0xc000_0000 = Tag: 0 = UnitObject, 1 = global, 2 = spritelocal
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct UnitObjectOrVariable(pub u32);
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum UnitObject {
@@ -2659,6 +2735,7 @@ pub enum UnitObject {
     BulletParent,
     BulletTarget,
     BulletPreviousBounceTarget,
+    Null,
     _Last,
 }
 
@@ -2736,6 +2813,18 @@ pub enum GameVar {
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
 pub struct PlaceId(pub u32);
 
+/// 0xf000_0000 = tag
+/// 0x0fff_ffff = index in CompilerExprs / Iscript
+/// tag 0 = int_expressions, 1 = conditions, 2 = UnitRefId
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ExprId(pub u32);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UnpackedExprId {
+    Int(usize),
+    Unit(UnitRefId),
+}
+
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct VariableTypePlace {
     ty: VariableType,
@@ -2751,6 +2840,7 @@ struct VariableTypeStorage {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum VariableType {
     Int,
+    Unit,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -2780,8 +2870,65 @@ impl UnitRefId {
         UnitRefId(0)
     }
 
+    pub const fn null() -> UnitRefId {
+        UnitRefId(UnitObject::Null as u16)
+    }
+
     pub fn is_this(self) -> bool {
         self.0 == UnitObject::This as u16
+    }
+}
+
+impl UnitObjectOrVariable {
+    fn new_object(obj: UnitObject) -> UnitObjectOrVariable {
+        Self(obj as u32)
+    }
+
+    fn from_place(place: PlaceId) -> Option<UnitObjectOrVariable> {
+        match place.place() {
+            Place::Global(index) => Some(UnitObjectOrVariable(0x4000_0000 | index)),
+            Place::SpriteLocal(_, index) => Some(UnitObjectOrVariable(0x8000_0000 | index)),
+            _ => None,
+        }
+    }
+
+    pub fn if_unit_object(self) -> Option<UnitObject> {
+        if self.0 & 0xc000_0000 == 0 {
+            Some(unsafe { mem::transmute(self.0 as u8) })
+        } else {
+            None
+        }
+    }
+
+    pub fn variable_id(self) -> u32 {
+        self.0 & 0x0fff_ffff
+    }
+
+    pub fn is_global(self) -> bool {
+        self.0 & 0xc000_0000 == 0x4000_0000
+    }
+}
+
+impl ExprId {
+    fn new_int(index: u32) -> ExprId {
+        ExprId(index)
+    }
+
+    fn new_unit(index: UnitRefId) -> ExprId {
+        ExprId(index.0 as u32 | 0x2000_0000)
+    }
+
+    pub fn unpack(self) -> UnpackedExprId {
+        let tag = self.0 >> 0x1c;
+        let rest = self.0 & 0x0fff_ffff;
+        match tag {
+            0 => UnpackedExprId::Int(rest as usize),
+            2 => UnpackedExprId::Unit(UnitRefId(rest as u16)),
+            _ => {
+                debug_assert!(false);
+                UnpackedExprId::Int(0)
+            }
+        }
     }
 }
 
@@ -2824,7 +2971,7 @@ impl PlaceId {
 
     pub fn place(self) -> Place {
         let id = self.0 & !0xc000_0000;
-        match self.0 >> 30 {
+        match self.tag() {
             0 => Place::Global(id),
             1 => Place::SpriteLocal(
                 UnitRefId((id >> 16) as u16 & 0x1fff),
@@ -2851,16 +2998,23 @@ impl PlaceId {
     }
 
     fn is_optional_expr(self) -> bool {
-        match self.0 >> 30 {
+        match self.tag() {
             1 => (self.0 >> 16) & 0x1fff != 0,
             2 => self.0 & 0xffff00 != 0 && matches!((self.0 >> 27) & 0x7, 0 | 2),
             _ => false,
         }
     }
 
+    fn tag(self) -> u32 {
+        self.0 >> 30
+    }
+
     fn is_variable(self) -> bool {
-        let tag = self.0 >> 30;
-        tag == 0 || tag == 1
+        matches!(self.tag(), 0 | 1)
+    }
+
+    fn is_global(self) -> bool {
+        self.tag() == 0
     }
 }
 
@@ -3045,7 +3199,7 @@ impl<'a> Compiler<'a> {
         mut self,
         blocks: &Blocks<'a>,
         headers: &[Header<'a>],
-        unit_refs: Vec<Vec<UnitObject>>,
+        unit_refs: Vec<Vec<UnitObjectOrVariable>>,
         format_strings: FormatStrings,
     ) -> Result<Iscript, Error> {
         self.fixup_missing_label_positions(blocks);
@@ -3150,6 +3304,7 @@ impl<'a> Compiler<'a> {
         // Add 7 bytes to aice_code so that it's safe to do u64 reads that go partially
         // out of bounds.
         self.output.aice_code.extend_from_slice(&[0u8; 8]);
+
         Ok(Iscript {
             bw_data: bw_data.into_boxed_slice(),
             aice_data: self.output.aice_code,
@@ -3162,6 +3317,7 @@ impl<'a> Compiler<'a> {
             line_info: self.output.line_info.finish(),
             unit_refs,
             format_strings,
+            variable_types: self.variables.finish_types(),
         })
     }
 
@@ -3421,6 +3577,11 @@ impl<'text> CompilerOutput<'text> {
                     write_u32(write_buffer, index as u32);
                 }
             }
+            SetExpr::Unit(unit_ref_id) => {
+                write_buffer.push(aice_op::SET_UNIT);
+                write_u32(write_buffer, var_id);
+                write_u16(write_buffer, unit_ref_id.0);
+            }
             SetExpr::AnyType(ref ty) => {
                 write_buffer.push(aice_op::SET_COPY);
                 write_u32(write_buffer, var_id);
@@ -3562,23 +3723,63 @@ impl<'a> CompilerVariables<'a> {
     }
 
     #[cfg(test)]
-    fn for_test(input: &[(&'a [u8], VariableStorage)]) -> Self {
+    fn for_test_main(
+        int: &[(&'a [u8], VariableStorage)],
+        unit: &[(&'a [u8], VariableStorage)],
+    ) -> Self {
         let mut result = CompilerVariables {
             variables: Default::default(),
             variable_counts: [0, 0],
         };
-        for &(name, ty) in input {
-            let id = result.variable_counts[ty as usize] as u32;
-            result.variable_counts[ty as usize] += 1;
-            let place_id = match ty {
-                VariableStorage::Global => PlaceId::new_global(id),
-                VariableStorage::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
-            };
-            let place_id = place_id.ok_or_else(|| Error::Overflow).unwrap();
-            let ty = VariableType::Int;
-            result.variables.insert(name, VariableTypePlace { place_id, ty });
+        let input = [(int, VariableType::Int), (unit, VariableType::Unit)];
+        for (input, ty) in input {
+            for &(name, storage) in input {
+                let id = result.variable_counts[storage as usize] as u32;
+                result.variable_counts[storage as usize] += 1;
+                let place_id = match storage {
+                    VariableStorage::Global => PlaceId::new_global(id),
+                    VariableStorage::SpriteLocal => PlaceId::new_spritelocal(id, UnitRefId::this()),
+                };
+                let place_id = place_id.ok_or_else(|| Error::Overflow).unwrap();
+                result.variables.insert(name, VariableTypePlace { place_id, ty });
+            }
         }
         result
+    }
+
+    #[cfg(test)]
+    fn for_test(input: &[(&'a [u8], VariableStorage)]) -> Self {
+        Self::for_test_main(input, &[])
+    }
+
+    #[cfg(test)]
+    fn for_test_unit(input: &[(&'a [u8], VariableStorage)]) -> Self {
+        Self::for_test_main(&[], input)
+    }
+
+    fn finish_types(&self) -> VariableTypes {
+        let mut unit_type_globals = Vec::new();
+        let sprite_local_count =
+            self.variable_counts[VariableStorage::SpriteLocal as usize] as usize;
+        let mut unit_type_spritelocals = vec![0u8; (sprite_local_count + 7) / 8];
+        for var in self.variables.values() {
+            if var.ty == VariableType::Unit {
+                match var.place_id.place() {
+                    Place::Global(index) => {
+                        unit_type_globals.push(index);
+                    }
+                    Place::SpriteLocal(_, index) => {
+                        let mask = 1 << (index & 7);
+                        unit_type_spritelocals[(index as usize) / 8] |= mask;
+                    }
+                    _ => (),
+                }
+            }
+        }
+        VariableTypes {
+            unit_type_globals,
+            unit_type_spritelocals,
+        }
     }
 }
 

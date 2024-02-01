@@ -19,8 +19,8 @@ use crate::bw;
 use crate::globals::{Globals, PlayerColorChoices, SerializableSprite, SerializableImage};
 use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
-    UnitVar, ImageVar, GameVar, UnitRefId, UnitObject, UnitRefParts, SpriteLocalSetId,
-    FormatStringId, AnyExpr, AnyTypeRef, AiceCommandParam, CommandParams,
+    UnitVar, ImageVar, GameVar, UnitRefId, UnitObjectOrVariable, UnitRefParts, SpriteLocalSetId,
+    FormatStringId, AnyExpr, AnyTypeRef, AiceCommandParam, CommandParams, UnpackedExprId,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::unit::UnitExt;
@@ -40,6 +40,10 @@ pub struct IscriptState {
     image_locals: FxHashMap<SerializableImage, FxHashMap<u32, u32>>,
     globals: Vec<i32>,
     queued_transforms: Vec<(u32, UnitId)>,
+    /// Highest bit = Currently valid, 0x7fff = Generation id
+    /// Used for determining if a unit stored in variable is still
+    /// valid or not when accessed.
+    unit_generations: Vec<u16>,
     dry_run_call_stack: Vec<u32>,
     #[serde(skip)]
     with_vars: Vec<SpriteLocal>,
@@ -113,11 +117,16 @@ impl IscriptState {
     }
 
     pub fn from_script(iscript: &Iscript) -> IscriptState {
+        let mut globals = vec![0; iscript.global_count as usize];
+        for &global_id in iscript.unit_type_globals() {
+            globals[global_id as usize] = -1;
+        }
         IscriptState {
             sprite_locals: FxHashMap::default(),
             image_locals: FxHashMap::default(),
             queued_transforms: Vec::new(),
-            globals: vec![0; iscript.global_count as usize],
+            globals,
+            unit_generations: Vec::new(),
             dry_run_call_stack: Vec::new(),
             with_vars: Vec::new(),
             with_image: None,
@@ -786,75 +795,92 @@ impl<'a> IscriptRunner<'a> {
     }
 
     fn resolve_unit_ref_part(
-        &self,
-        unit_obj: UnitObject,
+        &mut self,
+        unit_obj: UnitObjectOrVariable,
         unit: Option<Unit>,
         bullet: Option<*mut bw::Bullet>,
     ) -> Option<Unit> {
         use crate::parse::UnitObject::*;
-        match unit_obj {
-            This => unit,
-            UnitParent => {
-                let unit = unit?;
-                let id = unit.id();
-                match id {
-                    bw_dat::unit::NUCLEAR_MISSILE | bw_dat::unit::LARVA => unit.related(),
-                    bw_dat::unit::INTERCEPTOR | bw_dat::unit::SCARAB => unit.fighter_parent(),
-                    _ => {
-                        if id.is_powerup() {
-                            unit.powerup_worker()
-                        } else if id.is_subunit() {
-                            unit.subunit_linked()
-                        } else if id.is_addon() {
-                            unit.related()
-                        } else {
-                            None
+        if let Some(unit_obj) = unit_obj.if_unit_object() {
+            match unit_obj {
+                This => unit,
+                UnitParent => {
+                    let unit = unit?;
+                    let id = unit.id();
+                    match id {
+                        bw_dat::unit::NUCLEAR_MISSILE | bw_dat::unit::LARVA => unit.related(),
+                        bw_dat::unit::INTERCEPTOR | bw_dat::unit::SCARAB => unit.fighter_parent(),
+                        _ => {
+                            if id.is_powerup() {
+                                unit.powerup_worker()
+                            } else if id.is_subunit() {
+                                unit.subunit_linked()
+                            } else if id.is_addon() {
+                                unit.related()
+                            } else {
+                                None
+                            }
                         }
                     }
                 }
-            }
-            Nuke => {
-                let unit = unit?;
-                match unit.id() {
-                    bw_dat::unit::NUCLEAR_SILO => unit.silo_nuke(),
-                    bw_dat::unit::GHOST => unit.related(),
-                    _ => None,
-                }
-            }
-            CurrentlyBuilding => {
-                let unit = unit?;
-                if unit.id() == bw_dat::unit::SCV {
-                    if unit.order() == bw_dat::order::SCV_BUILD {
-                        unit.target()
-                    } else {
-                        None
+                Nuke => {
+                    let unit = unit?;
+                    match unit.id() {
+                        bw_dat::unit::NUCLEAR_SILO => unit.silo_nuke(),
+                        bw_dat::unit::GHOST => unit.related(),
+                        _ => None,
                     }
-                } else if unit.id() == bw_dat::unit::NYDUS_CANAL {
-                    unit.nydus_linked().filter(|x| !x.is_completed())
-                } else {
-                    unit.currently_building()
                 }
-            }
-            UnitTarget => unit?.target(),
-            Transport => {
-                let unit = unit?;
-                match unit.in_transport() {
-                    true => unit.related(),
-                    false => None,
+                CurrentlyBuilding => {
+                    let unit = unit?;
+                    if unit.id() == bw_dat::unit::SCV {
+                        if unit.order() == bw_dat::order::SCV_BUILD {
+                            unit.target()
+                        } else {
+                            None
+                        }
+                    } else if unit.id() == bw_dat::unit::NYDUS_CANAL {
+                        unit.nydus_linked().filter(|x| !x.is_completed())
+                    } else {
+                        unit.currently_building()
+                    }
                 }
+                UnitTarget => unit?.target(),
+                Transport => {
+                    let unit = unit?;
+                    match unit.in_transport() {
+                        true => unit.related(),
+                        false => None,
+                    }
+                }
+                Addon => unit?.addon(),
+                Subunit => unit.filter(|x| !x.id().is_subunit())?.subunit_linked(),
+                LinkedNydus => unit?.nydus_linked().filter(|x| x.is_completed()),
+                Powerup => unit?.powerup(),
+                RallyTarget => unit?.rally_unit(),
+                IrradiatedBy => unsafe { Unit::from_ptr((**unit?).irradiated_by) },
+                BulletParent => unsafe { Unit::from_ptr((*bullet?).parent) },
+                BulletTarget => unsafe { Unit::from_ptr((*bullet?).target.unit) },
+                BulletPreviousBounceTarget => {
+                    unsafe { Unit::from_ptr((*bullet?).previous_bounce_target) }
+                }
+                Null | _Last => None,
             }
-            Addon => unit?.addon(),
-            Subunit => unit.filter(|x| !x.id().is_subunit())?.subunit_linked(),
-            LinkedNydus => unit?.nydus_linked().filter(|x| x.is_completed()),
-            Powerup => unit?.powerup(),
-            RallyTarget => unit?.rally_unit(),
-            IrradiatedBy => unsafe { Unit::from_ptr((**unit?).irradiated_by) },
-            BulletParent => unsafe { Unit::from_ptr((*bullet?).parent) },
-            BulletTarget => unsafe { Unit::from_ptr((*bullet?).target.unit) },
-            BulletPreviousBounceTarget => {
-                unsafe { Unit::from_ptr((*bullet?).previous_bounce_target) }
-            }
-            _Last => None,
+        } else {
+            let id = unit_obj.variable_id();
+            let value = if unit_obj.is_global() {
+                self.get_global(id)
+            } else {
+                // If there is no unit, assume that we are on first part of the chain
+                // refering to current sprite (It could also have an unit but then
+                // it works anyway)
+                let sprite = match unit {
+                    Some(s) => s.sprite()?,
+                    None => unsafe { Sprite::from_ptr((*self.image).parent)? },
+                };
+                self.state.get_sprite_local_sprite(sprite, id)?
+            };
+            self.variable_to_unit(value)
         }
     }
 
@@ -874,6 +900,104 @@ impl<'a> IscriptRunner<'a> {
         }
     }
 
+    fn variable_to_unit(&mut self, var: i32) -> Option<Unit> {
+        if var == -1 {
+            // Early exit, would be caught by unit_array.get_by_index though
+            return None;
+        }
+        let var = var as u32;
+        let index = var & 0xffff;
+        let gen = (var >> 16) as u16;
+        let &current_gen = self.state.unit_generations.get(index as usize)?;
+        if gen | 0x8000 == current_gen {
+            let unit_array = self.unit_array();
+            unit_array.get_by_index(index)
+        } else {
+            None
+        }
+    }
+
+    fn unit_to_variable(&mut self, unit: Option<Unit>) -> i32 {
+        match unit {
+            Some(unit) => {
+                let unit_array = self.unit_array();
+                let index = unit_array.to_index(unit);
+                if index >= 0xffff {
+                    return -1;
+                }
+                let generation = self.unit_generation_add(&unit_array, index);
+                (((generation as u32) << 16) | index) as i32
+            }
+            None => -1,
+        }
+    }
+
+    /// Gets generation number for unit, using the current one if it hasn't been changed
+    /// or generates the next one and marks it valid.
+    fn unit_generation_add(&mut self, unit_array: &UnitArray, index: u32) -> u16 {
+        let index = index as usize;
+        let state = &mut self.state;
+        if state.unit_generations.len() == 0 {
+            state.unit_generations.resize_with(unit_array.len(), || 0);
+        }
+        if let Some(entry) = state.unit_generations.get_mut(index) {
+            let value = *entry;
+            if value & 0x8000 != 0 {
+                value & 0x7fff
+            } else {
+                if value == 0x7fff {
+                    self.gc_unit_generations();
+                    self.unit_generation_add(unit_array, index as u32)
+                } else {
+                    *entry = (value + 1) | 0x8000;
+                    value + 1
+                }
+            }
+        } else {
+            0
+        }
+    }
+
+    fn gc_unit_generations(&mut self) {
+        let state = &mut self.state;
+        // Go through all variables, if their unit is invalid gen then make
+        // variable invalid, otherwise make it gen 0
+        // Then make all unit generations 0 (Keep valid ones valid)
+        for &global_id in self.iscript.unit_type_globals() {
+            if let Some(entry) = state.globals.get_mut(global_id as usize) {
+                let value = *entry as u32;
+                let index = value & 0xffff;
+                let gen = (value >> 16) as u16;
+                if let Some(&current_gen) = state.unit_generations.get(index as usize) {
+                    if current_gen == gen | 0x8000 {
+                        *entry = index as i32;
+                    } else {
+                        *entry = -1;
+                    }
+                }
+            }
+        }
+        for sprite_local_list in state.sprite_locals.values_mut() {
+            for entry in sprite_local_list {
+                if self.iscript.is_unit_sprite_local(entry.id) {
+                    let value = entry.value as u32;
+                    let index = value & 0xffff;
+                    let gen = (value >> 16) as u16;
+                    if let Some(&current_gen) = state.unit_generations.get(index as usize) {
+                        if current_gen == gen | 0x8000 {
+                            entry.value = index as i32;
+                        } else {
+                            entry.value = -1;
+                        }
+                    }
+                }
+            }
+        }
+        for entry in &mut state.unit_generations {
+            *entry &= 0x8000;
+        }
+    }
+
     fn set_with_vars(&mut self, image: ImageId, locals: SpriteLocalSetId) {
         let set = self.iscript.sprite_local_set(locals);
         if set.is_empty() {
@@ -888,10 +1012,18 @@ impl<'a> IscriptRunner<'a> {
         self.state.with_image = Some(image);
         self.state.with_vars.clear();
         self.state.with_vars.reserve(set.len());
-        for &(var, expr) in set {
-            let expression = &self.iscript.int_expressions[expr as usize];
-            let mut eval_ctx = self.eval_ctx();
-            let value = eval_ctx.eval_int(&expression);
+        for &(var, expr_id) in set {
+            let value = match expr_id.unpack() {
+                UnpackedExprId::Int(index) => {
+                    let expression = &self.iscript.int_expressions[index];
+                    let mut eval_ctx = self.eval_ctx();
+                    eval_ctx.eval_int(&expression)
+                }
+                UnpackedExprId::Unit(unit_ref) => {
+                    let unit = self.resolve_unit_ref(unit_ref);
+                    self.unit_to_variable(unit)
+                }
+            };
             self.state.with_vars.push(SpriteLocal {
                 id: var,
                 value,
@@ -1101,184 +1233,28 @@ impl<'a> IscriptRunner<'a> {
                             continue 'op_loop;
                         }
                     }
-                    match place {
-                        Place::Global(id) => self.state.globals[id as usize] = value,
-                        Place::SpriteLocal(unit_ref, id) => {
-                            let uninit = place_id.if_uninit();
-                            let sprite = if unit_ref.is_this() {
-                                Sprite::from_ptr((*self.image).parent)
-                            } else {
-                                self.resolve_unit_ref(unit_ref).and_then(|x| x.sprite())
-                            };
-                            if let Some(sprite) = sprite {
-                                self.state.set_sprite_local(*sprite, id, value, uninit);
-                            }
-                        }
-                        Place::Flingy(unit_ref, ty) => {
-                            let flingy = if unit_ref.is_this() {
-                                match self.get_flingy() {
-                                    Some(s) => s,
-                                    None => continue 'op_loop,
-                                }
-                            } else {
-                                match self.resolve_unit_ref(unit_ref) {
-                                    Some(s) => ptr::addr_of_mut!((**s).flingy),
-                                    None => continue 'op_loop,
-                                }
-                            };
-                            set_flingy_var(flingy, ty, value);
-                        }
-                        Place::Bullet(ty) => {
-                            let bullet = match self.bullet {
-                                Some(s) => s,
-                                None => {
-                                    self.report_missing_parent("bullet");
-                                    show_bullet_frame0_help();
-                                    continue 'op_loop;
-                                }
-                            };
-                            match ty {
-                                BulletVar::State => (*bullet).state = value as u8,
-                                BulletVar::WeaponId => (*bullet).weapon_id = value as u8,
-                                BulletVar::BouncesRemaining => {
-                                    (*bullet).bounces_remaining = value as u8;
-                                }
-                                BulletVar::DeathTimer => (*bullet).death_timer = value as u8,
-                                BulletVar::OrderTargetX => {
-                                    (*bullet).target.pos.x = value as i16;
-                                }
-                                BulletVar::OrderTargetY => {
-                                    (*bullet).target.pos.y = value as i16;
-                                }
-                                BulletVar::Flags => (*bullet).flags = value as u8,
-                            }
-                        }
-                        Place::Unit(unit_ref, ty) => {
-                            let unit = match self.resolve_unit_ref(unit_ref) {
-                                Some(s) => s,
-                                None => {
-                                    if unit_ref.is_this() {
-                                        self.report_missing_parent("unit");
-                                        show_unit_frame0_help();
-                                    }
-                                    continue 'op_loop;
-                                }
-                            };
-                            let val_u16 = clamp_i32_u16(value);
-                            let val_u8 = clamp_i32_u8(value);
-                            match ty {
-                                UnitVar::DeathTimer => (**unit).death_timer = val_u16,
-                                UnitVar::MatrixTimer => (**unit).matrix_timer = val_u8,
-                                UnitVar::MatrixHp => (**unit).defensive_matrix_dmg = val_u16,
-                                UnitVar::StimTimer => (**unit).stim_timer = val_u8,
-                                UnitVar::EnsnareTimer => (**unit).ensnare_timer = val_u8,
-                                UnitVar::LockdownTimer => (**unit).lockdown_timer = val_u8,
-                                UnitVar::IrradiateTimer => (**unit).irradiate_timer = val_u8,
-                                UnitVar::StasisTimer => (**unit).stasis_timer = val_u8,
-                                UnitVar::PlagueTimer => (**unit).plague_timer = val_u8,
-                                UnitVar::MaelstormTimer => (**unit).maelstrom_timer = val_u8,
-                                UnitVar::IsBlind => (**unit).is_blind = val_u8,
-                                UnitVar::SpellUpdateTimer => (**unit).master_spell_timer = val_u8,
-                                UnitVar::ParasitePlayers => (**unit).parasited_by_players = val_u8,
-                                UnitVar::IsBeingHealed => (**unit).is_being_healed = val_u8,
-                                UnitVar::IsUnderStorm => (**unit).is_under_storm = val_u8,
-                                UnitVar::Hitpoints => {
-                                    if value != unit.hitpoints() {
-                                        return Ok(ScriptRunResult::SetHp(unit, value));
-                                    }
-                                }
-                                UnitVar::Shields => (**unit).shields = value,
-                                UnitVar::Energy => (**unit).energy = val_u16,
-                                UnitVar::MaxHitpoints => bw_print!("Cannot set max hitpoints"),
-                                UnitVar::MaxShields => bw_print!("Cannot set max shields"),
-                                UnitVar::MaxEnergy => bw_print!("Cannot set max energy"),
-                                UnitVar::MineralCost => bw_print!("Cannot set mineral cost"),
-                                UnitVar::GasCost => bw_print!("Cannot set gas cost"),
-                                UnitVar::SupplyCost => bw_print!("Cannot set supply cost"),
-                                UnitVar::OverlaySize => bw_print!("Cannot set overlay size"),
-                                UnitVar::Resources => if unit.id().is_resource_container() {
-                                    (**unit).unit_specific2.resource.amount = val_u16;
-                                },
-                                UnitVar::HangarCountInside | UnitVar::HangarCountOutside =>
-                                    bw_print!("Cannot set hangar count"),
-                                UnitVar::LoadedCount => bw_print!("Cannot set loaded count"),
-                                UnitVar::CurrentUpgrade =>
-                                    bw_print!("Cannot set current upgrade"),
-                                UnitVar::CurrentTech => bw_print!("Cannot set current tech"),
-                                UnitVar::BuildQueue => {
-                                    if vars[0] < 5 {
-                                        let index = ((**unit).current_build_slot as usize)
-                                            .wrapping_add(vars[0] as usize) % 5;
-                                        (**unit).build_queue[index] = val_u16;
-                                    }
-                                }
-                                UnitVar::RemainingBuildTime => {
-                                    (**unit).remaining_build_time = val_u16;
-                                }
-                                UnitVar::RemainingResearchTime => {
-                                    if unit.tech_in_progress().is_some() ||
-                                        unit.upgrade_in_progress().is_some()
-                                    {
-                                        (**unit).unit_specific.building.research_time_remaining =
-                                            val_u16;
-                                    }
-                                }
-                                UnitVar::UnitId => bw_print!("Cannot set unit id"),
-                                UnitVar::Kills => (**unit).kills = val_u8,
-                                UnitVar::CarriedResourceAmount => {
-                                    if unit.id().is_worker() {
-                                        (**unit).unit_specific.worker.carried_resource_count =
-                                            val_u8;
-                                    }
-                                }
-                                UnitVar::GroundCooldown => (**unit).ground_cooldown = val_u8,
-                                UnitVar::AirCooldown => (**unit).air_cooldown = val_u8,
-                                UnitVar::SpellCooldown => (**unit).spell_cooldown = val_u8,
-                                UnitVar::Order => bw_print!("Cannot set order"),
-                                UnitVar::OrderTimer => (**unit).order_timer = val_u8,
-                                UnitVar::OrderState => (**unit).order_state = val_u8,
-                                UnitVar::RankIncrease => (**unit).rank =
-                                    clamp_i32_iu8(value) as u8,
-                                UnitVar::MineAmount => {
-                                    if matches!(
-                                        unit.id(),
-                                        bw_dat::unit::VULTURE |
-                                        bw_dat::unit::JIM_RAYNOR_VULTURE
-                                    ) {
-                                        (**unit).unit_specific.vulture.mines = val_u8;
-                                    }
-                                }
-                                UnitVar::RallyX | UnitVar::RallyY => {
-                                    if unit.id().is_building() && unit.id() != bw_dat::unit::PYLON {
-                                        if ty == UnitVar::RallyX {
-                                            (**unit).rally_pylon.rally.pos.x = val_u16 as i16;
-                                        } else {
-                                            (**unit).rally_pylon.rally.pos.y = val_u16 as i16;
-                                        }
-                                    }
-                                }
-                                UnitVar::Flags => (**unit).flags = value as u32,
-                                UnitVar::DetectionStatus => {
-                                    (**unit).detection_status = value as u32;
-                                }
-                                UnitVar::PathingFlags => (**unit).pathing_flags = val_u8,
-                                UnitVar::MovementState => (**unit).movement_state = val_u8,
-                            }
-                        },
-                        Place::Image(ty) => {
-                            let image = self.image;
-                            match ty {
-                                ImageVar::Drawfunc => (*image).drawfunc = value as u8,
-                                ImageVar::DrawfuncParam => {
-                                    (*image).drawfunc_param = value as usize as *mut c_void;
-                                }
-                                ImageVar::Frame => bw_print!("Cannot set frame"),
-                                ImageVar::BaseFrame => bw_print!("Cannot set base frame"),
-                            }
-                        }
-                        Place::Game(ty) => {
-                            self.set_game_var(ty, value, &vars);
-                        }
+                    let res = self.set_variable(place, place_id, value, &vars);
+                    if let Some(res) = res {
+                        return Ok(res);
+                    }
+                }
+                SET_UNIT => {
+                    let place_id = PlaceId(self.read_u32()?);
+                    let unit_ref = UnitRefId(self.read_u16()?);
+                    if self.dry_run {
+                        // Bad? Ideally would have dry-run state
+                        // Maybe should stop here?
+                        continue;
+                    }
+
+                    let value = {
+                        let unit = self.resolve_unit_ref(unit_ref);
+                        self.unit_to_variable(unit)
+                    };
+                    let vars = [0i32; 4];
+                    let res = self.set_variable(place_id.place(), place_id, value, &vars);
+                    if let Some(res) = res {
+                        return Ok(res);
                     }
                 }
                 PRE_END => {
@@ -1591,6 +1567,196 @@ impl<'a> IscriptRunner<'a> {
             }
         }
         Ok(ScriptRunResult::Done)
+    }
+
+    #[must_use]
+    unsafe fn set_variable(
+        &mut self,
+        place: Place,
+        place_id: PlaceId,
+        value: i32,
+        vars: &[i32; 4],
+    ) -> Option<ScriptRunResult> {
+        match place {
+            Place::Global(id) => self.state.globals[id as usize] = value,
+            Place::SpriteLocal(unit_ref, id) => {
+                let uninit = place_id.if_uninit();
+                let sprite = if unit_ref.is_this() {
+                    Sprite::from_ptr((*self.image).parent)
+                } else {
+                    self.resolve_unit_ref(unit_ref).and_then(|x| x.sprite())
+                };
+                if let Some(sprite) = sprite {
+                    self.state.set_sprite_local(*sprite, id, value, uninit);
+                }
+            }
+            Place::Flingy(unit_ref, ty) => {
+                let flingy = if unit_ref.is_this() {
+                    match self.get_flingy() {
+                        Some(s) => s,
+                        None => return None,
+                    }
+                } else {
+                    match self.resolve_unit_ref(unit_ref) {
+                        Some(s) => ptr::addr_of_mut!((**s).flingy),
+                        None => return None,
+                    }
+                };
+                set_flingy_var(flingy, ty, value);
+            }
+            Place::Bullet(ty) => {
+                let bullet = match self.bullet {
+                    Some(s) => s,
+                    None => {
+                        self.report_missing_parent("bullet");
+                        show_bullet_frame0_help();
+                        return None;
+                    }
+                };
+                match ty {
+                    BulletVar::State => (*bullet).state = value as u8,
+                    BulletVar::WeaponId => (*bullet).weapon_id = value as u8,
+                    BulletVar::BouncesRemaining => {
+                        (*bullet).bounces_remaining = value as u8;
+                    }
+                    BulletVar::DeathTimer => (*bullet).death_timer = value as u8,
+                    BulletVar::OrderTargetX => {
+                        (*bullet).target.pos.x = value as i16;
+                    }
+                    BulletVar::OrderTargetY => {
+                        (*bullet).target.pos.y = value as i16;
+                    }
+                    BulletVar::Flags => (*bullet).flags = value as u8,
+                }
+            }
+            Place::Unit(unit_ref, ty) => {
+                let unit = match self.resolve_unit_ref(unit_ref) {
+                    Some(s) => s,
+                    None => {
+                        if unit_ref.is_this() {
+                            self.report_missing_parent("unit");
+                            show_unit_frame0_help();
+                        }
+                        return None;
+                    }
+                };
+                let val_u16 = clamp_i32_u16(value);
+                let val_u8 = clamp_i32_u8(value);
+                match ty {
+                    UnitVar::DeathTimer => (**unit).death_timer = val_u16,
+                    UnitVar::MatrixTimer => (**unit).matrix_timer = val_u8,
+                    UnitVar::MatrixHp => (**unit).defensive_matrix_dmg = val_u16,
+                    UnitVar::StimTimer => (**unit).stim_timer = val_u8,
+                    UnitVar::EnsnareTimer => (**unit).ensnare_timer = val_u8,
+                    UnitVar::LockdownTimer => (**unit).lockdown_timer = val_u8,
+                    UnitVar::IrradiateTimer => (**unit).irradiate_timer = val_u8,
+                    UnitVar::StasisTimer => (**unit).stasis_timer = val_u8,
+                    UnitVar::PlagueTimer => (**unit).plague_timer = val_u8,
+                    UnitVar::MaelstormTimer => (**unit).maelstrom_timer = val_u8,
+                    UnitVar::IsBlind => (**unit).is_blind = val_u8,
+                    UnitVar::SpellUpdateTimer => (**unit).master_spell_timer = val_u8,
+                    UnitVar::ParasitePlayers => (**unit).parasited_by_players = val_u8,
+                    UnitVar::IsBeingHealed => (**unit).is_being_healed = val_u8,
+                    UnitVar::IsUnderStorm => (**unit).is_under_storm = val_u8,
+                    UnitVar::Hitpoints => {
+                        if value != unit.hitpoints() {
+                            return Some(ScriptRunResult::SetHp(unit, value));
+                        }
+                    }
+                    UnitVar::Shields => (**unit).shields = value,
+                    UnitVar::Energy => (**unit).energy = val_u16,
+                    UnitVar::MaxHitpoints => bw_print!("Cannot set max hitpoints"),
+                    UnitVar::MaxShields => bw_print!("Cannot set max shields"),
+                    UnitVar::MaxEnergy => bw_print!("Cannot set max energy"),
+                    UnitVar::MineralCost => bw_print!("Cannot set mineral cost"),
+                    UnitVar::GasCost => bw_print!("Cannot set gas cost"),
+                    UnitVar::SupplyCost => bw_print!("Cannot set supply cost"),
+                    UnitVar::OverlaySize => bw_print!("Cannot set overlay size"),
+                    UnitVar::Resources => if unit.id().is_resource_container() {
+                        (**unit).unit_specific2.resource.amount = val_u16;
+                    },
+                    UnitVar::HangarCountInside | UnitVar::HangarCountOutside =>
+                        bw_print!("Cannot set hangar count"),
+                    UnitVar::LoadedCount => bw_print!("Cannot set loaded count"),
+                    UnitVar::CurrentUpgrade =>
+                        bw_print!("Cannot set current upgrade"),
+                    UnitVar::CurrentTech => bw_print!("Cannot set current tech"),
+                    UnitVar::BuildQueue => {
+                        if vars[0] < 5 {
+                            let index = ((**unit).current_build_slot as usize)
+                                .wrapping_add(vars[0] as usize) % 5;
+                            (**unit).build_queue[index] = val_u16;
+                        }
+                    }
+                    UnitVar::RemainingBuildTime => {
+                        (**unit).remaining_build_time = val_u16;
+                    }
+                    UnitVar::RemainingResearchTime => {
+                        if unit.tech_in_progress().is_some() ||
+                            unit.upgrade_in_progress().is_some()
+                        {
+                            (**unit).unit_specific.building.research_time_remaining =
+                                val_u16;
+                        }
+                    }
+                    UnitVar::UnitId => bw_print!("Cannot set unit id"),
+                    UnitVar::Kills => (**unit).kills = val_u8,
+                    UnitVar::CarriedResourceAmount => {
+                        if unit.id().is_worker() {
+                            (**unit).unit_specific.worker.carried_resource_count =
+                                val_u8;
+                        }
+                    }
+                    UnitVar::GroundCooldown => (**unit).ground_cooldown = val_u8,
+                    UnitVar::AirCooldown => (**unit).air_cooldown = val_u8,
+                    UnitVar::SpellCooldown => (**unit).spell_cooldown = val_u8,
+                    UnitVar::Order => bw_print!("Cannot set order"),
+                    UnitVar::OrderTimer => (**unit).order_timer = val_u8,
+                    UnitVar::OrderState => (**unit).order_state = val_u8,
+                    UnitVar::RankIncrease => (**unit).rank =
+                        clamp_i32_iu8(value) as u8,
+                    UnitVar::MineAmount => {
+                        if matches!(
+                            unit.id(),
+                            bw_dat::unit::VULTURE |
+                            bw_dat::unit::JIM_RAYNOR_VULTURE
+                        ) {
+                            (**unit).unit_specific.vulture.mines = val_u8;
+                        }
+                    }
+                    UnitVar::RallyX | UnitVar::RallyY => {
+                        if unit.id().is_building() && unit.id() != bw_dat::unit::PYLON {
+                            if ty == UnitVar::RallyX {
+                                (**unit).rally_pylon.rally.pos.x = val_u16 as i16;
+                            } else {
+                                (**unit).rally_pylon.rally.pos.y = val_u16 as i16;
+                            }
+                        }
+                    }
+                    UnitVar::Flags => (**unit).flags = value as u32,
+                    UnitVar::DetectionStatus => {
+                        (**unit).detection_status = value as u32;
+                    }
+                    UnitVar::PathingFlags => (**unit).pathing_flags = val_u8,
+                    UnitVar::MovementState => (**unit).movement_state = val_u8,
+                }
+            },
+            Place::Image(ty) => {
+                let image = self.image;
+                match ty {
+                    ImageVar::Drawfunc => (*image).drawfunc = value as u8,
+                    ImageVar::DrawfuncParam => {
+                        (*image).drawfunc_param = value as usize as *mut c_void;
+                    }
+                    ImageVar::Frame => bw_print!("Cannot set frame"),
+                    ImageVar::BaseFrame => bw_print!("Cannot set base frame"),
+                }
+            }
+            Place::Game(ty) => {
+                self.set_game_var(ty, value, &vars);
+            }
+        }
+        None
     }
 
     fn get_bullet_silent(&mut self) -> Option<*mut bw::Bullet> {
@@ -2276,7 +2442,20 @@ pub unsafe extern fn order_hook(u: *mut c_void, orig: unsafe extern fn(*mut c_vo
         CURRENT_ORDER_SPRITE.store(*sprite as usize, Ordering::Relaxed);
     }
     CURRENT_ORDER_UNIT.store(u as usize, Ordering::Relaxed);
+    let order = unit.order();
+    let order_state = unit.order_state();
     orig(u);
+    if order == bw_dat::order::DIE && order_state == 0 {
+        let mut globals_guard = Globals::get("order_hook die cleanup");
+        let globals = &mut *globals_guard;
+        let unit_array = bw::unit_array();
+        let index = unit_array.to_index(unit);
+        if let Some(x) = globals.iscript_state.unit_generations.get_mut(index as usize) {
+            if *x & 0x8000 == 0x8000 {
+                *x &= 0x7fff;
+            }
+        }
+    }
 
     // Make pylon auras run their iscript every frame, allowing them to be customized a bit
     if let Some(aura) = unit.pylon_aura() {
