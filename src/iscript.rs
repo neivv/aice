@@ -1373,7 +1373,7 @@ impl<'a> IscriptRunner<'a> {
                             }
                         }
                         let target = match target {
-                            Some(s) => match self.resolve_unit_ref(s) {
+                            Some(s) => match self.resolve_unit_ref(s).filter(|x| !x.is_hidden()) {
                                 Some(s) => Some((s, s.position())),
                                 None => {
                                     // Skip past castspell and RESET_ORDER_WEAPON

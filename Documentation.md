@@ -162,7 +162,7 @@ Note that since `fireweapon` behaves as `castspell`, it will respect the rarely 
 targeting flags, and do nothing if the targeting flags prevent attacking the current target unit.
 
 `fireweapon_at` is same as `fireweapon`, but overrides target to a specified [unit][other-units],
-doing nothing if the unit does not exist.
+doing nothing if the unit does not exist, or is hidden (Inside transport or bunker)
 
 ### playfram
 
