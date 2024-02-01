@@ -130,11 +130,16 @@ print Current unit's target is {unit.target}
 print <5>Color 1, <1c>color 2
 ```
 
-### fireweapon
+### fireweapon / fireweapon\_at
 
 ```
 fireweapon <weapon_id>
 fireweapon <weapon_id> with {
+    spritelocal1 = <value>
+    [...]
+}
+fireweapon_at <unit> <weapon_id>
+fireweapon_at <unit> <weapon_id> with {
     spritelocal1 = <value>
     [...]
 }
@@ -155,6 +160,9 @@ See [create\_unit examples][with-example] for more information.
 
 Note that since `fireweapon` behaves as `castspell`, it will respect the rarely used weapons.dat
 targeting flags, and do nothing if the targeting flags prevent attacking the current target unit.
+
+`fireweapon_at` is same as `fireweapon`, but overrides target to a specified [unit][other-units],
+doing nothing if the unit does not exist.
 
 ### playfram
 

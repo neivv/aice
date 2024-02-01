@@ -55,6 +55,8 @@ pub struct IscriptState {
 
 const TEMP_LOCAL_ID: u32 = !0;
 const CALL_STACK_POS_ID: u32 = !1;
+const FIRE_WEAPON_AT_TEMP_ID: u32 = !2;
+const FIRE_WEAPON_AT_TEMP_ID2: u32 = !3;
 const CALL_STACK_RETURN_POS_BASE: u32 = 0xff00_0000;
 const CALL_STACK_LIMIT: u32 = 256;
 
@@ -1325,13 +1327,18 @@ impl<'a> IscriptRunner<'a> {
                     self.in_aice_code = false;
                 }
                 RESET_ORDER_WEAPON | FIRE_WEAPON => {
+                    let target;
                     let weapon_id;
                     let sprite_locals;
                     if opcode == FIRE_WEAPON {
-                        let values = self.read_aice_params(&FIRE_WEAPON_PARAMS)?;
-                        weapon_id = values[0];
-                        sprite_locals = SpriteLocalSetId(values[1] as u32);
+                        let values = self.read_aice_params(&FIRE_WEAPON_AT_PARAMS)?;
+                        target = Some(values[0] as u16)
+                            .filter(|&x| x != 0xffff)
+                            .map(|x| UnitRefId(x));
+                        weapon_id = values[1];
+                        sprite_locals = SpriteLocalSetId(values[2] as u32);
                     } else {
+                        target = None;
                         weapon_id = 0;
                         sprite_locals = SpriteLocalSetId(0);
                     }
@@ -1365,18 +1372,87 @@ impl<'a> IscriptRunner<'a> {
                                 continue 'op_loop;
                             }
                         }
+                        let target = match target {
+                            Some(s) => match self.resolve_unit_ref(s) {
+                                Some(s) => Some((s, s.position())),
+                                None => {
+                                    // Skip past castspell and RESET_ORDER_WEAPON
+                                    // This is super hacky but parse code verifies that
+                                    // this should work when emitting FIRE_WEAPON
+                                    // 3 bytes for JUMP_TO_BW and 1 byte for RESET_ORDER_WEAPON
+                                    self.pos += 4;
+                                    continue 'op_loop;
+                                }
+                            }
+                            None => None,
+                        };
                         let old = match orders_dat_weapon.entry_size {
                             1 => *(orders_dat_weapon.data as *mut u8).add(order) as u32,
                             2 => *(orders_dat_weapon.data as *mut u16).add(order) as u32,
                             4 => *(orders_dat_weapon.data as *mut u32).add(order),
                             _ => 0,
                         };
+                        if let Some(target) = target {
+                            let current_target = unit.target();
+                            let old_target = current_target
+                                .map(|x| self.unit_array().to_index(x) as i32)
+                                .unwrap_or(-1);
+                            let old_pos = unit.target_pos();
+                            let old_pos = (old_pos.x as u32 | ((old_pos.y as u32) << 16)) as i32;
+
+                            self.state.set_sprite_local(
+                                sprite,
+                                FIRE_WEAPON_AT_TEMP_ID,
+                                old_target,
+                                false,
+                            );
+                            self.state.set_sprite_local(
+                                sprite,
+                                FIRE_WEAPON_AT_TEMP_ID2,
+                                old_pos,
+                                false,
+                            );
+                            (**unit).order_target.unit = *target.0;
+                            (**unit).order_target.pos = target.1;
+                        } else {
+                            // Set this anyway; otherwise would have to delete spritelocal at
+                            // RESET_ORDER_WEAPON to distinguish not setting anything and
+                            // setting to null
+                            self.state.set_sprite_local(
+                                sprite,
+                                FIRE_WEAPON_AT_TEMP_ID,
+                                -2,
+                                false,
+                            );
+                        }
                         self.state.set_sprite_local(sprite, TEMP_LOCAL_ID, old as i32, false);
                         new_value = Some(weapon_id);
                         let image = WeaponId(weapon_id as u16).flingy().sprite().image();
                         self.set_with_vars(image, sprite_locals);
                     } else {
                         new_value = self.get_sprite_local(TEMP_LOCAL_ID, UnitRefId::this());
+                        let restore_target =
+                            self.get_sprite_local(FIRE_WEAPON_AT_TEMP_ID, UnitRefId::this())
+                                .filter(|&x| x != -2);
+                        if let Some(restore) = restore_target {
+                            let restore_pos =
+                                self.get_sprite_local(FIRE_WEAPON_AT_TEMP_ID2, UnitRefId::this());
+                            if restore == -1 {
+                                (**unit).order_target.unit = null_mut();
+                            } else {
+                                (**unit).order_target.unit =
+                                    self.unit_array().get_by_index(restore as u32)
+                                        .map(|x| *x)
+                                        .unwrap_or(null_mut());
+                            }
+                            if let Some(pos) = restore_pos {
+                                let pos = pos as u32;
+                                (**unit).order_target.pos = bw::Point {
+                                    x: pos as u16 as i16,
+                                    y: (pos >> 16) as u16 as i16,
+                                };
+                            }
+                        }
                         self.state.with_image = None;
                     }
                     if let Some(new_value) = new_value {

@@ -375,7 +375,10 @@ pub mod aice_op {
         &[True, UnitRef, IntExprOrConstU16, IntExprOrConstI8, IntExprOrConstI8]
     );
     pub const FIRE_WEAPON: u8 = 0x10;
-    pub static FIRE_WEAPON_PARAMS: CommandParams = CommandParams::new(&[IntExprOrConstU16, With]);
+    pub static FIRE_WEAPON_PARAMS: CommandParams =
+        CommandParams::new(&[U16Ffff, IntExprOrConstU16, With]);
+    pub static FIRE_WEAPON_AT_PARAMS: CommandParams =
+        CommandParams::new(&[UnitRef, IntExprOrConstU16, With]);
     pub const PRINT: u8 = 0x11;
     pub const SET_COPY: u8 = 0x12;
     pub const GIVE_UNIT: u8 = 0x13;
@@ -576,6 +579,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"if", If),
         (b"set", Set),
         (b"fireweapon", FireWeapon),
+        (b"fireweapon_at", FireWeaponAt),
         (b"create_unit", CreateUnit),
         (b"issue_order", IssueOrder),
         (b"imgul_on", ImgulOn),
@@ -745,6 +749,7 @@ enum CommandPrototype {
     Set,
     End,
     FireWeapon,
+    FireWeaponAt,
     GotoRepeatAttk,
     CreateUnit,
     IssueOrder,
@@ -1391,7 +1396,9 @@ impl<'a> Parser<'a> {
                             add_set_decl(&mut stage1.variable_types, var_name, ty)?;
                         }
                     }
-                    CommandPrototype::CreateUnit | CommandPrototype::FireWeapon => {
+                    CommandPrototype::CreateUnit | CommandPrototype::FireWeapon |
+                        CommandPrototype::FireWeaponAt =>
+                    {
                         if ends_with_tokens(rest, &[b"with", b"{"]) {
                             let main_line_no = ctx.error_line_number;
                             let id = self.parse_spritelocal_set(stage1, ctx)?;
@@ -1558,17 +1565,27 @@ impl<'a> Parser<'a> {
                 out.add_aice_command(aice_op::RETURN);
                 Ok(())
             }
-            CommandPrototype::FireWeapon => {
+            CommandPrototype::FireWeapon | CommandPrototype::FireWeaponAt => {
+                let params = match input.command {
+                    CommandPrototype::FireWeapon => &aice_op::FIRE_WEAPON_PARAMS,
+                    _ => &aice_op::FIRE_WEAPON_AT_PARAMS,
+                };
                 let mut out = self.parse_add_aice_command(
                     input,
                     out,
                     ctx,
                     aice_op::FIRE_WEAPON,
-                    &aice_op::FIRE_WEAPON_PARAMS,
+                    params,
                 )?;
+                let current_len = out.aice_code_len();
                 // castspell
                 out.add_bw_code(&[0x27]);
                 out.add_aice_command(aice_op::RESET_ORDER_WEAPON);
+                if out.aice_code_len() - current_len != 4 {
+                    // Iscript FIRE_WEAPON implementation relies on being able to skip castspell
+                    // and order reset by doing this (Should be +3 for BW jump and +1 for reset)
+                    return Err(Error::Internal("fireweapon was not compiled as expected"));
+                }
                 Ok(())
             }
             CommandPrototype::PlayFram => {
@@ -1738,6 +1755,9 @@ impl<'a> Parser<'a> {
                 True => {
                     flags |= flags_pos;
                     flags_pos = flags_pos << 1;
+                }
+                U16Ffff => {
+                    write_u16(buffer, 0xffff);
                 }
                 IntExprOrConstU8 | IntExprOrConstI8 | IntExprOrConstU16 => {
                     let (expr, rest2) = parse_int_expr(rest, exprs, variables)?;

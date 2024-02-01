@@ -4,6 +4,7 @@ pub enum AiceCommandParam {
     IntExpr,
     False,
     True,
+    U16Ffff,
     With,
     UnitRef,
     IntExprOrConstI8,
@@ -58,12 +59,13 @@ impl AiceParamData {
     }
 }
 
-const fn gen_aice_param_data() -> [AiceParamData; 8] {
-    let mut result = [AiceParamData::zeroed(); 8];
+const fn gen_aice_param_data() -> [AiceParamData; 9] {
+    let mut result = [AiceParamData::zeroed(); 9];
     result[AiceCommandParam::IntExpr as usize].lengths = [4, 4];
     result[AiceCommandParam::IntExpr as usize].flags = 0x4;
     result[AiceCommandParam::False as usize].flags = 0x3;
     result[AiceCommandParam::True as usize].flags = 0x3;
+    result[AiceCommandParam::U16Ffff as usize].lengths = [2, 2];
     result[AiceCommandParam::With as usize].lengths = [4, 4];
     result[AiceCommandParam::UnitRef as usize].lengths = [2, 2];
     result[AiceCommandParam::IntExprOrConstI8 as usize].lengths = [4, 1];
@@ -75,7 +77,7 @@ const fn gen_aice_param_data() -> [AiceParamData; 8] {
     result
 }
 
-static AICE_PARAM_DATA: [AiceParamData; 8] = gen_aice_param_data();
+static AICE_PARAM_DATA: [AiceParamData; 9] = gen_aice_param_data();
 
 /// Unsafe, but does "nothing worse" than out-of-bounds read from `input` if passed invalid input.
 ///

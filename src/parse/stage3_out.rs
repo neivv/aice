@@ -81,6 +81,10 @@ impl<'a, 'b, 'text> ParseStage3Output<'a, 'b, 'text> {
         self.inner.out.add_bw_code(code)
     }
 
+    pub fn aice_code_len(&self) -> usize {
+        self.inner.out.aice_code.len()
+    }
+
     pub fn build_sprite_local_set<F>(self, mut fun: F) -> Result<(SpriteLocalSetId, Self), Error>
     where F: FnMut(&mut CompilerExprs) -> Result<Option<(u32, ExprId)>, Error>
     {
