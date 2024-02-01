@@ -749,7 +749,7 @@ fn unit_vars() {
 }
 
 #[test]
-fn unit_vars_eqq() {
+fn unit_vars_err() {
     let mut errors = compile_err("unit_vars_err.txt");
     find_error(&mut errors, "Conflicting variable type", 63);
     find_error(&mut errors, "Conflicting variable type", 64);
@@ -759,5 +759,6 @@ fn unit_vars_eqq() {
     find_error(&mut errors, "Cannot parse", 60);
     find_error(&mut errors, "Cannot parse", 61);
     find_error(&mut errors, "default is not currently", 62);
+    find_error(&mut errors, "Cannot use non-spritelocal object refs as a place", 63);
     assert!(errors.is_empty());
 }

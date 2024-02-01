@@ -2040,7 +2040,25 @@ impl ParserExprs {
 
         let (unit_ref, rest) =
             self.unit_refs.parse_pre_split(first, rest, rest_dot, variable_decls)?;
-        let rest = expect_token(rest, b".")?;
+        let rest = match maybe_token(rest, b".") {
+            Some(s) => s,
+            None => {
+                let is_spritelocal = self.unit_refs.get_long_ref(unit_ref)
+                    .and_then(|x| x.last()?.if_sprite_local())
+                    .is_some();
+                if is_spritelocal {
+                    return Ok((VariableTypePlace {
+                        place_id: PlaceId::new_objref_spritelocal(unit_ref)
+                            .ok_or_else(|| CanRecoverError::No(Error::Overflow))?,
+                        ty: VariableType::Unit,
+                    }, rest));
+                } else {
+                    return Err(CanRecoverError::Yes(
+                        Error::Msg("Cannot use non-spritelocal object refs as a place")
+                    ));
+                }
+            }
+        };
         let (field, rest) = split_first_token(rest)
             .ok_or_else(error)?;
         let place = self.unit_vars.get(field.as_bytes()).copied()
@@ -2807,6 +2825,7 @@ pub enum GameVar {
 /// tag 0 = global, 1 = spritelocal, 2 = bw
 /// SpriteLocal 0x2000_0000 = set if_uninit
 ///     spritelocal 0x1fff_0000 = object ref id
+///     spritelocal ffff = Object ref which ends in a spritelocal
 /// bw second tag: 0x3c00_0000, 0 = flingy, 1 = bullet, 2 = unit, 3 = image, 4 = game
 ///     bw 0x0000_00ff = var id
 ///     bw 0x00ff_ff00 = object ref id (For units, flingies)
@@ -2900,6 +2919,14 @@ impl UnitObjectOrVariable {
         }
     }
 
+    pub fn if_sprite_local(self) -> Option<u32> {
+        if self.0 & 0xc000_0000 == 0x8000_0000 {
+            Some(self.variable_id())
+        } else {
+            None
+        }
+    }
+
     pub fn variable_id(self) -> u32 {
         self.0 & 0x0fff_ffff
     }
@@ -2956,7 +2983,7 @@ impl PlaceId {
         }
     }
     fn new_spritelocal(id: u32, unit: UnitRefId) -> Option<PlaceId> {
-        if id <= 0x0000_ffff {
+        if id < 0x0000_ffff {
             let tag_shifted = 1u32 << 30;
             let unit_shifted = if unit.0 <= 0x1fff {
                 (unit.0 as u32) << 16
@@ -2967,6 +2994,16 @@ impl PlaceId {
         } else {
             None
         }
+    }
+    fn new_objref_spritelocal(unit: UnitRefId) -> Option<PlaceId> {
+        let id = 0xffff;
+        let unit_shifted = if unit.0 <= 0x1fff {
+            (unit.0 as u32) << 16
+        } else {
+            return None;
+        };
+        let tag_shifted = 1u32 << 30;
+        Some(PlaceId(id | tag_shifted | unit_shifted))
     }
 
     pub fn place(self) -> Place {

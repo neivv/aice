@@ -60,6 +60,7 @@ ScourgeWalking:
     set global unit gunit_copy = 0
     set global unit gunit_copy = game.deaths(0, 0)
     set spritelocal unit default_unit = gunit_copy default unit
+    set unit.target = unit.target.target
 ScourgeLocal00:
 	playfram       	0x00	# frame set 0
 	wait           	2

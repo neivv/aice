@@ -65,6 +65,9 @@ ScourgeWalking:
     imgol_on        gunit 384 + gunit.target.overlay_size default 0 0 0
 
     set global unit gunit = null
+    set spritelocal unit thing = null
+    set spritelocal unit bullet.parent.thing = bullet.target
+    set spritelocal unit bullet.parent.thing2 = bullet.target
 ScourgeLocal00:
 	playfram       	0x00	# frame set 0
 	wait           	2

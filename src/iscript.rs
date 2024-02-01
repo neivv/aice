@@ -900,6 +900,26 @@ impl<'a> IscriptRunner<'a> {
         }
     }
 
+    /// Currently requires place to be an spritelocal, else returns None
+    fn resolve_unit_ref_as_place(&mut self, unit_ref: UnitRefId) -> Option<(Unit, u32)> {
+        let mut unit = self.get_unit_silent();
+        let bullet = self.get_bullet_silent();
+        match self.iscript.unit_ref_object(unit_ref) {
+            UnitRefParts::Single(unit_obj) => {
+                let id = unit_obj.if_sprite_local()?;
+                Some((unit?, id))
+            }
+            UnitRefParts::Many(parts) => {
+                let (last, rest) = parts.split_last()?;
+                let id = last.if_sprite_local()?;
+                for &part in rest {
+                    unit = Some(self.resolve_unit_ref_part(part, unit, bullet)?);
+                }
+                Some((unit?, id))
+            }
+        }
+    }
+
     fn variable_to_unit(&mut self, var: i32) -> Option<Unit> {
         if var == -1 {
             // Early exit, would be caught by unit_array.get_by_index though
@@ -1581,10 +1601,16 @@ impl<'a> IscriptRunner<'a> {
             Place::Global(id) => self.state.globals[id as usize] = value,
             Place::SpriteLocal(unit_ref, id) => {
                 let uninit = place_id.if_uninit();
-                let sprite = if unit_ref.is_this() {
-                    Sprite::from_ptr((*self.image).parent)
+                let (id, sprite) = if id == 0xffff {
+                    let (unit, id) = self.resolve_unit_ref_as_place(unit_ref)?;
+                    (id, unit.sprite())
                 } else {
-                    self.resolve_unit_ref(unit_ref).and_then(|x| x.sprite())
+                    let sprite = if unit_ref.is_this() {
+                        Sprite::from_ptr((*self.image).parent)
+                    } else {
+                        self.resolve_unit_ref(unit_ref)?.sprite()
+                    };
+                    (id, sprite)
                 };
                 if let Some(sprite) = sprite {
                     self.state.set_sprite_local(*sprite, id, value, uninit);

@@ -57,6 +57,11 @@ impl UnitRefBuilder {
         self.result
     }
 
+    pub fn get_long_ref(&self, id: UnitRefId) -> Option<&[UnitObjectOrVariable]> {
+        let index = id.0.checked_sub(UnitObject::_Last as u16)? as usize;
+        self.result.get(index).map(|x| &x[..])
+    }
+
     pub fn parse<'a, 'b>(
         &mut self,
         text: &'a [u8],
