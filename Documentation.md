@@ -248,6 +248,20 @@ Gives a [unit][other-units] for a player. This functions like 'Give Unit' trigge
 with same behaviour related to loaded units, interceptors, addons, etc. `player` is an
 [expression][expr].
 
+### hide\_unit / show\_unit
+
+```
+hide_unit <unit>
+show_unit <unit>
+```
+
+Hides or shows a [unit][other-units]. (Probably mostly used as `hide_unit unit` to hide the
+current unit)
+
+Hidden units are almost fully uninteractable but they keep existing and run their iscript while
+hidden. Most of the orders are not ran though. Normally units become hidden for example when they
+are in transports, bunkers, harvesting gas, or are being trained.
+
 ### transform
 
 ```

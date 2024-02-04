@@ -264,6 +264,8 @@ static UNIT_SET_HP: AtomicUsize = AtomicUsize::new(0);
 static GIVE_UNIT: AtomicUsize = AtomicUsize::new(0);
 static TRANSFORM_UNIT: AtomicUsize = AtomicUsize::new(0);
 static PLACE_FINISHED_UNIT_CREEP: AtomicUsize = AtomicUsize::new(0);
+static HIDE_UNIT: AtomicUsize = AtomicUsize::new(0);
+static SHOW_UNIT: AtomicUsize = AtomicUsize::new(0);
 
 #[cold]
 fn func_fatal(value: usize) -> ! {
@@ -305,6 +307,14 @@ pub unsafe fn transform_unit(unit: *mut bw::Unit, id: UnitId) {
 
 pub unsafe fn place_finished_unit_creep(unit_id: u32, x: i32, y: i32) {
     load_func::<unsafe extern fn(u32, i32, i32)>(&PLACE_FINISHED_UNIT_CREEP)(unit_id, x, y)
+}
+
+pub unsafe fn hide_unit(unit: *mut bw::Unit) {
+    load_func::<unsafe extern fn(*mut bw::Unit)>(&HIDE_UNIT)(unit)
+}
+
+pub unsafe fn show_unit(unit: *mut bw::Unit) {
+    load_func::<unsafe extern fn(*mut bw::Unit)>(&SHOW_UNIT)(unit)
 }
 
 #[no_mangle]
@@ -414,6 +424,10 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         fatal("Couldn't hook step_order");
     }
     ((*api).hook_game_loop_start)(crate::globals::on_game_loop);
+    let result = ((*api).hook_step_objects)(crate::iscript::after_step_objects, 1);
+    if result == 0 {
+        fatal("Couldn't hook step_objects");
+    }
 
     static FUNCS: &[(&AtomicUsize, FuncId)] = &[
         (&KILL_UNIT, FuncId::KillUnit),
@@ -421,6 +435,8 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         (&GIVE_UNIT, FuncId::GiveUnit),
         (&TRANSFORM_UNIT, FuncId::TransformUnit),
         (&PLACE_FINISHED_UNIT_CREEP, FuncId::PlaceFinishedUnitCreep),
+        (&HIDE_UNIT, FuncId::HideUnit),
+        (&SHOW_UNIT, FuncId::ShowUnit),
     ];
     for &(global, func_id) in FUNCS {
         if func_id as u16 >= (*api).max_func_id {

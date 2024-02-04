@@ -29,6 +29,7 @@ use crate::windows;
 static ISCRIPT: Mutex<Option<Iscript>> = Mutex::new(None);
 static SPRITE_OWNER_MAP: OnceCell<Mutex<SpriteOwnerMap>> = OnceCell::new();
 static QUEUED_TRANSFORMS: AtomicU32 = AtomicU32::new(0);
+static QUEUED_HIDE_SHOW: AtomicU32 = AtomicU32::new(0);
 
 pub fn init_sprite_owner_map() {
     SPRITE_OWNER_MAP.get_or_init(|| Mutex::new(SpriteOwnerMap::new()));
@@ -40,6 +41,8 @@ pub struct IscriptState {
     image_locals: FxHashMap<SerializableImage, FxHashMap<u32, u32>>,
     globals: Vec<i32>,
     queued_transforms: Vec<(u32, UnitId)>,
+    /// hide = false, show = true
+    queued_hide_show: Vec<(u32, bool)>,
     /// Highest bit = Currently valid, 0x7fff = Generation id
     /// Used for determining if a unit stored in variable is still
     /// valid or not when accessed.
@@ -127,6 +130,7 @@ impl IscriptState {
             sprite_locals: FxHashMap::default(),
             image_locals: FxHashMap::default(),
             queued_transforms: Vec::new(),
+            queued_hide_show: Vec::new(),
             globals,
             unit_generations: Vec::new(),
             dry_run_call_stack: Vec::new(),
@@ -142,8 +146,15 @@ impl IscriptState {
         QUEUED_TRANSFORMS.store(self.queued_transforms.len() as u32, Ordering::Relaxed);
     }
 
+    fn queue_hide_show(&mut self, unit_array: UnitArray, unit: Unit, show: bool) {
+        let unit_uid = unit_array.to_unique_id(unit);
+        self.queued_hide_show.push((unit_uid, show));
+        QUEUED_HIDE_SHOW.store(self.queued_hide_show.len() as u32, Ordering::Relaxed);
+    }
+
     pub fn after_load(&self) {
         QUEUED_TRANSFORMS.store(self.queued_transforms.len() as u32, Ordering::Relaxed);
+        QUEUED_HIDE_SHOW.store(self.queued_hide_show.len() as u32, Ordering::Relaxed);
     }
 }
 
@@ -265,6 +276,23 @@ pub unsafe extern fn run_aice_script(
                     drop(this_guard);
                     crate::samase::transform_unit(*unit, id);
                 }
+            }
+            Ok(ScriptRunResult::HideUnit(unit)) => {
+                // Hide/show has always be queued, since
+                // 1) It may remove next active / hidden unit which was to be processed
+                //      when game is looping through units (Current one would be fine to remove)
+                // 2) Hiding removes selection overlays, likely immediately breaking at next image
+                //      of step_sprite_frame
+                // Could queue then active == unit to be done immediately after step_order
+                // though?
+                let unit_array = runner.unit_array();
+                globals.iscript_state.queue_hide_show(unit_array, unit, false);
+                drop(this_guard);
+            }
+            Ok(ScriptRunResult::ShowUnit(unit)) => {
+                let unit_array = runner.unit_array();
+                globals.iscript_state.queue_hide_show(unit_array, unit, true);
+                drop(this_guard);
             }
             Ok(ScriptRunResult::SetHp(unit, value)) => {
                 drop(globals_guard);
@@ -670,6 +698,8 @@ enum ScriptRunResult {
     AddOverlay(Image, ImageId, i8, i8, bool),
     GiveUnit(Unit, u8),
     TransformUnit(Unit, UnitId),
+    HideUnit(Unit),
+    ShowUnit(Unit),
     SetHp(Unit, i32),
 }
 
@@ -1581,16 +1611,22 @@ impl<'a> IscriptRunner<'a> {
                         return Ok(ScriptRunResult::AddOverlay(base_image, image_id, x, y, above));
                     }
                 }
-                GIVE_UNIT | TRANSFORM_UNIT => {
-                    let values = if opcode == GIVE_UNIT {
-                        self.read_aice_params(&GIVE_UNIT_PARAMS)?
+                GIVE_UNIT | TRANSFORM_UNIT | HIDE_SHOW_UNIT=> {
+                    let unit_ref;
+                    let values;
+                    if opcode == GIVE_UNIT {
+                        values = self.read_aice_params(&GIVE_UNIT_PARAMS)?;
+                        unit_ref = UnitRefId(values[0] as u16);
+                    } else if opcode == TRANSFORM_UNIT {
+                        values = self.read_aice_params(&TRANSFORM_UNIT_PARAMS)?;
+                        unit_ref = UnitRefId(values[0] as u16);
                     } else {
-                        self.read_aice_params(&TRANSFORM_UNIT_PARAMS)?
+                        values = self.read_aice_params(&HIDE_UNIT_PARAMS)?;
+                        unit_ref = UnitRefId(values[1] as u16);
                     };
                     if self.dry_run {
                         continue;
                     }
-                    let unit_ref = UnitRefId(values[0] as u16);
                     let unit = match self.resolve_unit_ref(unit_ref) {
                         Some(s) => s,
                         None => continue 'op_loop,
@@ -1601,8 +1637,15 @@ impl<'a> IscriptRunner<'a> {
                             continue 'op_loop;
                         }
                         return Ok(ScriptRunResult::GiveUnit(unit, player));
-                    } else {
+                    } else if opcode == TRANSFORM_UNIT {
                         return Ok(ScriptRunResult::TransformUnit(unit, UnitId(values[1] as u16)));
+                    } else {
+                        let hide = values[0] == 0;
+                        if hide {
+                            return Ok(ScriptRunResult::HideUnit(unit));
+                        } else {
+                            return Ok(ScriptRunResult::ShowUnit(unit));
+                        }
                     }
                 }
                 PRINT => {
@@ -2594,5 +2637,39 @@ fn do_queued_transforms() {
             }
         }
         QUEUED_TRANSFORMS.store(0, Ordering::Relaxed);
+    }
+}
+
+pub unsafe extern fn after_step_objects() {
+    do_queued_hide_show();
+}
+
+fn do_queued_hide_show() {
+    let mut queue = Vec::new();
+    while QUEUED_HIDE_SHOW.load(Ordering::Relaxed) != 0 {
+        let unit_array = bw::unit_array();
+        {
+            let mut globals_guard = Globals::get("do_queued_hide_show");
+            let globals = &mut *globals_guard;
+            mem::swap(&mut globals.iscript_state.queued_hide_show, &mut queue)
+        }
+        QUEUED_HIDE_SHOW.store(0, Ordering::Relaxed);
+        for &(unit, show) in &queue {
+            if let Some(unit) = unit_array.get_by_unique_id(unit) {
+                unsafe {
+                    if show {
+                        crate::samase::show_unit(*unit);
+                    } else {
+                        crate::samase::hide_unit(*unit);
+                    }
+                }
+            }
+        }
+        queue.clear();
+    }
+    if queue.capacity() != 0 {
+        let mut globals_guard = Globals::get("do_queued_hide_show");
+        let globals = &mut *globals_guard;
+        mem::swap(&mut globals.iscript_state.queued_hide_show, &mut queue)
     }
 }

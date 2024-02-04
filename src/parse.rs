@@ -387,6 +387,9 @@ pub mod aice_op {
     pub static TRANSFORM_UNIT_PARAMS: CommandParams =
         CommandParams::new(&[UnitRef, IntExprOrConstU16]);
     pub const SET_UNIT: u8 = 0x15;
+    pub const HIDE_SHOW_UNIT: u8 = 0x16;
+    pub static HIDE_UNIT_PARAMS: CommandParams = CommandParams::new(&[False, UnitRef]);
+    pub static SHOW_UNIT_PARAMS: CommandParams = CommandParams::new(&[True, UnitRef]);
 }
 
 quick_error! {
@@ -587,6 +590,8 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"print", Print),
         (b"give_unit", GiveUnit),
         (b"transform", TransformUnit),
+        (b"hide_unit", HideUnit),
+        (b"show_unit", ShowUnit),
     ]
 };
 
@@ -763,6 +768,8 @@ enum CommandPrototype {
     Print,
     GiveUnit,
     TransformUnit,
+    HideUnit,
+    ShowUnit,
 }
 
 pub struct Iscript {
@@ -1704,6 +1711,20 @@ impl<'a> Parser<'a> {
                     out,
                     ctx,
                     aice_op::IMG_ON,
+                    params,
+                )?;
+                Ok(())
+            }
+            CommandPrototype::HideUnit | CommandPrototype::ShowUnit => {
+                let params = match input.command {
+                    CommandPrototype::HideUnit => &aice_op::HIDE_UNIT_PARAMS,
+                    _ => &aice_op::SHOW_UNIT_PARAMS,
+                };
+                self.parse_add_aice_command(
+                    input,
+                    out,
+                    ctx,
+                    aice_op::HIDE_SHOW_UNIT,
                     params,
                 )?;
                 Ok(())
