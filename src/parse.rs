@@ -23,7 +23,6 @@ mod stage3_out;
 #[cfg(test)] mod test;
 
 use std::collections::hash_map::Entry;
-use std::convert::TryFrom;
 use std::fmt;
 use std::mem;
 use std::rc::Rc;

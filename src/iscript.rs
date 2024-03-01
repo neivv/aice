@@ -1,4 +1,3 @@
-use std::convert::TryFrom;
 use std::io::Write;
 use std::mem;
 use std::ptr::{self, null_mut};

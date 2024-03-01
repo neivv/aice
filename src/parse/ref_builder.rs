@@ -1,5 +1,3 @@
-use std::convert::TryFrom;
-
 use bstr::ByteSlice;
 use fxhash::FxHashMap;
 
