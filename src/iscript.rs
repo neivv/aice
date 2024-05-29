@@ -364,7 +364,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 self.parent.report_missing_parent("flingy");
                                 show_unit_frame0_help();
                                 show_bullet_frame0_help();
-                                return i32::min_value();
+                                return i32::MIN;
                             }
                         };
                         match ty {
@@ -395,7 +395,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             Some(s) => s,
                             None => {
                                 self.parent.report_missing_parent("bullet");
-                                return i32::min_value();
+                                return i32::MIN;
                             }
                         };
                         match ty {
@@ -417,7 +417,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 } else {
                                     self.evaluate_default = true;
                                 }
-                                return i32::min_value();
+                                return i32::MIN;
                             }
                         };
                         match ty {
@@ -543,7 +543,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                         }
                         let game = self.parent.game;
                         // Moving this outside match since it is pretty common
-                        let player = vars[0].min(11) as u8;
+                        let player = (vars[0] as u8).clamp(0, 11) as u8;
                         match ty {
                             Deaths => game.unit_deaths(player, UnitId(vars[1] as u16)) as i32,
                             Kills => game.unit_kills(player, UnitId(vars[1] as u16)) as i32,
@@ -562,9 +562,9 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitAvailability => {
                                 game.unit_available(player, UnitId(vars[1] as u16)) as i32
                             }
-                            Alliance => game.allied(player, vars[1].min(11) as u8) as i32,
+                            Alliance => game.allied(player, vars[1].clamp(0, 11) as u8) as i32,
                             SharedVision => {
-                                game.shared_vision(player, vars[1].min(11) as u8) as i32
+                                game.shared_vision(player, vars[1].clamp(0, 11) as u8) as i32
                             }
                             Minerals => game.minerals(player) as i32,
                             Gas => game.gas(player) as i32,
@@ -613,7 +613,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 }
                             }
                             LocationLeft | LocationTop | LocationRight | LocationBottom => {
-                                let location = (vars[0]).min(254) as u8;
+                                let location = (vars[0]).clamp(0, 254) as u8;
                                 let location = (**game).locations[location as usize];
                                 match ty {
                                     LocationLeft => location.area.left as i32,
@@ -1970,34 +1970,34 @@ impl<'a> IscriptRunner<'a> {
         }
     }
 
-    fn set_game_var(&mut self, ty: GameVar, value: i32, vars: &[i32; 4]) {
+    fn set_game_var(&mut self, ty: GameVar, value: i32, vars: &[i32; 4]) -> Option<()> {
         use crate::parse::GameVar::*;
         let game = self.game;
         // Moving this outside match since it is pretty common
-        let player = vars[0].min(11) as u8;
+        let player = try_clamp_player(vars[0]);
         match ty {
-            Deaths => game.set_unit_deaths(player, UnitId(vars[1] as u16), value as u32),
-            Kills => game.set_unit_kills(player, UnitId(vars[1] as u16), value as u32),
+            Deaths => game.set_unit_deaths(player?, UnitId(vars[1] as u16), value as u32),
+            Kills => game.set_unit_kills(player?, UnitId(vars[1] as u16), value as u32),
             UpgradeLevel => {
-                game.set_upgrade_level(player, UpgradeId(vars[1] as u16), value.min(255) as u8);
+                game.set_upgrade_level(player?, UpgradeId(vars[1] as u16), value.min(255) as u8);
             }
             UpgradeLimit => {
                 let upgrade = UpgradeId(vars[1] as u16);
-                game.set_upgrade_max_level(player, upgrade, value.min(255) as u8);
+                game.set_upgrade_max_level(player?, upgrade, value.min(255) as u8);
             }
             TechLevel => {
-                game.set_tech_level(player, TechId(vars[1] as u16), (value > 0) as u8);
+                game.set_tech_level(player?, TechId(vars[1] as u16), (value > 0) as u8);
             }
             TechAvailability => {
-                game.set_tech_availability(player, TechId(vars[1] as u16), (value > 0) as u8);
+                game.set_tech_availability(player?, TechId(vars[1] as u16), (value > 0) as u8);
             }
             UnitAvailability => {
-                game.set_unit_availability(player, UnitId(vars[1] as u16), value > 0);
+                game.set_unit_availability(player?, UnitId(vars[1] as u16), value > 0);
             }
-            Alliance => game.set_alliance(player, vars[1].min(11) as u8, value > 0),
-            SharedVision => game.set_shared_vision(player, vars[1].min(11) as u8, value > 0),
-            Minerals => game.set_minerals(player, value as u32),
-            Gas => game.set_gas(player, value as u32),
+            Alliance => game.set_alliance(player?, try_clamp_player(vars[1])?, value > 0),
+            SharedVision => game.set_shared_vision(player?, try_clamp_player(vars[1])?, value > 0),
+            Minerals => game.set_minerals(player?, value as u32),
+            Gas => game.set_gas(player?, value as u32),
             ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax |
                 ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed |
                 ZergSupplyProvided | TerranSupplyProvided |
@@ -2014,13 +2014,13 @@ impl<'a> IscriptRunner<'a> {
                 };
                 match ty {
                     ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax => {
-                        game.set_supply_max(player, race, value as u32);
+                        game.set_supply_max(player?, race, value as u32);
                     }
                     ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed => {
-                        game.set_supply_used(player, race, value as u32);
+                        game.set_supply_used(player?, race, value as u32);
                     }
                     _ => {
-                        game.set_supply_provided(player, race, value as u32);
+                        game.set_supply_provided(player?, race, value as u32);
                     }
                 }
             }
@@ -2031,11 +2031,11 @@ impl<'a> IscriptRunner<'a> {
                 FactoriesOwned | FactoriesLost | FactoriesRazed =>
             {
                 let index = ty as u8 - UnitsTotal as u8;
-                game.set_score(index, player, value as u32);
+                game.set_score(index, player?, value as u32);
             }
-            CustomScore => game.set_custom_score(player, value as u32),
+            CustomScore => game.set_custom_score(player?, value as u32),
             LocationLeft | LocationTop | LocationRight | LocationBottom => unsafe {
-                let location = (vars[0]).min(254) as u8;
+                let location = (vars[0]).clamp(0, 254) as u8;
                 let location = (**game).locations.as_mut_ptr().add(location as usize);
                 match ty {
                     LocationLeft => {
@@ -2073,6 +2073,7 @@ impl<'a> IscriptRunner<'a> {
                 (**game).computers_in_leaderboard = value as u32
             }
         }
+        Some(())
     }
 
     fn report_missing_parent(&self, parent: &str) {
@@ -2216,6 +2217,14 @@ impl<'a> IscriptRunner<'a> {
             }
         }
         Ok(result)
+    }
+}
+
+fn try_clamp_player(val: i32) -> Option<u8> {
+    if val < 0 || val > 11 {
+        None
+    } else {
+        Some(val as u8)
     }
 }
 

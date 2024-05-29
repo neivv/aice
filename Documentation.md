@@ -518,7 +518,7 @@ bullets accelerate one unit per frame.
     * This value cannot be modified.
 - `unit.hitpoints` Current hitpoints of the unit (256 times displayed value).
     * Setting hitpoints above maximum value makes the game freeze when damaging a building with damage overlays.
-    * Setting hitpoints to 0 does not kill the unit, but makes the unit unkillable instead.
+    * Setting hitpoints to 0 or less will kill the unit.
 - `unit.shields` Current shields of the unit (256 times displayed value).
 - `unit.energy` Current energy of the unit (256 times displayed value).
 - `unit.max_hitpoints` Units.dat hitpoints for unit (256 times displayed value).

@@ -1174,7 +1174,6 @@ impl LineInfoLookupBuilder {
 }
 
 pub struct ResolvedHeader {
-    pub iscript_id: u16,
     pub animations: Vec<Option<CodePosition>>,
 }
 
@@ -3372,8 +3371,6 @@ impl<'a> Compiler<'a> {
                 }
             }).collect::<Result<Vec<_>, Error>>()?;
             Ok(ResolvedHeader {
-                iscript_id: u16::try_from(header.iscript_id)
-                    .map_err(|_| Error::Msg("Broken header"))?,
                 animations,
             })
         }).collect::<Result<Vec<_>, Error>>()?;
