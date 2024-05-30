@@ -630,6 +630,15 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                     0x17
                                 }
                             }
+                            PlayerType | PlayerRace => {
+                                let players = crate::samase::players();
+                                let player = players.add(player as usize);
+                                if ty == PlayerType {
+                                    (*player).player_type as i32
+                                } else {
+                                    (*player).race as i32
+                                }
+                            }
                             LocationLeft | LocationTop | LocationRight | LocationBottom => {
                                 let location = (vars[0]).clamp(0, 254) as u8;
                                 let location = (**game).locations[location as usize];
@@ -2073,6 +2082,19 @@ impl<'a> IscriptRunner<'a> {
                 }
             },
             PlayerColorChoice => bw_print!("Cannot set player_color_choice"),
+            PlayerType | PlayerRace => unsafe {
+                if ty == PlayerType && (value == 1 || value == 2) {
+                    bw_print!("Cannot set player type to 1/2");
+                } else {
+                    let players = crate::samase::players();
+                    let player = players.add(player? as usize);
+                    if ty == PlayerType {
+                        (*player).player_type = value as u8;
+                    } else {
+                        (*player).race = value as u8;
+                    }
+                }
+            }
             LeaderboardType => unsafe {
                 (**game).leaderboard_type = u8::try_from(value).unwrap_or(0)
             }

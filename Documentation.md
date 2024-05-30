@@ -758,6 +758,17 @@ There are three ways to unset a flag:
         * `7` = Custom
 - `game.leaderboard_goal` Leaderboard goal, if using a leaderboard type which has a goal
 - `game.leaderboard_computers` `0` to disable computers in leaderboard, `1` to enable.
+- `game.player_type(p)` Player type of a player.
+    * `1` Computer
+    * `2` Human
+    * `3` Rescueable
+    * Other values exist as well
+- `game.player_race(p)` Race of a player.
+    * `0` Zerg
+    * `1` Terran
+    * `2` Protoss
+    * `3` Neutral?
+    * Other values may exist when set in map editor too.
 - `game.player_color_choice(p)` Color selected for player `p` in SC:R lobby. Not sure if the values
   are sensible when the map isn't configured to allow player select their color in lobby. Always
   returns 23 for single player games.

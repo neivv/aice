@@ -739,6 +739,8 @@ static GAME_VARS: &[(&[u8], GameVar)] = {
         (b"factories_razed", FactoriesRazed),
         (b"custom_score", CustomScore),
         (b"player_color_choice", PlayerColorChoice),
+        (b"player_type", PlayerType),
+        (b"player_race", PlayerRace),
         (b"leaderboard_type", LeaderboardType),
         (b"leaderboard_location", LeaderboardLocation),
         (b"leaderboard_parameter", LeaderboardParameter),
@@ -2854,6 +2856,8 @@ pub enum GameVar {
     FactoriesRazed,
     CustomScore,
     PlayerColorChoice,
+    PlayerType,
+    PlayerRace,
     LeaderboardType,
     LeaderboardLocation,
     LeaderboardParameter,
@@ -3111,7 +3115,8 @@ impl Place {
                     UnitsLost | UnitsKilled | UnitsScore | UnitsKilledScore | BuildingsTotal |
                     BuildingsConstructed | BuildingsOwned | BuildingsLost | BuildingsRazed |
                     BuildingsScore | BuildingsRazedScore | FactoriesConstructed | FactoriesOwned |
-                    FactoriesLost | FactoriesRazed | CustomScore | PlayerColorChoice => 1,
+                    FactoriesLost | FactoriesRazed | CustomScore | PlayerColorChoice |
+                    PlayerType | PlayerRace => 1,
                 LeaderboardType | LeaderboardLocation | LeaderboardParameter | LeaderboardGoal |
                     LeaderboardComputers => 0,
             },
