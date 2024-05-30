@@ -26,6 +26,7 @@ use std::collections::hash_map::Entry;
 use std::fmt;
 use std::mem;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use bstr::{ByteSlice, BString, BStr};
 use bumpalo::Bump;
@@ -779,7 +780,7 @@ pub struct Iscript {
     pub conditions: Vec<Rc<BoolExpr>>,
     pub int_expressions: Vec<Rc<IntExpr>>,
     pub global_count: u32,
-    pub line_info: LineInfo,
+    pub line_info: Arc<LineInfo>,
     unit_refs: Vec<Vec<UnitObjectOrVariable>>,
     sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, ExprId)>,
     pub format_strings: FormatStrings,
@@ -3388,7 +3389,7 @@ impl<'a> Compiler<'a> {
             bw_aice_cmd_offsets,
             headers,
             global_count: self.variables.variable_counts[VariableStorage::Global as usize],
-            line_info: self.output.line_info.finish(),
+            line_info: Arc::new(self.output.line_info.finish()),
             unit_refs,
             format_strings,
             variable_types: self.variables.finish_types(),

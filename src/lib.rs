@@ -43,10 +43,13 @@ fn init() {
         use std::fmt::Write;
 
         let mut msg = String::with_capacity(256);
-        writeln!(msg, "Aice {} panic", env!("CARGO_PKG_VERSION")).unwrap();
-        match info.location() {
-            Some(s) => writeln!(msg, "Panic at {}:{}", s.file(), s.line()).unwrap(),
-            None => writeln!(msg, "Panic at unknown location").unwrap(),
+        let _ = writeln!(msg, "Aice {} panic", env!("CARGO_PKG_VERSION"));
+        let _ = match info.location() {
+            Some(s) => writeln!(msg, "Panic at {}:{}", s.file(), s.line()),
+            None => writeln!(msg, "Panic at unknown location"),
+        };
+        if let Some(line) = iscript::current_script_line() {
+            let _ = writeln!(msg, "  While executing iscript {line}");
         }
         let payload = info.payload();
         let panic_msg = match payload.downcast_ref::<&str>() {
@@ -56,7 +59,7 @@ fn init() {
                 None => "(???)",
             },
         };
-        writeln!(msg, "{}", panic_msg).unwrap();
+        let _ = writeln!(msg, "{}", panic_msg);
         error!("{}", msg);
         samase::crash_with_message(&msg);
     }));

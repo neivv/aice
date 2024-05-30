@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::mem;
 use std::ptr::{self, null_mut};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
 
 use byteorder::{ByteOrder, LittleEndian};
@@ -20,12 +21,14 @@ use crate::parse::{
     self, Int, Bool, CodePosition, CodePos, Iscript, Place, PlaceId, FlingyVar, BulletVar,
     UnitVar, ImageVar, GameVar, UnitRefId, UnitObjectOrVariable, UnitRefParts, SpriteLocalSetId,
     FormatStringId, AnyExpr, AnyTypeRef, AiceCommandParam, CommandParams, UnpackedExprId,
+    LineInfo,
 };
 use crate::recurse_checked_mutex::{Mutex};
 use crate::unit::UnitExt;
 use crate::windows;
 
 static ISCRIPT: Mutex<Option<Iscript>> = Mutex::new(None);
+static LINE_INFO: parking_lot::Mutex<Option<Arc<LineInfo>>> = parking_lot::Mutex::new(None);
 static SPRITE_OWNER_MAP: OnceCell<Mutex<SpriteOwnerMap>> = OnceCell::new();
 static QUEUED_TRANSFORMS: AtomicU32 = AtomicU32::new(0);
 static QUEUED_HIDE_SHOW: AtomicU32 = AtomicU32::new(0);
@@ -70,6 +73,19 @@ static CREATING_BULLET: AtomicUsize = AtomicUsize::new(!0);
 /// being played with the new sprite which is now attached to CURRENT_ORDER_UNIT.
 static CURRENT_ORDER_UNIT: AtomicUsize = AtomicUsize::new(0);
 static CURRENT_ORDER_SPRITE: AtomicUsize = AtomicUsize::new(0);
+/// Used for better panic info if the crate panics while running iscript
+static CURRENT_SCRIPT_POS: AtomicU32 = AtomicU32::new(0);
+
+pub fn current_script_line() -> Option<String> {
+    let pos = CURRENT_SCRIPT_POS.load(Ordering::Relaxed).checked_sub(1)?;
+    let line_info: Arc<LineInfo> = LINE_INFO.try_lock()?.as_ref()?.clone();
+    Some(iscript_line(&line_info, CodePosition::aice(pos)))
+}
+
+#[cold]
+fn iscript_line(line_info: &LineInfo, pos: CodePosition) -> String {
+    format!("scripts/iscript.txt:{}", line_info.pos_to_line(pos))
+}
 
 #[derive(Serialize, Deserialize)]
 struct SpriteLocal {
@@ -200,7 +216,8 @@ pub unsafe extern fn run_aice_script(
         }
     }
 
-    loop {
+    let prev_script_pos = CURRENT_SCRIPT_POS.load(Ordering::Relaxed);
+    'main_loop: loop {
         let mut globals_guard = Globals::get("run_aice_script");
         let globals = &mut *globals_guard;
         let mut sprite_owner_map = sprite_owner_map_mutex.lock("run_aice_script");
@@ -220,7 +237,7 @@ pub unsafe extern fn run_aice_script(
         let result = runner.run_script();
         aice_offset = runner.pos;
         match result {
-            Ok(ScriptRunResult::Done) => return,
+            Ok(ScriptRunResult::Done) => break 'main_loop,
             Ok(ScriptRunResult::CreateUnit(unit_id, pos, player)) => {
                 drop(globals_guard);
                 drop(sprite_owner_map);
@@ -305,12 +322,13 @@ pub unsafe extern fn run_aice_script(
             }
             Err(pos) => {
                 invalid_aice_command(iscript, image, CodePos::Aice(pos));
-                return;
+                break 'main_loop;
             }
         }
         this_guard = ISCRIPT.lock("run_aice_script");
         this = this_guard.as_ref().unwrap();
     }
+    CURRENT_SCRIPT_POS.store(prev_script_pos, Ordering::Relaxed);
 }
 
 struct CustomCtx<'a, 'b> {
@@ -792,10 +810,7 @@ impl<'a> IscriptRunner<'a> {
 
     #[cold]
     fn current_line(&self) -> String {
-        format!(
-            "scripts/iscript.txt:{}",
-            self.iscript.line_info.pos_to_line(CodePosition::aice(self.opcode_pos)),
-        )
+        iscript_line(&self.iscript.line_info, CodePosition::aice(self.opcode_pos))
     }
 
     fn get_sprite_local(&mut self, id: u32, unit_ref: UnitRefId) -> Option<i32> {
@@ -1110,6 +1125,7 @@ impl<'a> IscriptRunner<'a> {
         use crate::parse::aice_op::*;
         'op_loop: while self.in_aice_code {
             let opcode_pos = self.pos as u32;
+            CURRENT_SCRIPT_POS.store(opcode_pos.wrapping_add(1), Ordering::Relaxed);
             self.opcode_pos = opcode_pos;
             let opcode = self.read_u8()?;
             match opcode {
@@ -2504,7 +2520,9 @@ pub unsafe fn set_as_bw_script(iscript: Iscript) {
     let bw_bin = crate::samase::get_iscript_bin();
     assert!(iscript.bw_data.len() < 0x10000);
     std::ptr::copy_nonoverlapping(iscript.bw_data.as_ptr(), bw_bin, iscript.bw_data.len());
+    let line_info = iscript.line_info.clone();
     *ISCRIPT.lock("set_as_bw_script") = Some(iscript);
+    *LINE_INFO.lock() = Some(line_info);
 }
 
 pub unsafe extern fn iscript_read_hook(_filename: *const u8, out_size: *mut u32) -> *mut u8 {
@@ -2515,7 +2533,9 @@ pub unsafe extern fn iscript_read_hook(_filename: *const u8, out_size: *mut u32)
     let iscript = crate::globals::init_for_lobby_map_preview();
     assert!(iscript.bw_data.len() < 0x10000);
     std::ptr::copy_nonoverlapping(iscript.bw_data.as_ptr(), data, iscript.bw_data.len());
+    let line_info = iscript.line_info.clone();
     *ISCRIPT.lock("set_as_bw_script") = Some(iscript);
+    *LINE_INFO.lock() = Some(line_info);
     data
 }
 
