@@ -37,6 +37,8 @@ use serde_derive::{Serialize, Deserialize};
 
 use bw_dat::expr::{self, Expr, CustomBoolExpr, CustomIntExpr};
 
+use crate::string_tables;
+
 use anytype_expr::{AnyTypeExpr, AnyTypeParser};
 use ref_builder::UnitRefBuilder;
 use stage3_out::ParseStage3Output;
@@ -407,6 +409,9 @@ quick_error! {
         Dynamic(msg: String) {
             display("{}", msg)
         }
+        MissingStatTxtString(string: BString) {
+            display("stat_txt string '{}' not found", string)
+        }
         Msg(msg: &'static str) {
             display("{}", msg)
         }
@@ -588,6 +593,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"imgul_on", ImgulOn),
         (b"imgol_on", ImgolOn),
         (b"print", Print),
+        (b"print_stat_txt", PrintStatTxt),
         (b"give_unit", GiveUnit),
         (b"transform", TransformUnit),
         (b"hide_unit", HideUnit),
@@ -768,6 +774,7 @@ enum CommandPrototype {
     ImgulOn,
     ImgolOn,
     Print,
+    PrintStatTxt,
     GiveUnit,
     TransformUnit,
     HideUnit,
@@ -1730,10 +1737,41 @@ impl<'a> Parser<'a> {
                 )?;
                 Ok(())
             }
-            CommandPrototype::Print => {
-                let expr_ids = out.expr_ids();
-                let format_id =
-                    self.format_strings.parse(input.params, &mut self.exprs, variables, expr_ids)?;
+            CommandPrototype::Print | CommandPrototype::PrintStatTxt => {
+                let stat_txt;
+                let format_string = match input.command {
+                    CommandPrototype::Print => Some(input.params),
+                    _ => {
+                        stat_txt = string_tables::stat_txt();
+                        if stat_txt.has_strings() {
+                            match stat_txt.by_key(input.params) {
+                                Some(s) => Some(s.as_bytes()),
+                                None => {
+                                    return Err(Error::MissingStatTxtString(input.params.into()));
+                                }
+                            }
+                        } else {
+                            // Before game_init, just return nothing,
+                            // iscript should be reloaded on game init
+                            None
+                        }
+                    }
+                };
+                let format_id = match format_string {
+                    Some(format_string) => {
+                        let expr_ids = out.expr_ids();
+                        let format_id = self.format_strings.parse(
+                            format_string,
+                            &mut self.exprs,
+                            variables,
+                            expr_ids,
+                        )?;
+                        format_id
+                    }
+                    // Just use a dummy value, shouldn't be ever seen and
+                    // invalid format strings result in empty string
+                    None => FormatStringId(0),
+                };
                 out.add_aice_command_u32(aice_op::PRINT, format_id.0);
                 Ok(())
             }
@@ -3927,6 +3965,7 @@ struct ParseStage3Input<'a, 'text> {
     labels: &'a CompilerLabels<'text>,
     block_scope: &'a BlockScope<'text, 'a>,
     command: &'a CommandPrototype,
+    /// Leading/trailing spaces trimmed
     params: &'text [u8],
     linked_block: LinkedBlock,
 }

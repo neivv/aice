@@ -20,6 +20,7 @@ dependencies = [
  "byteorder",
  "fern",
  "fxhash",
+ "json",
  "libc",
  "log",
  "once_cell",
@@ -132,6 +133,12 @@ checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
 dependencies = [
  "byteorder",
 ]
+
+[[package]]
+name = "json"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "078e285eafdfb6c4b434e0d31e8cfcb5115b651496faca5749b88fafd4f23bfd"
 
 [[package]]
 name = "lde"

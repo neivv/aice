@@ -2475,15 +2475,16 @@ fn animation_name(animation: u8) -> String {
         .unwrap_or_else(|| format!("Unknown animation {:02x}", animation))
 }
 
-pub unsafe fn load_iscript(retry_on_error: bool) -> Iscript {
+pub unsafe fn load_iscript() -> Iscript {
     use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
 
     loop {
         let iscript_txt = match crate::samase::read_file("scripts\\iscript.txt") {
             Some(s) => s,
             None => {
-                windows::message_box("Aice", "Couldn't open scripts\\iscript.txt");
-                if !retry_on_error {
+                let retry =
+                    windows::message_box_retry("Aice", "Couldn't open scripts\\iscript.txt");
+                if !retry {
                     TerminateProcess(GetCurrentProcess(), 0x4230daef);
                 }
                 continue;
@@ -2522,8 +2523,8 @@ pub unsafe fn load_iscript(retry_on_error: bool) -> Iscript {
                 if errors.len() > 20 {
                     let _ = writeln!(msg, "({} errors follow)", errors.len() - 20);
                 }
-                windows::message_box("Aice", &msg);
-                if !retry_on_error {
+                let retry = windows::message_box_retry("Aice", &msg);
+                if !retry {
                     TerminateProcess(GetCurrentProcess(), 0x4230daef);
                 }
             }

@@ -92,7 +92,7 @@ impl Globals {
 /// TODO make lobby preview jsut use a dummy script?
 pub unsafe fn init_for_lobby_map_preview() -> crate::parse::Iscript {
     let mut globals = Globals::new();
-    let iscript = iscript::load_iscript(true);
+    let iscript = iscript::load_iscript();
     globals.iscript_state = iscript::IscriptState::from_script(&iscript);
     *Globals::get("init") = globals;
     bw::init_game_start_vars();
@@ -100,8 +100,11 @@ pub unsafe fn init_for_lobby_map_preview() -> crate::parse::Iscript {
 }
 
 pub unsafe extern fn init_game() {
+    // Note: string table init should be done before iscript loading
+    // so that print_stat_txt works
+    crate::string_tables::init();
     let mut globals = Globals::new();
-    let iscript = iscript::load_iscript(true);
+    let iscript = iscript::load_iscript();
     globals.iscript_state = iscript::IscriptState::from_script(&iscript);
     iscript::set_as_bw_script(iscript);
     globals.iscript_state.after_load();
@@ -157,7 +160,7 @@ pub unsafe extern fn load(ptr: *const u8, len: usize) -> u32 {
             return 0;
         }
     };
-    let iscript = iscript::load_iscript(true);
+    let iscript = iscript::load_iscript();
     iscript::set_as_bw_script(iscript);
     data.iscript_state.after_load();
     *Globals::get("load") = data;

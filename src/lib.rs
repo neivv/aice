@@ -12,6 +12,7 @@ mod globals;
 mod iscript;
 mod parse;
 mod recurse_checked_mutex;
+mod string_tables;
 mod unit;
 mod windows;
 
@@ -67,7 +68,7 @@ fn init() {
     iscript::init_sprite_owner_map();
     globals::Globals::init();
     unsafe {
-        iscript::load_iscript(false);
+        iscript::load_iscript();
     }
 }
 

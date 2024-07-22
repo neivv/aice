@@ -98,10 +98,11 @@ set spritelocal unit some_unit_var = unit.target
 set spritelocal unit some_unit_var = null
 ```
 
-### print
+### print, print\_stat\_txt
 
 ```
 print <text>
+print\_stat\_txt <string_id>
 ```
 
 Prints text. The text can contain [expressions][expr] wrapped in `{}`, in which case they will be
@@ -120,6 +121,10 @@ aren't part of a hex code they'll be printed normally anyway.
 
 Similarly, regular spaces after `print` and at end of the line are not included in message, but if
 you use `<20>` as the first or last space character they will be included.
+
+`print_stat_txt` takes a single parameter that is key name in stat_txt.json, e.g.
+`FIRST_UNIT_STRING`, and prints that. The string in stat_txt can contain expressions wrapped in
+`{}` like `print`.
 
 #### Examples
 
