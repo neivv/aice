@@ -2056,7 +2056,7 @@ impl<'a> IscriptRunner<'a> {
                 FactoriesOwned | FactoriesLost | FactoriesRazed =>
             {
                 let index = ty as u8 - UnitsTotal as u8;
-                game.set_score(index, player?, value as u32);
+                game.set_score(index, player?, value.max(0) as u32);
             }
             CustomScore => game.set_custom_score(player?, value as u32),
             LocationLeft | LocationTop | LocationRight | LocationBottom => unsafe {
