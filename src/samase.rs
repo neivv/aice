@@ -1,40 +1,74 @@
 use std::mem;
 use std::ptr::{NonNull, null_mut};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, AtomicU8, AtomicPtr, Ordering};
 
 use libc::c_void;
 use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
 
 use bw_dat::{OrderId, UnitId, ImageId};
-use samase_plugin::{FuncId, PluginApi};
+use samase_plugin::{FuncId, PluginApi, VarId};
 
 use crate::bw;
 use crate::iscript;
 use crate::parse;
 use crate::windows;
 
-struct GlobalFunc<T: Copy>(Option<T>);
+struct GlobalFunc<T: Copy>(AtomicUsize, std::marker::PhantomData<T>);
 
 impl<T: Copy> GlobalFunc<T> {
-    fn get(&self) -> T {
-        self.0.unwrap()
+    const fn new() -> GlobalFunc<T> {
+        GlobalFunc(AtomicUsize::new(0), std::marker::PhantomData)
     }
 
-    fn try_init(&mut self, val: Option<*mut c_void>) -> bool {
+    fn set(&self, val: T) {
+        unsafe {
+            self.0.store(mem::transmute_copy(&val), Ordering::Relaxed);
+        }
+    }
+
+    fn set_required<U>(&self, val: Option<U>) {
+        assert!(size_of::<U>() == size_of::<T>());
+        if let Some(val) = val {
+            unsafe {
+                self.0.store(mem::transmute_copy(&val), Ordering::Relaxed);
+            }
+        } else {
+            panic!("Required function not available");
+        }
+    }
+
+    fn get(&self) -> T {
+        unsafe {
+            let value = self.0.load(Ordering::Relaxed);
+            debug_assert!(value != 0);
+            mem::transmute_copy(&value)
+        }
+    }
+
+    fn get_opt(&self) -> Option<T> {
+        unsafe {
+            mem::transmute_copy::<usize, Option<T>>(&self.0.load(Ordering::Relaxed))
+        }
+    }
+
+    #[expect(dead_code)]
+    fn has_value(&self) -> bool {
+        self.get_opt().is_some()
+    }
+
+    fn try_init(&self, val: Option<*mut c_void>) -> bool {
         let val = match val {
             Some(s) => s,
             None => return false,
         };
         unsafe {
-            assert_eq!(mem::size_of::<T>(), mem::size_of::<*mut c_void>());
-            let mut typecast_hack: mem::MaybeUninit<T> = mem::MaybeUninit::uninit();
-            *(typecast_hack.as_mut_ptr() as *mut *mut c_void) = val;
-            self.0 = Some(typecast_hack.assume_init());
+            let value: usize = mem::transmute(val);
+            self.0.store(value, Ordering::Relaxed);
         }
         true
     }
 
-    fn init(&mut self, val: Option<*mut c_void>, desc: &str) {
+    fn init(&self, val: Option<*mut c_void>, desc: &str) {
         if !self.try_init(val) {
             fatal(&format!("Can't get {}", desc));
         }
@@ -50,68 +84,161 @@ fn fatal(text: &str) -> ! {
     unreachable!();
 }
 
-static mut CRASH_WITH_MESSAGE: GlobalFunc<unsafe extern fn(*const u8) -> !> = GlobalFunc(None);
+static GLOBALS: &[VarId] = &[
+    VarId::Game,
+    VarId::FirstActiveUnit,
+    VarId::FirstHiddenUnit,
+    VarId::FirstLoneSprite,
+    VarId::FirstFowSprite,
+    VarId::Players,
+    VarId::MapTileFlags,
+    VarId::IscriptBin,
+    VarId::SpriteHlines,
+    VarId::IsMultiplayer,
+    VarId::ActiveIscriptBullet,
+    VarId::ActiveIscriptUnit,
+    // Writable
+    // Optional
+    VarId::RngSeed,
+    // Writable + Optional
+];
+
+const fn global_idx(var: VarId) -> usize {
+    let mut i = 0;
+    loop {
+        if GLOBALS[i] as u16 == var as u16 {
+            return i;
+        }
+        i += 1;
+    }
+}
+
+const FIRST_WRITABLE_GLOBAL: usize = global_idx(VarId::RngSeed);
+const FIRST_OPTIONAL_GLOBAL: usize = global_idx(VarId::RngSeed);
+
+const ZERO_U8: AtomicU8 = AtomicU8::new(0);
+static OPT_GLOBALS: [AtomicU8; GLOBALS.len() - FIRST_OPTIONAL_GLOBAL] = [
+    ZERO_U8; GLOBALS.len() - FIRST_OPTIONAL_GLOBAL
+];
+
+unsafe fn init_globals(api: *const samase_plugin::PluginApi) {
+    let mut result = [0u8; GLOBALS.len()];
+    ((*api).load_vars)(GLOBALS.as_ptr() as *const u16, result.as_mut_ptr(), GLOBALS.len());
+    let mut i = 0;
+    for (last, needed) in [(FIRST_WRITABLE_GLOBAL, 2), (FIRST_OPTIONAL_GLOBAL, 3)] {
+        while i < last {
+            if result[i] < needed {
+                if result[i] == 1 {
+                    fatal(
+                        &format!("Newer samase is required (Failed to get variable {:?})", GLOBALS[i])
+                    );
+                } else {
+                    fatal(&format!("Failed to get variable {:?}", GLOBALS[i]));
+                }
+            }
+            i += 1;
+        }
+    }
+    while i < GLOBALS.len() {
+        OPT_GLOBALS[i - FIRST_OPTIONAL_GLOBAL].store(result[i], Ordering::Relaxed);
+        i += 1;
+    }
+}
+
+static READ_VARS:
+    GlobalFunc<unsafe extern fn(*const u16, *mut usize, usize)> = GlobalFunc::new();
+fn read_var(var: VarId) -> usize {
+    unsafe {
+        let var = var as u16;
+        let mut out = 0usize;
+        READ_VARS.get()(&var, &mut out, 1);
+        out
+    }
+}
+
+fn read_vars<const N: usize>(vars: &[VarId; N]) -> [usize; N] {
+    unsafe {
+        let mut out = [0usize; N];
+        let mut u16_vars = [0u16; N];
+        for i in 0..N {
+            u16_vars[i] = vars[i] as u16;
+        }
+        READ_VARS.get()(u16_vars.as_ptr(), out.as_mut_ptr(), N);
+        out
+    }
+}
+
+static WRITE_VARS:
+    GlobalFunc<unsafe extern fn(*const u16, *const usize, usize)> = GlobalFunc::new();
+#[expect(dead_code)]
+fn write_var(var: VarId, value: usize) {
+    unsafe {
+        let var = var as u16;
+        WRITE_VARS.get()(&var, &value, 1);
+    }
+}
+
+/// Returns result from samase api (0/1 = bad, 2 = read-only, 3 = read/write)
+macro_rules! opt_global {
+    ($id:expr) => {{
+        const IDX: usize = global_idx($id) - FIRST_OPTIONAL_GLOBAL;
+        OPT_GLOBALS[IDX].load(Ordering::Relaxed)
+    }}
+}
+
+static CRASH_WITH_MESSAGE: GlobalFunc<unsafe extern fn(*const u8) -> !> = GlobalFunc::new();
 pub fn crash_with_message(msg: &str) -> ! {
     let msg = format!("{}\0", msg);
     unsafe { CRASH_WITH_MESSAGE.get()(msg.as_bytes().as_ptr()) }
 }
 
-static mut GAME: GlobalFunc<extern fn() -> *mut bw::Game> = GlobalFunc(None);
 pub fn game() -> *mut bw::Game {
-    unsafe { GAME.get()() }
+    read_var(VarId::Game) as _
 }
 
-static mut FIRST_ACTIVE_UNIT: GlobalFunc<extern fn() -> *mut bw::Unit> = GlobalFunc(None);
 pub fn first_active_unit() -> *mut bw::Unit {
-    unsafe { FIRST_ACTIVE_UNIT.0.map(|x| x()).unwrap_or(null_mut()) }
+    read_var(VarId::FirstActiveUnit) as _
 }
 
-static mut FIRST_HIDDEN_UNIT: GlobalFunc<extern fn() -> *mut bw::Unit> = GlobalFunc(None);
 pub fn first_hidden_unit() -> *mut bw::Unit {
-    unsafe { FIRST_HIDDEN_UNIT.0.map(|x| x()).unwrap_or(null_mut()) }
+    read_var(VarId::FirstHiddenUnit) as _
 }
 
-static mut FIRST_FOW_SPRITE: GlobalFunc<extern fn() -> *mut bw::LoneSprite> = GlobalFunc(None);
 pub fn first_fow_sprite() -> *mut bw::LoneSprite {
-    unsafe { FIRST_FOW_SPRITE.0.map(|x| x()).unwrap_or(null_mut()) }
+    read_var(VarId::FirstFowSprite) as _
 }
 
-static mut FIRST_LONE_SPRITE: GlobalFunc<extern fn() -> *mut bw::LoneSprite> = GlobalFunc(None);
 pub fn first_lone_sprite() -> *mut bw::LoneSprite {
-    unsafe { FIRST_LONE_SPRITE.0.map(|x| x()).unwrap_or(null_mut()) }
+    read_var(VarId::FirstLoneSprite) as _
 }
 
-static mut GET_REGION: GlobalFunc<extern fn(u32, u32) -> u32> = GlobalFunc(None);
+static GET_REGION: GlobalFunc<unsafe extern fn(u32, u32) -> u32> = GlobalFunc::new();
 pub fn get_region(x: u32, y: u32) -> u32 {
     unsafe { GET_REGION.get()(x, y) }
 }
 
-static mut DAT_REQUIREMENTS: GlobalFunc<extern fn(u32, u32) -> *const u16> = GlobalFunc(None);
+static DAT_REQUIREMENTS: GlobalFunc<unsafe extern fn(u32, u32) -> *const u16> = GlobalFunc::new();
 pub fn requirements(ty: u32, id: u32) -> *const u16 {
     unsafe { DAT_REQUIREMENTS.get()(ty, id) }
 }
 
-static mut PLAYERS: GlobalFunc<extern fn() -> *mut bw::Player> = GlobalFunc(None);
 pub fn players() -> *mut bw::Player {
-    unsafe { PLAYERS.get()() }
+    read_var(VarId::Players) as _
 }
 
-static mut MAP_TILE_FLAGS: GlobalFunc<extern fn() -> *mut u32> = GlobalFunc(None);
 pub fn map_tile_flags() -> *mut u32 {
-    unsafe { MAP_TILE_FLAGS.get()() }
+    read_var(VarId::MapTileFlags) as _
 }
 
-static mut GET_ISCRIPT_BIN: GlobalFunc<extern fn() -> *mut u8> = GlobalFunc(None);
 pub fn get_iscript_bin() -> *mut u8 {
-    unsafe { GET_ISCRIPT_BIN.get()() }
+    read_var(VarId::IscriptBin) as _
 }
 
-static mut SPRITE_HLINES: GlobalFunc<extern fn() -> *mut *mut bw::Sprite> = GlobalFunc(None);
 pub fn sprite_hlines() -> *mut *mut bw::Sprite {
-    unsafe { SPRITE_HLINES.get()() }
+    read_var(VarId::SpriteHlines) as _
 }
 
-static mut UNIT_ARRAY_LEN: GlobalFunc<extern fn(*mut *mut bw::Unit, *mut usize)> = GlobalFunc(None);
+static UNIT_ARRAY_LEN: GlobalFunc<extern fn(*mut *mut bw::Unit, *mut usize)> = GlobalFunc::new();
 pub unsafe fn unit_array() -> (*mut bw::Unit, usize) {
     let mut size = 0usize;
     let mut ptr = null_mut();
@@ -119,38 +246,37 @@ pub unsafe fn unit_array() -> (*mut bw::Unit, usize) {
     (ptr, size)
 }
 
-static ORDERS_DAT: AtomicUsize = AtomicUsize::new(0);
+static ORDERS_DAT: AtomicPtr<bw_dat::DatTable> = AtomicPtr::new(null_mut());
 pub fn orders_dat() -> *mut bw_dat::DatTable {
-    ORDERS_DAT.load(Ordering::Relaxed) as *mut bw_dat::DatTable
+    ORDERS_DAT.load(Ordering::Relaxed)
 }
 
-static mut PRINT_TEXT: GlobalFunc<extern fn(*const u8)> = GlobalFunc(None);
+static PRINT_TEXT: GlobalFunc<unsafe extern fn(*const u8)> = GlobalFunc::new();
 // Too common to be inlined. Would be better if PRINT_TEXT were changed to always be valid
 // (But C ABI is still worse for binsize)
 #[inline(never)]
 pub fn print_text(msg: *const u8) {
     unsafe {
-        if let Some(print) = PRINT_TEXT.0 {
+        if let Some(print) = PRINT_TEXT.get_opt() {
             print(msg);
         }
     }
 }
 
-static mut RNG_SEED: GlobalFunc<extern fn() -> u32> = GlobalFunc(None);
 pub fn rng_seed() -> Option<u32> {
-    unsafe {
-        if let Some(rng) = RNG_SEED.0 {
-            Some(rng())
-        } else {
-            None
-        }
+    if opt_global!(VarId::RngSeed) >= 2 {
+        Some(read_var(VarId::RngSeed) as u32)
+    } else {
+        None
     }
 }
 
-static mut CREATE_UNIT: GlobalFunc<extern fn(u32, i32, i32, u32, *const u8) -> *mut bw::Unit> = GlobalFunc(None);
+static CREATE_UNIT:
+    GlobalFunc<unsafe extern fn(u32, i32, i32, u32, *const u8) -> *mut bw::Unit> =
+        GlobalFunc::new();
 pub fn create_unit(id: u32, x: i32, y: i32, player: u32, skins: *const u8) -> *mut bw::Unit {
     unsafe {
-        if let Some(create) = CREATE_UNIT.0 {
+        if let Some(create) = CREATE_UNIT.get_opt() {
             create(id, x, y, player, skins)
         } else {
             null_mut()
@@ -158,35 +284,33 @@ pub fn create_unit(id: u32, x: i32, y: i32, player: u32, skins: *const u8) -> *m
     }
 }
 
-static mut FINISH_UNIT_PRE: GlobalFunc<extern fn(*mut bw::Unit)> = GlobalFunc(None);
+static FINISH_UNIT_PRE: GlobalFunc<extern fn(*mut bw::Unit)> = GlobalFunc::new();
 pub unsafe fn finish_unit_pre(unit: *mut bw::Unit) {
-    (FINISH_UNIT_PRE.0.unwrap())(unit)
+    (FINISH_UNIT_PRE.get())(unit)
 }
 
-static mut FINISH_UNIT_POST: GlobalFunc<extern fn(*mut bw::Unit)> = GlobalFunc(None);
+static FINISH_UNIT_POST: GlobalFunc<extern fn(*mut bw::Unit)> = GlobalFunc::new();
 pub unsafe fn finish_unit_post(unit: *mut bw::Unit) {
-    (FINISH_UNIT_POST.0.unwrap())(unit)
+    (FINISH_UNIT_POST.get())(unit)
 }
 
-static mut GIVE_AI: GlobalFunc<extern fn(*mut bw::Unit)> = GlobalFunc(None);
+static GIVE_AI: GlobalFunc<extern fn(*mut bw::Unit)> = GlobalFunc::new();
 pub unsafe fn give_ai(unit: *mut bw::Unit) {
-    (GIVE_AI.0.unwrap())(unit)
+    (GIVE_AI.get())(unit)
 }
 
-static mut IS_MULTIPLAYER: GlobalFunc<extern fn() -> u32> = GlobalFunc(None);
 pub fn is_multiplayer() -> bool {
-    unsafe { (IS_MULTIPLAYER.0.unwrap())() != 0 }
+    read_var(VarId::IsMultiplayer) != 0
 }
 
-static mut ISCRIPT_OBJECTS:
-    GlobalFunc<extern fn(*mut *mut c_void, *const *mut c_void)> = GlobalFunc(None);
-pub unsafe fn active_iscript_objects(read: *mut *mut c_void, write: *const *mut c_void) {
-    (ISCRIPT_OBJECTS.0.unwrap())(read, write)
+pub unsafe fn active_iscript_objects() -> (*mut bw::Unit, *mut bw::Bullet) {
+    let arr = read_vars(&[VarId::ActiveIscriptUnit, VarId::ActiveIscriptBullet]);
+    (arr[0] as *mut _, arr[1] as *mut _)
 }
 
-static mut ISSUE_ORDER: GlobalFunc<
+static ISSUE_ORDER: GlobalFunc<
     unsafe extern fn(*mut bw::Unit, u32, u32, u32, *mut bw::Unit, u32),
-> = GlobalFunc(None);
+> = GlobalFunc::new();
 
 pub fn issue_order(
     unit: *mut bw::Unit,
@@ -202,9 +326,9 @@ pub fn issue_order(
     unsafe { ISSUE_ORDER.get()(unit, order.0 as u32, x, y, target, fow_unit.0 as u32) }
 }
 
-static mut ADD_OVERLAY_ISCRIPT: GlobalFunc<
+static ADD_OVERLAY_ISCRIPT: GlobalFunc<
     unsafe extern fn(*mut bw::Image, u32, i32, i32, u32),
-> = GlobalFunc(None);
+> = GlobalFunc::new();
 
 pub unsafe fn add_overlay_iscript(
     base_image: *mut bw::Image,
@@ -216,9 +340,9 @@ pub unsafe fn add_overlay_iscript(
     ADD_OVERLAY_ISCRIPT.get()(base_image, image.0 as u32, x as i32, y as i32, above as u32)
 }
 
-static mut STEP_ISCRIPT: GlobalFunc<
+static STEP_ISCRIPT: GlobalFunc<
     unsafe extern fn(*mut bw::Image, *mut bw::Iscript, u32, *mut u32)
-> = GlobalFunc(None);
+> = GlobalFunc::new();
 
 pub unsafe fn step_iscript(image: *mut bw::Image, iscript: *mut bw::Iscript, dry: bool) {
     STEP_ISCRIPT.get()(image, iscript, dry as u32, null_mut());
@@ -247,7 +371,8 @@ impl std::ops::Drop for SamaseBox {
     }
 }
 
-static mut READ_FILE: GlobalFunc<extern fn(*const u8, *mut usize) -> *mut u8> = GlobalFunc(None);
+static READ_FILE:
+    GlobalFunc<unsafe extern fn(*const u8, *mut usize) -> *mut u8> = GlobalFunc::new();
 pub fn read_file(name: &str) -> Option<SamaseBox> {
     // Uh, should work fine
     let cstring = format!("{}\0", name);
@@ -332,9 +457,11 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     let mut ext_arrays = null_mut();
     let ext_arrays_len = ((*api).extended_arrays)(&mut ext_arrays);
     bw_dat::set_extended_arrays(ext_arrays as *mut _, ext_arrays_len);
-    CRASH_WITH_MESSAGE.0 = Some((*api).crash_with_message);
+    CRASH_WITH_MESSAGE.set((*api).crash_with_message);
+    READ_VARS.set((*api).read_vars);
+    WRITE_VARS.set((*api).write_vars);
+    init_globals(api);
 
-    GAME.init(((*api).game)().map(|x| mem::transmute(x)), "Game object");
     GET_REGION.init(
         ((*api).get_region)().map(|x| mem::transmute(x)),
         "get_region",
@@ -343,20 +470,8 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
         ((*api).dat_requirements)().map(|x| mem::transmute(x)),
         "dat_requirements",
     );
-    FIRST_ACTIVE_UNIT.init(
-        ((*api).first_active_unit)().map(|x| mem::transmute(x)),
-        "first active unit",
-    );
-    FIRST_HIDDEN_UNIT.init(
-        ((*api).first_hidden_unit)().map(|x| mem::transmute(x)),
-        "first hidden unit",
-    );
-    FIRST_LONE_SPRITE.try_init(((*api).first_lone_sprite)().map(|x| mem::transmute(x)));
-    FIRST_FOW_SPRITE.try_init(((*api).first_fow_sprite)().map(|x| mem::transmute(x)));
-    PLAYERS.init(((*api).players)().map(|x| mem::transmute(x)), "players");
-    MAP_TILE_FLAGS.init(((*api).map_tile_flags)().map(|x| mem::transmute(x)), "map_tile_flags");
     let read_file = ((*api).read_file)();
-    READ_FILE.0 = Some(mem::transmute(read_file));
+    READ_FILE.set(read_file);
     let mut dat_len = 0usize;
     let units_dat = ((*api).extended_dat)(0).expect("units.dat")(&mut dat_len);
     bw_dat::init_units(units_dat as *const _, dat_len);
@@ -372,26 +487,18 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     bw_dat::init_sprites(sprites_dat as *const _, dat_len);
     let orders_dat = ((*api).extended_dat)(7).expect("orders.dat")(&mut dat_len);
     bw_dat::init_orders(orders_dat as *const _, dat_len);
-    ORDERS_DAT.store(orders_dat as usize, Ordering::Relaxed);
+    ORDERS_DAT.store(orders_dat as *mut _, Ordering::Relaxed);
 
-    GET_ISCRIPT_BIN.init(
-        ((*api).get_iscript_bin)().map(|x| mem::transmute(x)),
-        "get_iscript_bin",
-    );
-    SPRITE_HLINES.init(((*api).sprite_hlines)().map(|x| mem::transmute(x)), "sprite_hlines");
-    UNIT_ARRAY_LEN.0 = Some(mem::transmute(((*api).unit_array_len)()));
+    UNIT_ARRAY_LEN.set_required(((*api).unit_array_len)());
 
-    PRINT_TEXT.0 = Some(mem::transmute(((*api).print_text)()));
-    RNG_SEED.0 = Some(mem::transmute(((*api).rng_seed)()));
-    CREATE_UNIT.0 = Some(mem::transmute(((*api).create_unit)()));
-    FINISH_UNIT_PRE.0 = Some(mem::transmute(((*api).finish_unit_pre)()));
-    FINISH_UNIT_POST.0 = Some(mem::transmute(((*api).finish_unit_post)()));
-    GIVE_AI.0 = Some(mem::transmute(((*api).give_ai)()));
-    IS_MULTIPLAYER.0 = Some(mem::transmute(((*api).is_multiplayer)()));
-    ISSUE_ORDER.0 = Some(mem::transmute(((*api).issue_order)()));
-    ADD_OVERLAY_ISCRIPT.0 = Some(mem::transmute(((*api).add_overlay_iscript)()));
-    STEP_ISCRIPT.0 = Some(mem::transmute(((*api).step_iscript)()));
-    ISCRIPT_OBJECTS.0 = Some(mem::transmute(((*api).active_iscript_objects)()));
+    PRINT_TEXT.set_required(((*api).print_text)());
+    CREATE_UNIT.set_required(((*api).create_unit)());
+    FINISH_UNIT_PRE.set_required(((*api).finish_unit_pre)());
+    FINISH_UNIT_POST.set_required(((*api).finish_unit_post)());
+    GIVE_AI.set_required(((*api).give_ai)());
+    ISSUE_ORDER.set_required(((*api).issue_order)());
+    ADD_OVERLAY_ISCRIPT.set_required(((*api).add_overlay_iscript)());
+    STEP_ISCRIPT.set_required(((*api).step_iscript)());
     let result = ((*api).extend_save)(
         "aice\0".as_ptr(),
         Some(crate::globals::save),

@@ -82,9 +82,7 @@ pub unsafe fn issue_order(
 
 pub fn active_iscript_objects() -> (*mut Unit, *mut Bullet) {
     unsafe {
-        let mut buf = [std::ptr::null_mut(); 3];
-        samase::active_iscript_objects(buf.as_mut_ptr(), std::ptr::null());
-        (buf[1] as *mut Unit, buf[2] as *mut Bullet)
+        samase::active_iscript_objects()
     }
 }
 

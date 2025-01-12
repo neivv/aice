@@ -12,6 +12,7 @@ pub struct StringTable {
 }
 
 impl StringTable {
+    #[expect(dead_code)]
     pub fn by_index(&self, index: u16) -> Option<&str> {
         // 0 is always null string wherever tbl indices are used.
         self.by_index.get(index.checked_sub(1)? as usize).and_then(|x| x.as_ref()).map(|x| &***x)
