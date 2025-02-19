@@ -123,6 +123,16 @@ InfestedKerriganCastSpell:
 	wait           	1
 	playfram       	0x77	# frame set 7
 	castspell      	
+
+    set unit_ext(unit, some_counter) = unit_ext(unit, some_counter) + 1 default 0
+    if unit_ext(unit, some_counter) < 10 default true goto WasBelow10
+
+    set unit_ext(unit, some_counter) = 0
+    set unit.target.hitpoints = unit.target.max_hitpoints default 0
+    set unit_ext(unit.target, other_variable) = 1
+
+    WasBelow10:
+
 	sigorder       	2
 	wait           	2
 	playfram       	0x66	# frame set 6

@@ -455,6 +455,37 @@ Additionally any variable name is an integer expression (Variables need to be ha
 `set` at least once), and any [BW variable assignable with `set`][bw-place] is also an integer
 expression.
 
+### unit\_ext variables
+
+Custom per-unit variables can be used with `unit_ext(unit, var_name)`, where `unit` is a
+[unit reference][other-units], and `var_name` is an arbitrary name that is used to identify the
+variable. As these variables need an unit to be evaluated, they [need a default value][opt-expr]
+when read. These variables default to 0 when an unit is created, and will not be reset during
+transformations.
+
+Additionally, MTL is able to access these variables with `unit_ext(var_name)` syntax. (As MTL
+does not have syntax for referring to other units, it always uses the current unit)
+
+`unit_ext` is currently only supported on SC:R.
+
+Example:
+Using variable named `some_counter`, this code will only set target's HP to max after the
+code has been run 10 times. It also sets `other_variable` to 1 for the target when healing it,
+which could be checked somewhere else.
+
+```
+set unit_ext(unit, some_counter) = unit_ext(unit, some_counter) + 1 default 0
+if unit_ext(unit, some_counter) < 10 default true goto WasBelow10
+
+set unit_ext(unit, some_counter) = 0
+set unit.target.hitpoints = unit.target.max_hitpoints default 0
+set unit_ext(unit.target, other_variable) = 1
+
+WasBelow10:
+...
+```
+
+
 ### BW-visible variables
 
 These variables have a slightly different syntax from other integer expressions, and most of them
