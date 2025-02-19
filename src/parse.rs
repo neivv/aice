@@ -85,7 +85,7 @@ struct ExprParser<'a, 'b> {
     parser: &'b mut ParserExprs,
 }
 
-impl<'b, 'c> expr::CustomParser for ExprParser<'b, 'c> {
+impl<'text, 'b> expr::CustomParser for ExprParser<'text, 'b> {
     type State = ExprState;
     fn parse_int<'a>(&mut self, input: &'a [u8]) -> Option<(Int, &'a [u8])> {
         let mut out = [None, None, None, None];
@@ -794,6 +794,7 @@ pub struct Iscript {
     sprite_local_sets: VecOfVecs<SpriteLocalSetId, (u32, ExprId)>,
     pub format_strings: FormatStrings,
     variable_types: VariableTypes,
+    pub unit_ext_fields: Vec<Vec<u8>>,
 }
 
 struct VariableTypes {
@@ -1207,6 +1208,9 @@ struct Parser<'a> {
 
 struct ParserExprs {
     unit_refs: UnitRefBuilder,
+    // Can't have &'text [u8] as the ext field name may be in stat_txt for print
+    // format strings
+    ext_unit_fields: FxHashMap<Vec<u8>, UnitExtId>,
     current_error: Option<Error>,
     // These maps stay constant so maybe they should be in separate ParserConstantData
     unit_vars: FxHashMap<&'static [u8], UnitVar>,
@@ -1228,6 +1232,7 @@ impl<'a> Parser<'a> {
             command_map: COMMANDS.iter().cloned().collect(),
             exprs: ParserExprs {
                 unit_refs: UnitRefBuilder::new(),
+                ext_unit_fields: FxHashMap::default(),
                 current_error: None,
                 unit_vars: UNIT_VARS.iter().cloned().collect(),
                 flingy_vars: FLINGY_VARS.iter().cloned().collect(),
@@ -1889,7 +1894,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-impl ParserExprs {
+impl<'text> ParserExprs {
     fn clear_current_error(&mut self) {
         self.current_error = None;
     }
@@ -1898,7 +1903,7 @@ impl ParserExprs {
         self.current_error = Some(error);
     }
 
-    fn parse_unit_ref_rest<'text, 'a>(
+    fn parse_unit_ref_rest<'a>(
         &mut self,
         text: &'text [u8],
         variables: &CompilerVariables<'a>,
@@ -1907,7 +1912,7 @@ impl ParserExprs {
     }
 
     /// Accepts "null" in addition to normal refs
-    fn parse_unit_ref_rest_or_null<'text, 'a>(
+    fn parse_unit_ref_rest_or_null<'a>(
         &mut self,
         text: &'text [u8],
         variables: &CompilerVariables<'a>,
@@ -1956,14 +1961,18 @@ impl ParserExprs {
         Ok(Some((name, ty)))
     }
 
-    fn parse_place_expr<'text, 'a>(
+    fn parse_place_expr<'a>(
         &mut self,
         text: &'text [u8],
         var_out: &mut [Option<Box<IntExpr>>; 4],
         variable_decls: &CompilerVariables<'a>,
     ) -> Result<(VariableTypePlace, &'text [u8]), CanRecoverError> {
         let (mut bw, rest) = self.parse_place_expr_pre_params(text, variable_decls)?;
-        let var_count = bw.place_id.place().var_count();
+        let place = bw.place_id.place();
+        if let Place::UnitExt(..) = place {
+            return self.parse_unit_ext_place_params(rest, variable_decls);
+        }
+        let var_count = place.var_count();
         if var_count == 0 {
             if rest.get(0).copied() == Some(b'(') {
                 return Err(Error::Dynamic(
@@ -2011,6 +2020,36 @@ impl ParserExprs {
         }
     }
 
+    /// Parses '(unit_ref, field_name_string)' part of 'unit_ext(unit_ref, field_name_string)'
+    fn parse_unit_ext_place_params<'a>(
+        &mut self,
+        text: &'text [u8],
+        variable_decls: &CompilerVariables<'a>,
+    ) -> Result<(VariableTypePlace, &'text [u8]), CanRecoverError> {
+        let params = expect_token(text, b"(")?;
+        let (unit_ref, rest) = self.unit_refs.parse(params, variable_decls)?;
+        let params = expect_token(rest, b",")?;
+        let (field_name, rest) = split_first_token(params)
+            .ok_or_else(|| Error::Msg("Expected field name"))?;
+        let rest = expect_token(rest, b")")?;
+        let next_id = UnitExtId(self.ext_unit_fields.len() as u8);
+        let field_id = match self.ext_unit_fields.get(field_name) {
+            Some(&s) => s,
+            None => {
+                self.ext_unit_fields.insert(field_name.into(), next_id);
+                if self.ext_unit_fields.len() >= 256 {
+                    return Err(CanRecoverError::No(Error::Msg("Too many extended unit fields")));
+                }
+                next_id
+            }
+        };
+        let var = VariableTypePlace {
+            ty: VariableType::Int,
+            place_id: PlaceId::new_unit_ext(unit_ref, field_id),
+        };
+        Ok((var, rest))
+    }
+
     /// Returns (place, if_uninit, rest)
     fn parse_set_place<'a>(
         &mut self,
@@ -2055,7 +2094,7 @@ impl ParserExprs {
 
     /// Parses `unit.hitpoints`, `unit.target.target.parent.hitpoints`, `game.deaths`, etc.
     /// `place` must be already parsed to be just the text before () params of a place.
-    fn parse_place_expr_pre_params<'text>(
+    fn parse_place_expr_pre_params(
         &mut self,
         place: &'text [u8],
         variable_decls: &CompilerVariables<'_>,
@@ -2069,8 +2108,17 @@ impl ParserExprs {
         let (first, rest) = split_first_token(place)
             .ok_or_else(error)?;
         if rest.get(0).copied() != Some(b'.') {
-            if let Some(&var) = variable_decls.variables.get(first) {
+            if first == b"unit_ext" {
+                // Dummy values, caller will handle actual parsing.
+                let var = VariableTypePlace {
+                    place_id: PlaceId::new_unit_ext(UnitRefId(0), UnitExtId(0)),
+                    ty: VariableType::Int,
+                };
                 return Ok((var, rest));
+            } else {
+                if let Some(&var) = variable_decls.variables.get(first) {
+                    return Ok((var, rest));
+                }
             }
         }
         let rest_dot = rest;
@@ -2908,7 +2956,8 @@ pub enum GameVar {
 /// SpriteLocal 0x2000_0000 = set if_uninit
 ///     spritelocal 0x1fff_0000 = object ref id
 ///     spritelocal ffff = Object ref which ends in a spritelocal
-/// bw second tag: 0x3c00_0000, 0 = flingy, 1 = bullet, 2 = unit, 3 = image, 4 = game
+/// bw second tag: 0x3c00_0000, 0 = flingy, 1 = bullet, 2 = unit, 3 = image, 4 = game,
+///     5 = ext unit field
 ///     bw 0x0000_00ff = var id
 ///     bw 0x00ff_ff00 = object ref id (For units, flingies)
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, Eq, PartialEq, Hash)]
@@ -2959,12 +3008,17 @@ pub enum Place {
     Unit(UnitRefId, UnitVar),
     Image(ImageVar),
     Game(GameVar),
+    UnitExt(UnitRefId, UnitExtId),
 }
 
 /// Anything below `UnitObject::_Last` is just that without extra projection,
 /// otherwise iscript.unit_refs[x - UnitObject::_Last]
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct UnitRefId(pub u16);
+
+/// Id of an unit extended field. Not same id as what samase uses for the api though.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+pub struct UnitExtId(pub u8);
 
 impl UnitRefId {
     pub const fn this() -> UnitRefId {
@@ -3057,6 +3111,9 @@ impl PlaceId {
     const fn new_game(x: GameVar) -> PlaceId {
         PlaceId((x as u32) | (((2 << 3) + 4) << 27))
     }
+    const fn new_unit_ext(unit: UnitRefId, field_id: UnitExtId) -> PlaceId {
+        PlaceId((field_id.0 as u32) | ((unit.0 as u32) << 8) | (((2 << 3) + 5) << 27))
+    }
     fn new_global(id: u32) -> Option<PlaceId> {
         if id <= 0x0fff_ffff {
             Some(PlaceId(id))
@@ -3107,7 +3164,8 @@ impl PlaceId {
                     unsafe { std::mem::transmute(id as u8) },
                 ),
                 3 => Place::Image(unsafe { std::mem::transmute(id as u8) }),
-                4 | _ => Place::Game(unsafe { std::mem::transmute(id as u8) }),
+                4 => Place::Game(unsafe { std::mem::transmute(id as u8) }),
+                5 | _ => Place::UnitExt(UnitRefId((id >> 8) as u16), UnitExtId(id as u8)),
             },
         }
     }
@@ -3119,7 +3177,11 @@ impl PlaceId {
     fn is_optional_expr(self) -> bool {
         match self.tag() {
             1 => (self.0 >> 16) & 0x1fff != 0,
-            2 => self.0 & 0xffff00 != 0 && matches!((self.0 >> 27) & 0x7, 0 | 2),
+            2 => {
+                let sub_tag = (self.0 >> 27) & 0x7;
+                sub_tag == 5 ||
+                    (self.0 & 0xffff00 != 0 && matches!(sub_tag, 0 | 2))
+            }
             _ => false,
         }
     }
@@ -3321,6 +3383,7 @@ impl<'a> Compiler<'a> {
         headers: &[Header<'a>],
         unit_refs: Vec<Vec<UnitObjectOrVariable>>,
         format_strings: FormatStrings,
+        unit_ext_fields_map: FxHashMap<Vec<u8>, UnitExtId>,
     ) -> Result<Iscript, Error> {
         self.fixup_missing_label_positions(blocks);
 
@@ -3422,6 +3485,13 @@ impl<'a> Compiler<'a> {
         // Add 7 bytes to aice_code so that it's safe to do u64 reads that go partially
         // out of bounds.
         self.output.aice_code.extend_from_slice(&[0u8; 8]);
+        let mut unit_ext_fields = Vec::new();
+        for _ in 0..unit_ext_fields_map.len() {
+            unit_ext_fields.push(Vec::new());
+        }
+        for (key, value) in unit_ext_fields_map.into_iter() {
+            unit_ext_fields[value.0 as usize] = key;
+        }
 
         Ok(Iscript {
             bw_data: bw_data.into_boxed_slice(),
@@ -3436,6 +3506,7 @@ impl<'a> Compiler<'a> {
             unit_refs,
             format_strings,
             variable_types: self.variables.finish_types(),
+            unit_ext_fields,
         })
     }
 
@@ -4204,6 +4275,7 @@ pub fn compile_iscript_txt(text: &[u8]) -> Result<Iscript, Vec<ErrorWithLine>> {
         &parser.headers,
         parser.exprs.unit_refs.finish(),
         parser.format_strings,
+        parser.exprs.ext_unit_fields,
     ) {
         Ok(o) => o,
         Err(error) => {

@@ -42,7 +42,7 @@ impl FormatStrings {
         &mut self,
         text: &'a [u8],
         parser: &mut ParserExprs,
-        vars: &CompilerVariables<'a>,
+        vars: &CompilerVariables<'_>,
         exprs: &mut CompilerExprs,
     ) -> Result<FormatStringId, Error> {
         if self.text_buffer.capacity() == 0 {

@@ -24,6 +24,7 @@ use crate::parse::{
     LineInfo,
 };
 use crate::recurse_checked_mutex::{Mutex};
+use crate::samase;
 use crate::unit::UnitExt;
 use crate::windows;
 
@@ -56,6 +57,8 @@ pub struct IscriptState {
     with_image: Option<ImageId>,
     #[serde(skip)]
     format_buffer: Vec<u8>,
+    #[serde(skip)]
+    unit_ext_field_to_samase: Vec<samase::ExtFieldId>,
 }
 
 const TEMP_LOCAL_ID: u32 = !0;
@@ -152,6 +155,8 @@ impl IscriptState {
             with_vars: Vec::new(),
             with_image: None,
             format_buffer: Vec::new(),
+            // Inited in after_load
+            unit_ext_field_to_samase: Vec::new(),
         }
     }
 
@@ -167,9 +172,13 @@ impl IscriptState {
         QUEUED_HIDE_SHOW.store(self.queued_hide_show.len() as u32, Ordering::Relaxed);
     }
 
-    pub fn after_load(&self) {
+    pub fn after_load(&mut self, iscript: &Iscript) {
+        let unit_ext_field_to_samase = iscript.unit_ext_fields.iter()
+            .map(|x| samase::create_extended_unit_field(&x))
+            .collect();
         QUEUED_TRANSFORMS.store(self.queued_transforms.len() as u32, Ordering::Relaxed);
         QUEUED_HIDE_SHOW.store(self.queued_hide_show.len() as u32, Ordering::Relaxed);
+        self.unit_ext_field_to_samase = unit_ext_field_to_samase;
     }
 }
 
@@ -347,16 +356,17 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
             // Early exit when this is defaulting anyway
             return 0;
         }
+        let parent = &mut *self.parent;
         match val {
             Int::Variable(id, place_vars) => {
                 match id.place() {
-                    Place::Global(id) => self.parent.get_global(id),
+                    Place::Global(id) => parent.get_global(id),
                     Place::SpriteLocal(unit_ref, id) => {
-                        if let Some(val) = self.parent.get_sprite_local(id, unit_ref) {
+                        if let Some(val) = parent.get_sprite_local(id, unit_ref) {
                             val
                         } else {
                             if unit_ref.is_this() {
-                                self.parent.show_uninit_spritelocal_err();
+                                parent.show_uninit_spritelocal_err();
                             } else {
                                 self.evaluate_default = true;
                             }
@@ -368,7 +378,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             self.unit.map(|x| ptr::addr_of_mut!((**x).flingy))
                                 .or_else(|| self.bullet.map(|x| ptr::addr_of_mut!((*x).flingy)))
                         } else {
-                            match self.parent.resolve_unit_ref(unit_ref) {
+                            match parent.resolve_unit_ref(unit_ref) {
                                 Some(s) => Some(ptr::addr_of_mut!((**s).flingy)),
                                 None => {
                                     self.evaluate_default = true;
@@ -379,7 +389,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                         let flingy = match flingy {
                             Some(s) => s,
                             None => {
-                                self.parent.report_missing_parent("flingy");
+                                parent.report_missing_parent("flingy");
                                 show_unit_frame0_help();
                                 show_bullet_frame0_help();
                                 return i32::MIN;
@@ -412,7 +422,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                         let bullet = match self.bullet {
                             Some(s) => s,
                             None => {
-                                self.parent.report_missing_parent("bullet");
+                                parent.report_missing_parent("bullet");
                                 return i32::MIN;
                             }
                         };
@@ -427,11 +437,11 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                         }
                     },
                     Place::Unit(unit_ref, ty) => unsafe {
-                        let unit = match self.parent.resolve_unit_ref(unit_ref) {
+                        let unit = match parent.resolve_unit_ref(unit_ref) {
                             Some(s) => s,
                             None => {
                                 if unit_ref.is_this() {
-                                    self.parent.report_missing_parent("unit");
+                                    parent.report_missing_parent("unit");
                                 } else {
                                     self.evaluate_default = true;
                                 }
@@ -460,7 +470,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::MaxHitpoints => unit.id().hitpoints(),
                             UnitVar::MaxShields => unit.id().shields(),
                             UnitVar::MaxEnergy => {
-                                self.parent.game.max_energy(unit.player(), unit.id()) as i32
+                                parent.game.max_energy(unit.player(), unit.id()) as i32
                             }
                             UnitVar::MineralCost => unit.id().mineral_cost() as i32,
                             UnitVar::GasCost => unit.id().gas_cost() as i32,
@@ -490,7 +500,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::CurrentUpgrade => unit.upgrade_in_progress()
                                 .unwrap_or(bw_dat::upgrade::NONE).0 as i32,
                             UnitVar::BuildQueue => {
-                                let mut child_ctx = self.parent.eval_ctx();
+                                let mut child_ctx = parent.eval_ctx();
                                 let val = place_vars[0].as_ref()
                                     .and_then(|x| u8::try_from(child_ctx.eval_int(x)).ok())
                                     .and_then(|x| unit.nth_queued_unit(x))
@@ -519,7 +529,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::OrderTimer => (**unit).order_timer as i32,
                             UnitVar::OrderState => (**unit).order_state as i32,
                             UnitVar::RankIncrease => (**unit).rank as i32,
-                            UnitVar::MineAmount => unit.mine_amount(self.parent.game) as i32,
+                            UnitVar::MineAmount => unit.mine_amount(parent.game) as i32,
                             UnitVar::RallyX | UnitVar::RallyY => {
                                 if unit.id().is_building() && unit.id() != bw_dat::unit::PYLON {
                                     if ty == UnitVar::RallyX {
@@ -537,6 +547,22 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::MovementState => (**unit).movement_state as i32,
                         }
                     },
+                    Place::UnitExt(unit_ref, field_id) => {
+                        let unit = match parent.resolve_unit_ref(unit_ref) {
+                            Some(s) => s,
+                            None => {
+                                if unit_ref.is_this() {
+                                    parent.report_missing_parent("unit");
+                                } else {
+                                    self.evaluate_default = true;
+                                }
+                                return i32::MIN;
+                            }
+                        };
+                        let unit_index = parent.unit_array().to_index(unit) as u32;
+                        let field_id = parent.samase_unit_ext_field_id(field_id);
+                        samase::read_extended_unit_field(unit_index, field_id) as i32
+                    }
                     Place::Image(ty) => unsafe {
                         let image = self.image;
                         match ty {
@@ -548,7 +574,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                     },
                     Place::Game(ty) => unsafe {
                         use crate::parse::GameVar::*;
-                        let mut child_ctx = self.parent.eval_ctx();
+                        let mut child_ctx = parent.eval_ctx();
                         let mut vars = [0i32; 4];
                         for i in 0..place_vars.len() {
                             if let Some(ref expr) = place_vars[i] {
@@ -559,7 +585,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                                 }
                             }
                         }
-                        let game = self.parent.game;
+                        let game = parent.game;
                         // Moving this outside match since it is pretty common
                         let player = (vars[0] as u8).clamp(0, 11) as u8;
                         match ty {
@@ -625,7 +651,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             CustomScore => game.custom_score(player) as i32,
                             PlayerColorChoice => {
                                 if crate::samase::is_multiplayer() {
-                                    self.parent.player_lobby_color_choices.get(player) as i32
+                                    parent.player_lobby_color_choices.get(player) as i32
                                 } else {
                                     0x17
                                 }
@@ -659,7 +685,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                 }
             }
             Int::Default(ref pair) => {
-                let mut child_ctx = self.parent.eval_ctx();
+                let mut child_ctx = parent.eval_ctx();
                 let mut val = child_ctx.eval_int(&pair.0);
                 if child_ctx.custom.evaluate_default {
                     child_ctx.custom.evaluate_default = false;
@@ -811,6 +837,15 @@ impl<'a> IscriptRunner<'a> {
                 evaluate_default: false,
             },
         }
+    }
+
+    fn samase_unit_ext_field_id(&self, in_id: parse::UnitExtId) -> samase::ExtFieldId {
+        let id = match self.state.unit_ext_field_to_samase.get(in_id.0 as usize) {
+            Some(&s) => s,
+            None => samase::ExtFieldId(0),
+        };
+        debug_assert!(id.0 != 0, "Tried to get id {}", in_id.0);
+        id
     }
 
     fn unit_array(&mut self) -> UnitArray {
@@ -1923,6 +1958,21 @@ impl<'a> IscriptRunner<'a> {
             }
             Place::Game(ty) => {
                 self.set_game_var(ty, value, &vars);
+            }
+            Place::UnitExt(unit_ref, field_id) => {
+                let unit = match self.resolve_unit_ref(unit_ref) {
+                    Some(s) => s,
+                    None => {
+                        if unit_ref.is_this() {
+                            self.report_missing_parent("unit");
+                            show_unit_frame0_help();
+                        }
+                        return None;
+                    }
+                };
+                let unit_index = self.unit_array().to_index(unit) as u32;
+                let field_id = self.samase_unit_ext_field_id(field_id);
+                samase::write_extended_unit_field(unit_index, field_id, value as u32);
             }
         }
         None

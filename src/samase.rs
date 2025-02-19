@@ -6,7 +6,7 @@ use libc::c_void;
 use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
 
 use bw_dat::{OrderId, UnitId, ImageId};
-use samase_plugin::{FuncId, PluginApi, VarId};
+use samase_plugin::{FfiStr, FuncId, PluginApi, VarId};
 
 use crate::bw;
 use crate::iscript;
@@ -190,6 +190,39 @@ static CRASH_WITH_MESSAGE: GlobalFunc<unsafe extern fn(*const u8) -> !> = Global
 pub fn crash_with_message(msg: &str) -> ! {
     let msg = format!("{}\0", msg);
     unsafe { CRASH_WITH_MESSAGE.get()(msg.as_bytes().as_ptr()) }
+}
+
+static CREATE_EXT_UNIT_FIELD:
+    GlobalFunc<unsafe extern fn(*const FfiStr) -> u32> = GlobalFunc::new();
+static READ_EXT_UNIT_FIELD: GlobalFunc<unsafe extern fn(u32, u32) -> u32> = GlobalFunc::new();
+static WRITE_EXT_UNIT_FIELD:
+    GlobalFunc<unsafe extern fn(u32, u32, u32) -> u32> = GlobalFunc::new();
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct ExtFieldId(pub u32);
+
+pub fn create_extended_unit_field(name: &[u8]) -> ExtFieldId {
+    unsafe {
+        let name_ffi = FfiStr::from_bytes(name);
+        let result = CREATE_EXT_UNIT_FIELD.get_opt().expect("Need newer samase")(&name_ffi);
+        if result == 0 {
+            panic!("Failed to init ext unit field {}", String::from_utf8_lossy(name));
+        }
+        ExtFieldId(result)
+    }
+}
+
+pub fn read_extended_unit_field(unit_index: u32, id: ExtFieldId) -> u32 {
+    unsafe {
+        READ_EXT_UNIT_FIELD.get()(unit_index, id.0)
+    }
+}
+
+/// Returns old value
+pub fn write_extended_unit_field(unit_index: u32, id: ExtFieldId, value: u32) -> u32 {
+    unsafe {
+        WRITE_EXT_UNIT_FIELD.get()(unit_index, id.0, value)
+    }
 }
 
 pub fn game() -> *mut bw::Game {
@@ -458,6 +491,11 @@ pub unsafe extern fn samase_plugin_init(api: *const PluginApi) {
     let ext_arrays_len = ((*api).extended_arrays)(&mut ext_arrays);
     bw_dat::set_extended_arrays(ext_arrays as *mut _, ext_arrays_len);
     CRASH_WITH_MESSAGE.set((*api).crash_with_message);
+    if (*api).version >= 43 {
+        CREATE_EXT_UNIT_FIELD.set((*api).create_extended_unit_field);
+        READ_EXT_UNIT_FIELD.set((*api).read_extended_unit_field);
+        WRITE_EXT_UNIT_FIELD.set((*api).write_extended_unit_field);
+    }
     READ_VARS.set((*api).read_vars);
     WRITE_VARS.set((*api).write_vars);
     init_globals(api);

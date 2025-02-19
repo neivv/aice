@@ -762,3 +762,8 @@ fn unit_vars_err() {
     find_error(&mut errors, "Cannot use non-spritelocal object refs as a place", 63);
     assert!(errors.is_empty());
 }
+
+#[test]
+fn ext_vars() {
+    let _ = compile_success("ext_vars.txt");
+}

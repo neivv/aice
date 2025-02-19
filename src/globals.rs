@@ -106,8 +106,8 @@ pub unsafe extern fn init_game() {
     let mut globals = Globals::new();
     let iscript = iscript::load_iscript();
     globals.iscript_state = iscript::IscriptState::from_script(&iscript);
+    globals.iscript_state.after_load(&iscript);
     iscript::set_as_bw_script(iscript);
-    globals.iscript_state.after_load();
     *Globals::get("init") = globals;
     iscript::rebuild_sprite_owners();
     bw::init_game_start_vars();
@@ -153,7 +153,7 @@ pub unsafe extern fn save(set_data: unsafe extern fn(*const u8, usize)) {
 pub unsafe extern fn load(ptr: *const u8, len: usize) -> u32 {
     init_sprite_save_load();
     let slice = slice::from_raw_parts(ptr, len);
-    let data: Globals = match bincode::deserialize(slice) {
+    let mut data: Globals = match bincode::deserialize(slice) {
         Ok(o) => o,
         Err(e) => {
             error!("Couldn't load game: {}", e);
@@ -161,8 +161,8 @@ pub unsafe extern fn load(ptr: *const u8, len: usize) -> u32 {
         }
     };
     let iscript = iscript::load_iscript();
+    data.iscript_state.after_load(&iscript);
     iscript::set_as_bw_script(iscript);
-    data.iscript_state.after_load();
     *Globals::get("load") = data;
     iscript::rebuild_sprite_owners();
     1
