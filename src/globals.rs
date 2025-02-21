@@ -99,7 +99,7 @@ pub unsafe fn init_for_lobby_map_preview() -> crate::parse::Iscript {
     iscript
 }
 
-pub unsafe extern fn init_game() {
+pub unsafe extern "C" fn init_game() {
     // Note: string table init should be done before iscript loading
     // so that print_stat_txt works
     crate::string_tables::init();
@@ -116,7 +116,7 @@ pub unsafe extern fn init_game() {
 /// This happens after slot randomization, init_game hook is before.
 /// At least init_game is sometimes before? May depend on patch-specific inlining.
 /// But this is guaranteed to be after slot randomization.
-pub unsafe extern fn init_units_hook(init_units: unsafe extern fn()) {
+pub unsafe extern "C" fn init_units_hook(init_units: unsafe extern "C" fn()) {
     let players = crate::samase::players();
     let colors = COLOR_CHOICES.lock("init").clone();
     let choices = PlayerColorChoices::init(&colors, players);
@@ -124,7 +124,7 @@ pub unsafe extern fn init_units_hook(init_units: unsafe extern fn()) {
     init_units();
 }
 
-pub unsafe extern fn on_game_loop() {
+pub unsafe extern "C" fn on_game_loop() {
     let game = Game::from_ptr(bw::game());
     let players = crate::samase::players();
     let mut arr = [(0, 0); 8];
@@ -136,7 +136,7 @@ pub unsafe extern fn on_game_loop() {
     *COLOR_CHOICES.lock("game loop") = PreRandomizationColors(arr);
 }
 
-pub unsafe extern fn save(set_data: unsafe extern fn(*const u8, usize)) {
+pub unsafe extern "C" fn save(set_data: unsafe extern "C" fn(*const u8, usize)) {
     init_sprite_save_load();
     let globals = Globals::get("save");
     match bincode::serialize(&*globals) {
@@ -150,7 +150,7 @@ pub unsafe extern fn save(set_data: unsafe extern fn(*const u8, usize)) {
     }
 }
 
-pub unsafe extern fn load(ptr: *const u8, len: usize) -> u32 {
+pub unsafe extern "C" fn load(ptr: *const u8, len: usize) -> u32 {
     init_sprite_save_load();
     let slice = slice::from_raw_parts(ptr, len);
     let mut data: Globals = match bincode::deserialize(slice) {

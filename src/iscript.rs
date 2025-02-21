@@ -182,7 +182,7 @@ impl IscriptState {
     }
 }
 
-pub unsafe extern fn run_aice_script(
+pub unsafe extern "C" fn run_aice_script(
     bw_pos: *mut c_void,
     iscript: *mut c_void,
     image: *mut c_void,
@@ -2598,7 +2598,7 @@ pub unsafe fn set_as_bw_script(iscript: Iscript) {
     *LINE_INFO.lock() = Some(line_info);
 }
 
-pub unsafe extern fn iscript_read_hook(_filename: *const u8, out_size: *mut u32) -> *mut u8 {
+pub unsafe extern "C" fn iscript_read_hook(_filename: *const u8, out_size: *mut u32) -> *mut u8 {
     use winapi::um::heapapi::{GetProcessHeap, HeapAlloc};
     debug!("Iscript read hook");
     let data = HeapAlloc(GetProcessHeap(), 0, 0x10000) as *mut u8;
@@ -2612,13 +2612,13 @@ pub unsafe extern fn iscript_read_hook(_filename: *const u8, out_size: *mut u32)
     data
 }
 
-pub unsafe extern fn create_unit_hook(
+pub unsafe extern "C" fn create_unit_hook(
     id: u32,
     x: i32,
     y: i32,
     player: u32,
     skins: *const u8,
-    orig: unsafe extern fn(u32, i32, i32, u32, *const u8) -> *mut c_void,
+    orig: unsafe extern "C" fn(u32, i32, i32, u32, *const u8) -> *mut c_void,
 ) -> *mut c_void {
     let prev_creating = CREATING_UNIT.load(Ordering::Relaxed);
     CREATING_UNIT.store(id as usize, Ordering::Relaxed);
@@ -2642,14 +2642,14 @@ pub unsafe extern fn create_unit_hook(
     result
 }
 
-pub unsafe extern fn create_bullet_hook(
+pub unsafe extern "C" fn create_bullet_hook(
     id: u32,
     x: i32,
     y: i32,
     player: u32,
     direction: u32,
     parent: *mut c_void,
-    orig: unsafe extern fn(u32, i32, i32, u32, u32, *mut c_void) -> *mut c_void,
+    orig: unsafe extern "C" fn(u32, i32, i32, u32, u32, *mut c_void) -> *mut c_void,
 ) -> *mut c_void {
     let prev_creating = CREATING_BULLET.load(Ordering::Relaxed);
     CREATING_BULLET.store(id as usize, Ordering::Relaxed);
@@ -2671,7 +2671,7 @@ pub unsafe extern fn create_bullet_hook(
     result
 }
 
-pub unsafe extern fn order_hook(u: *mut c_void, orig: unsafe extern fn(*mut c_void)) {
+pub unsafe extern "C" fn order_hook(u: *mut c_void, orig: unsafe extern "C" fn(*mut c_void)) {
     do_queued_transforms();
 
     let unit = Unit::from_ptr(u as *mut bw::Unit).unwrap();
@@ -2741,7 +2741,7 @@ fn do_queued_transforms() {
     }
 }
 
-pub unsafe extern fn after_step_objects() {
+pub unsafe extern "C" fn after_step_objects() {
     do_queued_hide_show();
 }
 
