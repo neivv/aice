@@ -197,6 +197,8 @@ static CREATE_EXT_UNIT_FIELD:
 static READ_EXT_UNIT_FIELD: GlobalFunc<unsafe extern "C" fn(u32, u32) -> u32> = GlobalFunc::new();
 static WRITE_EXT_UNIT_FIELD:
     GlobalFunc<unsafe extern "C" fn(u32, u32, u32) -> u32> = GlobalFunc::new();
+static MUTATE_DAT:
+    GlobalFunc<unsafe extern "C" fn(u32, u32) -> *mut c_void> = GlobalFunc::new();
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct ExtFieldId(pub u32);
@@ -222,6 +224,13 @@ pub fn read_extended_unit_field(unit_index: u32, id: ExtFieldId) -> u32 {
 pub fn write_extended_unit_field(unit_index: u32, id: ExtFieldId, value: u32) -> u32 {
     unsafe {
         WRITE_EXT_UNIT_FIELD.get()(unit_index, id.0, value)
+    }
+}
+
+pub fn mutate_dat(dat: u32, array_id: u32) -> Option<NonNull<bw::DatTable>> {
+    unsafe {
+        let result = MUTATE_DAT.get_opt().expect("Need newer samase")(dat, array_id);
+        NonNull::new(result as *mut bw::DatTable)
     }
 }
 
@@ -495,6 +504,9 @@ pub unsafe extern "C" fn samase_plugin_init(api: *const PluginApi) {
         CREATE_EXT_UNIT_FIELD.set((*api).create_extended_unit_field);
         READ_EXT_UNIT_FIELD.set((*api).read_extended_unit_field);
         WRITE_EXT_UNIT_FIELD.set((*api).write_extended_unit_field);
+    }
+    if (*api).version >= 44 {
+        MUTATE_DAT.set((*api).mutate_dat);
     }
     READ_VARS.set((*api).read_vars);
     WRITE_VARS.set((*api).write_vars);

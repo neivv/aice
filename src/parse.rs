@@ -752,6 +752,7 @@ static GAME_VARS: &[(&[u8], GameVar)] = {
         (b"leaderboard_parameter", LeaderboardParameter),
         (b"leaderboard_goal", LeaderboardGoal),
         (b"leaderboard_computers", LeaderboardComputers),
+        (b"dat", Dat),
     ]
 };
 
@@ -2949,6 +2950,7 @@ pub enum GameVar {
     LeaderboardParameter,
     LeaderboardGoal,
     LeaderboardComputers,
+    Dat,
 }
 
 /// 0xc000_0000 == tag
@@ -3206,6 +3208,7 @@ impl Place {
         use GameVar::*;
         match self {
             Place::Game(var) => match var {
+                Dat => 3,
                 Deaths | Kills | UpgradeLevel | UpgradeLimit | TechLevel | TechAvailability |
                     UnitAvailability | Alliance | SharedVision => 2,
                 Minerals | Gas | ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax |

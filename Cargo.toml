@@ -44,13 +44,13 @@ features = ["heapapi", "libloaderapi", "processthreadsapi", "sysinfoapi", "winus
 
 [target.'cfg(target_arch = "x86")'.dependencies.samase_shim]
 git = "https://github.com/neivv/samase_plugin"
-rev = "e962ef0ed9e04298e78d052737462cbbf2c50b5d"
+rev = "63d76f3a239ce6bc8b3664b2956e6d4e186cec46"
 
 [dependencies.samase_plugin]
 git = "https://github.com/neivv/samase_plugin"
-rev = "e962ef0ed9e04298e78d052737462cbbf2c50b5d"
+rev = "63d76f3a239ce6bc8b3664b2956e6d4e186cec46"
 
 [dependencies.bw_dat]
 git = "https://github.com/neivv/aise"
-rev = "3d1b9ea15af8ae0ccf80af54d8c1800d48b17474"
+rev = "257f4dc1dbff1719f80c96db81fe026e1144b680"
 features = ["serde"]

@@ -439,6 +439,8 @@ The following are built-in integer expressions (Available also in MTL):
     * The third argument `entry` selects the unit / weapon / sprite / etc. index to be read.
     * For example, to check if the current unit is mechanical, use:
         `dat(0, 0x16, unit_id) & 0x40000000 != 0`.
+    * Aice allows writing to most of the dat array values, though it requires using `game.dat(..)`
+        syntax instead of just `dat(..)`.
 
 The following integer expressions work, but are (currently) incompatible with the MTL plugin's timer
 customization functionality.
@@ -805,6 +807,8 @@ There are three ways to unset a flag:
     * `2` Protoss
     * `3` Neutral?
     * Other values may exist when set in map editor too.
+- `game.dat(int table, int field, int entry)` Alias of plain `dat`, but can be used as a writable
+  place.
 - `game.player_color_choice(p)` Color selected for player `p` in SC:R lobby. Not sure if the values
   are sensible when the map isn't configured to allow player select their color in lobby. Always
   returns 23 for single player games.

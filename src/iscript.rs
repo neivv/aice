@@ -12,7 +12,7 @@ use serde_derive::{Serialize, Deserialize};
 
 use bw_dat::{
     Game, Image, ImageId, OrderId, Unit, UnitId, UpgradeId, Sprite, TechId, Race, WeaponId,
-    UnitArray,
+    UnitArray, SpriteId, FlingyId,
 };
 
 use crate::bw;
@@ -680,6 +680,7 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             LeaderboardParameter => (**game).leaderboard_parameter as i32,
                             LeaderboardGoal => (**game).leaderboard_goal as i32,
                             LeaderboardComputers => (**game).computers_in_leaderboard as i32,
+                            Dat => self.parent.read_dat(vars[0], vars[1], vars[2]),
                         }
                     },
                 }
@@ -2160,8 +2161,111 @@ impl<'a> IscriptRunner<'a> {
             LeaderboardComputers => unsafe {
                 (**game).computers_in_leaderboard = value as u32
             }
+            Dat => {
+                self.write_dat(vars[0], vars[1], vars[2], value);
+            }
         }
         Some(())
+    }
+
+    /// Dat must be bw_dat expr enum
+    fn read_dat(&self, dat: i32, field: i32, id: i32) -> i32 {
+        match self.read_dat_opt(dat, field, id) {
+            Some(s) => s,
+            None => {
+                let msg = format!(
+                    "Error {}: Failed to read dat({}, {}, {})",
+                    self.current_line(), dat, field, id,
+                );
+                error!("{}", msg);
+                bw_print!("{}", msg);
+                0
+            }
+        }
+    }
+
+    /// Dat must be bw_dat expr enum
+    fn write_dat(&self, dat: i32, field: i32, id: i32, value: i32) {
+        match self.write_dat_opt(dat, field, id, value) {
+            Some(s) => s,
+            None => {
+                let msg = format!(
+                    "Error {}: Failed to write dat({}, {}, {})",
+                    self.current_line(), dat, field, id,
+                );
+                error!("{}", msg);
+                bw_print!("{}", msg);
+            }
+        }
+    }
+
+    /// Dat must be bw_dat expr enum
+    fn read_dat_opt(&self, dat: i32, field: i32, id: i32) -> Option<i32> {
+        let field = u32::try_from(field).ok()?;
+        let id = u32::try_from(id).ok()?;
+        let value = match dat {
+            0 => UnitId::optional(id)?.get_opt(field)? as i32,
+            1 => WeaponId::optional(id)?.get_opt(field)? as i32,
+            2 => FlingyId::optional(id)?.get_opt(field)? as i32,
+            3 => SpriteId::optional(id)?.get_opt(field)? as i32,
+            4 => ImageId::optional(id)?.get_opt(field)? as i32,
+            5 => OrderId::optional(id)?.get_opt(field)? as i32,
+            6 => UpgradeId::optional(id)?.get_opt(field)? as i32,
+            7 => TechId::optional(id)?.get_opt(field)? as i32,
+            _ => return None,
+        };
+        Some(value)
+    }
+
+    /// Dat must be bw_dat expr enum
+    fn write_dat_opt(&self, dat: i32, field: i32, id: i32, value: i32) -> Option<()> {
+        // bw_dat enum to samase enum
+        let dat = match dat {
+            0 => 0, // Units
+            1 => 1, // Weapons
+            2 => 2, // Flingy
+            3 => 5, // Sprites
+            4 => 6, // Images
+            5 => 7, // Orders
+            6 => 3, // Upgrades
+            7 => 4, // Tech
+            9 => 9, // Portdata
+            10 => 11, // Buttons
+            _ => return None,
+        };
+        if dat == 9 && field < 2 {
+            // First 2 fields in portdata are string pointers
+            return None;
+        }
+        let field = u32::try_from(field).ok()?;
+        let id = usize::try_from(id).ok()?;
+        unsafe {
+            let dat = samase::mutate_dat(dat, field)?.as_ptr();
+            if (*dat).entries as usize <= id {
+                return None;
+            }
+            let ptr = (*dat).data;
+            debug_assert!(!ptr.is_null());
+            match (*dat).entry_size {
+                1 => {
+                    if value > 0xff || value < -0x80 {
+                        return None;
+                    }
+                    *(ptr as *mut u8).add(id) = value as u8;
+                }
+                2 => {
+                    if value > 0xffff || value < -0x8000 {
+                        return None;
+                    }
+                    *(ptr as *mut u16).add(id) = value as u16;
+                }
+                4 => {
+                    *(ptr as *mut u32).add(id) = value as u32;
+                }
+                _ => return None,
+            };
+            Some(())
+        }
     }
 
     fn report_missing_parent(&self, parent: &str) {
