@@ -392,6 +392,10 @@ pub mod aice_op {
     pub const HIDE_SHOW_UNIT: u8 = 0x16;
     pub static HIDE_UNIT_PARAMS: CommandParams = CommandParams::new(&[False, UnitRef]);
     pub static SHOW_UNIT_PARAMS: CommandParams = CommandParams::new(&[True, UnitRef]);
+    pub const CREATE_SPRITE: u8 = 0x17;
+    pub static CREATE_SPRITE_PARAMS: CommandParams = CommandParams::new(
+        &[IntExprOrConstU16, IntExpr, IntExpr, IntExprOrConstU8, IntExprOrConstU8, With]
+    );
 }
 
 quick_error! {
@@ -598,6 +602,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"transform", TransformUnit),
         (b"hide_unit", HideUnit),
         (b"show_unit", ShowUnit),
+        (b"create_sprite", CreateSprite),
     ]
 };
 
@@ -780,6 +785,7 @@ enum CommandPrototype {
     TransformUnit,
     HideUnit,
     ShowUnit,
+    CreateSprite,
 }
 
 pub struct Iscript {
@@ -1418,7 +1424,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                     CommandPrototype::CreateUnit | CommandPrototype::FireWeapon |
-                        CommandPrototype::FireWeaponAt =>
+                        CommandPrototype::FireWeaponAt | CommandPrototype::CreateSprite =>
                     {
                         if ends_with_tokens(rest, &[b"with", b"{"]) {
                             let main_line_no = ctx.error_line_number;
@@ -1647,6 +1653,16 @@ impl<'a> Parser<'a> {
                     ctx,
                     aice_op::CREATE_UNIT,
                     &aice_op::CREATE_UNIT_PARAMS,
+                )?;
+                Ok(())
+            }
+            CommandPrototype::CreateSprite => {
+                self.parse_add_aice_command(
+                    input,
+                    out,
+                    ctx,
+                    aice_op::CREATE_SPRITE,
+                    &aice_op::CREATE_SPRITE_PARAMS,
                 )?;
                 Ok(())
             }

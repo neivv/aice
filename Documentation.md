@@ -285,6 +285,25 @@ issue_order <order_id> <x> <y>
 Issues order for the current unit. If the unit is currently dying, you cannot issue any new orders.
 `order_id`, `x` and `y` are [expressions][expr].
 
+### create\_sprite
+
+```
+create_sprite <sprite_id> <x> <y> <player> <elevation>
+create_sprite <sprite_id> <x> <y> <player> <elevation> with {
+    spritelocal1 = <value>
+    [...]
+}
+```
+
+Creates a sprite at specific position. Note that player value only affects sprite's color if it
+has player color specific pixels, it does not give vision to a player or be in any other way
+associated with player. Using 0 for player id is fine when sprite does not have a player color.
+
+All arguments are [expressions][expr].
+
+Spritelocal variables can be set to the newly created unit `with { }` block containing spritelocal
+names and expressions to set them to.
+
 ### call
 
 ```

@@ -262,6 +262,23 @@ pub unsafe extern "C" fn run_aice_script(
                     globals.iscript_state.with_image = None;
                 }
             }
+            Ok(ScriptRunResult::CreateSprite(sprite_id, pos, player, elevation)) => {
+                drop(globals_guard);
+                drop(sprite_owner_map);
+                drop(this_guard);
+                if let Some(owner) = samase::create_lone_sprite(
+                    sprite_id,
+                    pos.x as i32,
+                    pos.y as i32,
+                    player,
+                ) {
+                    (*(*owner.as_ptr()).sprite).elevation_level = elevation;
+                } else {
+                    let mut globals_guard = Globals::get("run_aice_script");
+                    let globals = &mut *globals_guard;
+                    globals.iscript_state.with_image = None;
+                }
+            }
             Ok(ScriptRunResult::IssueOrder(unit, order, pos)) => {
                 drop(globals_guard);
                 drop(sprite_owner_map);
@@ -747,6 +764,7 @@ struct IscriptRunner<'a> {
 enum ScriptRunResult {
     Done,
     CreateUnit(UnitId, bw::Point, u8),
+    CreateSprite(SpriteId, bw::Point, u8, u8),
     IssueOrder(Unit, OrderId, bw::Point),
     AddOverlay(Image, ImageId, i8, i8, bool),
     GiveUnit(Unit, u8),
@@ -1594,6 +1612,31 @@ impl<'a> IscriptRunner<'a> {
                     let image = unit_id.flingy().sprite().image();
                     self.set_with_vars(image, sprite_locals);
                     return Ok(ScriptRunResult::CreateUnit(unit_id, pos, player));
+                }
+                CREATE_SPRITE => {
+                    let values = self.read_aice_params(&CREATE_SPRITE_PARAMS)?;
+                    if self.dry_run {
+                        continue;
+                    }
+                    let sprite_id = match u32::try_from(values[0]).ok()
+                        .and_then(SpriteId::optional)
+                    {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let pos = bw::Point {
+                        x: values[1] as i16,
+                        y: values[2] as i16,
+                    };
+                    let player = match values[3] {
+                        0..=11 => values[3] as u8,
+                        _ => continue,
+                    };
+                    let elevation = values[4] as u8;
+                    let sprite_locals = SpriteLocalSetId(values[5] as u32);
+                    let image = sprite_id.image();
+                    self.set_with_vars(image, sprite_locals);
+                    return Ok(ScriptRunResult::CreateSprite(sprite_id, pos, player, elevation));
                 }
                 ISSUE_ORDER => {
                     let values = self.read_aice_params(&ISSUE_ORDER_PARAMS)?;

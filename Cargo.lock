@@ -254,7 +254,7 @@ dependencies = [
 [[package]]
 name = "samase_plugin"
 version = "0.5.0"
-source = "git+https://github.com/neivv/samase_plugin?rev=63d76f3a239ce6bc8b3664b2956e6d4e186cec46#63d76f3a239ce6bc8b3664b2956e6d4e186cec46"
+source = "git+https://github.com/neivv/samase_plugin?rev=dfc4a62317a487b2cb9e5932095eb9d05202f968#dfc4a62317a487b2cb9e5932095eb9d05202f968"
 dependencies = [
  "byteorder",
  "flate2",
@@ -270,7 +270,7 @@ dependencies = [
 [[package]]
 name = "samase_shim"
 version = "0.5.0"
-source = "git+https://github.com/neivv/samase_plugin?rev=63d76f3a239ce6bc8b3664b2956e6d4e186cec46#63d76f3a239ce6bc8b3664b2956e6d4e186cec46"
+source = "git+https://github.com/neivv/samase_plugin?rev=dfc4a62317a487b2cb9e5932095eb9d05202f968#dfc4a62317a487b2cb9e5932095eb9d05202f968"
 dependencies = [
  "byteorder",
  "libc",

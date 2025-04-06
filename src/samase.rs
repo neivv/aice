@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, AtomicU8, AtomicPtr, Ordering};
 use libc::c_void;
 use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
 
-use bw_dat::{OrderId, UnitId, ImageId};
+use bw_dat::{OrderId, UnitId, ImageId, SpriteId};
 use samase_plugin::{FfiStr, FuncId, PluginApi, VarId};
 
 use crate::bw;
@@ -433,6 +433,7 @@ static TRANSFORM_UNIT: AtomicUsize = AtomicUsize::new(0);
 static PLACE_FINISHED_UNIT_CREEP: AtomicUsize = AtomicUsize::new(0);
 static HIDE_UNIT: AtomicUsize = AtomicUsize::new(0);
 static SHOW_UNIT: AtomicUsize = AtomicUsize::new(0);
+static CREATE_LONE_SPRITE: AtomicUsize = AtomicUsize::new(0);
 
 #[cold]
 fn func_fatal(value: usize) -> ! {
@@ -482,6 +483,18 @@ pub unsafe fn hide_unit(unit: *mut bw::Unit) {
 
 pub unsafe fn show_unit(unit: *mut bw::Unit) {
     load_func::<unsafe extern "C" fn(*mut bw::Unit)>(&SHOW_UNIT)(unit)
+}
+
+pub unsafe fn create_lone_sprite(
+    id: SpriteId,
+    x: i32,
+    y: i32,
+    player: u8,
+) -> Option<NonNull<bw::LoneSprite>> {
+    let ret = load_func::<unsafe extern "C" fn(u32, i32, i32, u32) -> *mut bw::LoneSprite>(
+        &CREATE_LONE_SPRITE
+    )(id.0 as u32, x, y, player as u32);
+    NonNull::new(ret)
 }
 
 #[no_mangle]
@@ -594,6 +607,7 @@ pub unsafe extern "C" fn samase_plugin_init(api: *const PluginApi) {
         (&PLACE_FINISHED_UNIT_CREEP, FuncId::PlaceFinishedUnitCreep),
         (&HIDE_UNIT, FuncId::HideUnit),
         (&SHOW_UNIT, FuncId::ShowUnit),
+        (&CREATE_LONE_SPRITE, FuncId::CreateLoneSprite),
     ];
     for &(global, func_id) in FUNCS {
         if func_id as u16 >= (*api).max_func_id {
