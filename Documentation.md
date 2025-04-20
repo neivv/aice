@@ -452,7 +452,6 @@ The following are built-in integer expressions (Available also in MTL):
         - `7` `techdata.dat`
         - `8` `sfxdata.dat`
         - `9` `portdata.dat`
-        - `10` `buttons.dat`
     * The second argument `field` selects the stat, see [Dat table fields][dat-fields] for the
       listing of most values.
     * The third argument `entry` selects the unit / weapon / sprite / etc. index to be read.
@@ -631,8 +630,13 @@ bullets accelerate one unit per frame.
     * This value cannot be modified. `issue_order` can be used instead.
 - `unit.order_state` Value that may change depending on what part of the order unit is. For example,
   some spell orders use 0 for first frame, 1 for "moving to range" part, and 2 for casting the
-spell.
+  spell.
 - `unit.order_timer` Timer value that current order may use. Meaning depends on current order.
+- `unit.order_target_x`, `unit.order_target_y` X/Y coordinates of the current order target.
+  If an unit is being targeted, this usually is target coordinates when the order was issued.
+  (Will not be automatically updated to follow the unit)
+- `unit.secondary_order` Secondary order id.
+- `unit.secondary_order_state` State for the secondary order.
 - `unit.rank_increase` Allows increasing (Maybe also decreasing?) unit's rank from units.dat value.
   This seems to be unused functionality that may still work.
 - `unit.mine_amount` Spider mines remaining for vulture units. Note that if the tech isn't usable,
@@ -717,7 +721,18 @@ There are three ways to unset a flag:
     * 0x2 Unstacking?
     * 0x4 Is stacked?
 - `unit.movement_state` An integer specifying in which of various different states that the pathing
-    system uses the unit is in.
+  system uses the unit is in.
+- `unit.buttons` Button set ID shown for the unit. Can change when if unit is disabled? Or a ghost
+  is nuking? Etc.
+- `unit.repulse_x`, `unit.repulse_y` `unit.repulse_direction`
+  Specifies 'repulse tile' x/y values. Air units in same repulse tile will slowly push each
+  other to `repulse_direction`. The x and y are just unit position.xy / 48.
+- `unit.repulse_misc` Has some other repulse-related values packed into a single value.
+- `unit.air_strength`, `unit.ground_strength` Current AI strength value of the unit. Gets
+  recalculated if the unit's HP changes.
+- `unit.cloak_count` If more than 0, the unit is cloaked or burrowed. Can go above 1 when there
+  are arbiters cloaking the unit.
+- `unit.last_attacking_player` Player id of the player which last attacked the unit?
 - `image.frame` The latest frameset base that was specified with `playfram`, or copied from the
   primary overlay by using `followmaingraphic`, `engset`, or `engframe`.
     * This value cannot be modified with `set`, use `playfram <value>` instead.

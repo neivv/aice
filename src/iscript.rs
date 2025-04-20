@@ -562,6 +562,21 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                             UnitVar::DetectionStatus => (**unit).detection_status as i32,
                             UnitVar::PathingFlags => (**unit).pathing_flags as i32,
                             UnitVar::MovementState => (**unit).movement_state as i32,
+                            UnitVar::RepulseX => (**unit).repulse_chunk_x as i32,
+                            UnitVar::RepulseY => (**unit).repulse_chunk_y as i32,
+                            UnitVar::RepulseMisc => (**unit).repulse_misc as i32,
+                            UnitVar::RepulseDirection => {
+                                bw_angle_to_degrees((**unit).repulse_direction) as i32
+                            }
+                            UnitVar::CurrentButtonSet => (**unit).buttons as i32,
+                            UnitVar::AirStrength => (**unit).air_strength as i32,
+                            UnitVar::GroundStrength => (**unit).ground_strength as i32,
+                            UnitVar::OrderTargetX => (**unit).order_target.pos.x as i32,
+                            UnitVar::OrderTargetY => (**unit).order_target.pos.y as i32,
+                            UnitVar::CloakCount => (**unit).invisibility_effects as i32,
+                            UnitVar::SecondaryOrder => (**unit).secondary_order as i32,
+                            UnitVar::SecondaryOrderState => (**unit).secondary_order_state as i32,
+                            UnitVar::LastAttackingPlayer => (**unit).last_attacking_player as i32,
                         }
                     },
                     Place::UnitExt(unit_ref, field_id) => {
@@ -1987,6 +2002,21 @@ impl<'a> IscriptRunner<'a> {
                     }
                     UnitVar::PathingFlags => (**unit).pathing_flags = val_u8,
                     UnitVar::MovementState => (**unit).movement_state = val_u8,
+                    UnitVar::RepulseX => (**unit).repulse_chunk_x = val_u8,
+                    UnitVar::RepulseY => (**unit).repulse_chunk_y = val_u8,
+                    UnitVar::RepulseMisc => (**unit).repulse_misc = val_u8,
+                    UnitVar::RepulseDirection => {
+                        (**unit).repulse_direction = degrees_to_bw_angle(value);
+                    }
+                    UnitVar::CurrentButtonSet => (**unit).buttons = val_u16,
+                    UnitVar::AirStrength => (**unit).air_strength = val_u16,
+                    UnitVar::GroundStrength => (**unit).ground_strength = val_u16,
+                    UnitVar::OrderTargetX => (**unit).order_target.pos.x = val_u16 as i16,
+                    UnitVar::OrderTargetY => (**unit).order_target.pos.y = val_u16 as i16,
+                    UnitVar::CloakCount => (**unit).invisibility_effects = val_u8,
+                    UnitVar::SecondaryOrder => (**unit).secondary_order = val_u8,
+                    UnitVar::SecondaryOrderState => (**unit).secondary_order_state = val_u8,
+                    UnitVar::LastAttackingPlayer => (**unit).last_attacking_player = val_u8,
                 }
             },
             Place::Image(ty) => {

@@ -660,6 +660,19 @@ static UNIT_VARS: &[(&[u8], UnitVar)] = {
         (b"detection_status", DetectionStatus),
         (b"pathing_flags", PathingFlags),
         (b"movement_state", MovementState),
+        (b"repulse_x", RepulseX),
+        (b"repulse_y", RepulseY),
+        (b"repulse_misc", RepulseMisc),
+        (b"repulse_direction", RepulseDirection),
+        (b"buttons", CurrentButtonSet),
+        (b"air_strength", AirStrength),
+        (b"ground_strength", GroundStrength),
+        (b"order_target_x", OrderTargetX),
+        (b"order_target_y", OrderTargetY),
+        (b"cloak_count", CloakCount),
+        (b"secondary_order", SecondaryOrder),
+        (b"secondary_order_state", SecondaryOrderState),
+        (b"last_attacking_player", LastAttackingPlayer),
     ]
 };
 
@@ -2874,6 +2887,19 @@ pub enum UnitVar {
     DetectionStatus,
     PathingFlags,
     MovementState,
+    RepulseX,
+    RepulseY,
+    RepulseMisc,
+    RepulseDirection,
+    CurrentButtonSet,
+    AirStrength,
+    GroundStrength,
+    OrderTargetX,
+    OrderTargetY,
+    CloakCount,
+    SecondaryOrder,
+    SecondaryOrderState,
+    LastAttackingPlayer,
 }
 
 /// 0xc000_0000 = Tag: 0 = UnitObject, 1 = global, 2 = spritelocal
