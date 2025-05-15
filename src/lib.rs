@@ -78,7 +78,7 @@ fn is_scr() -> bool {
     IS_1161.load(Ordering::Relaxed) == false
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 #[cfg(target_pointer_width = "32")]
 pub extern fn Initialize() {

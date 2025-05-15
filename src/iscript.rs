@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::mem;
-use std::ptr::{self, null_mut};
+use std::ptr::{self, null_mut, NonNull};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
 
@@ -51,6 +51,11 @@ pub struct IscriptState {
     /// valid or not when accessed.
     unit_generations: Vec<u16>,
     dry_run_call_stack: Vec<u32>,
+    /// Index = image uid. Stores aice code pos after wait.
+    /// Second vec has selection circles and hp bars
+    wait_continue_pos: [Vec<u32>; 2],
+    #[serde(skip)]
+    dry_run_continue_pos: Option<(NonNull<bw::Iscript>, *mut bw::Image, u32)>,
     #[serde(skip)]
     with_vars: Vec<SpriteLocal>,
     #[serde(skip)]
@@ -60,6 +65,9 @@ pub struct IscriptState {
     #[serde(skip)]
     unit_ext_field_to_samase: Vec<samase::ExtFieldId>,
 }
+
+unsafe impl Send for IscriptState {}
+unsafe impl Sync for IscriptState {}
 
 const TEMP_LOCAL_ID: u32 = !0;
 const CALL_STACK_POS_ID: u32 = !1;
@@ -152,6 +160,8 @@ impl IscriptState {
             globals,
             unit_generations: Vec::new(),
             dry_run_call_stack: Vec::new(),
+            wait_continue_pos: [const { Vec::new() }; 2],
+            dry_run_continue_pos: None,
             with_vars: Vec::new(),
             with_image: None,
             format_buffer: Vec::new(),
@@ -903,11 +913,7 @@ impl<'a> IscriptRunner<'a> {
     fn show_uninit_spritelocal_err(&self) {
         unsafe {
             let image = self.image;
-            error!(
-                "Error {}: image {:04x} accessed uninitialized spritelocal",
-                self.current_line(), (*image).image_id,
-            );
-            bw_print!(
+            bw_print_error!(
                 "Error {}: image {:04x} accessed uninitialized spritelocal",
                 self.current_line(), (*image).image_id,
             );
@@ -1677,10 +1683,37 @@ impl<'a> IscriptRunner<'a> {
                     let value = values[0] as u16;
                     let image = self.image;
                     if let Err(limit) = image_play_frame(image, value) {
-                        bw_print!(
+                        bw_print_error!(
                             "ERROR {}: Image 0x{:x} has only {} frames, tried to display \
                             frame {}",
                             self.current_line(), (*image).image_id, limit, value,
+                        );
+                    }
+                }
+                WAIT => {
+                    let time = self.read_u8()?;
+                    if time == 1 {
+                        // Samase iscript extension api is bad in that it doesn't allow wait
+                        // 1 that writes 0 to wait value. So jump to 0xa that has bw wait 1 there.
+                        (*self.bw_script).pos = 0xa;
+                    } else {
+                        // Jump to 0xc directly
+                        (*self.bw_script).wait = time.wrapping_sub(1);
+                        (*self.bw_script).pos = 0xc;
+                    }
+                    self.in_aice_code = false;
+                    let continue_pos = self.pos as u32;
+                    self.set_continue_pos(continue_pos);
+                    return Ok(ScriptRunResult::Done);
+                }
+                CONTINUE => {
+                    if let Some(pos) = self.get_continue_pos() {
+                        self.pos = pos as usize;
+                    } else {
+                        let image = self.image;
+                        bw_print_error!(
+                            "ERROR invalid continue pos for image 0x{:x} {:p}",
+                            (*image).image_id, image,
                         );
                     }
                 }
@@ -2250,8 +2283,7 @@ impl<'a> IscriptRunner<'a> {
                     "Error {}: Failed to read dat({}, {}, {})",
                     self.current_line(), dat, field, id,
                 );
-                error!("{}", msg);
-                bw_print!("{}", msg);
+                bw_print_error!("{}", msg);
                 0
             }
         }
@@ -2266,8 +2298,7 @@ impl<'a> IscriptRunner<'a> {
                     "Error {}: Failed to write dat({}, {}, {})",
                     self.current_line(), dat, field, id,
                 );
-                error!("{}", msg);
-                bw_print!("{}", msg);
+                bw_print_error!("{}", msg);
             }
         }
     }
@@ -2350,8 +2381,7 @@ impl<'a> IscriptRunner<'a> {
                 "Error {}: image {:04x} / sprite {:04x} has no {}",
                 self.current_line(), image_id, sprite.id().0, parent
             );
-            error!("{}", msg);
-            bw_print!("{}", msg);
+            bw_print_error!("{}", msg);
             let mut any_found = false;
             if let Some(unit) = self.sprite_owner_map.get_unit(*sprite) {
                 bw_print!("Note: The sprite is owned by unit {:04x}", unit.id().0);
@@ -2382,6 +2412,64 @@ impl<'a> IscriptRunner<'a> {
             }
             if !any_found {
                 bw_print!("Note: One possibility is that the sprite is owned by a dying unit");
+            }
+        }
+    }
+
+    unsafe fn set_continue_pos(&mut self, pos: u32) {
+        let state = &mut self.state;
+        if self.bw_script != &raw mut (*self.image).iscript {
+            state.dry_run_continue_pos = NonNull::new(self.bw_script)
+                .map(|x| (x, self.image, pos));
+        } else {
+            if let Some((vec, index)) = image_to_index(self.image) {
+                if let Some(vec) = state.wait_continue_pos.get_mut(vec) {
+                    if vec.len() <= index {
+                        vec.resize_with(index + 1, || 0);
+                    }
+                    vec[index] = pos;
+                }
+            }
+        }
+    }
+
+    unsafe fn get_continue_pos(&mut self) -> Option<u32> {
+        let state = &mut self.state;
+        if self.bw_script != &raw mut (*self.image).iscript {
+            if let Some((ptr, image, pos)) = state.dry_run_continue_pos.take() {
+                if ptr.as_ptr() == self.bw_script && image == self.image {
+                    return Some(pos);
+                }
+            }
+            // The dry run iscript is sometimes initialized to start from movement animation
+            // start, in which case the above check passes.
+            // However, if the parent image is in movement animation already it starts from the
+            // position the parent image was at without, in which case it may be in CONTINUE
+            // opcode with the continue pos only stored for parent image.
+            //
+            // If image's iscript is in movement animation and position was 0xc (CONTINUE),
+            // use position from it.
+            if (*self.image).iscript.animation == 0xb && (*self.image).iscript.pos == 0xc {
+                let (vec, index) = image_to_index(self.image)?;
+                // Dry run iscript is only for main images, so vec should be 0
+                if vec == 0 {
+                    let pos = state.wait_continue_pos.get_mut(vec)?.get_mut(index)?;
+                    if *pos != 0 {
+                        return Some(*pos);
+                    }
+                }
+            }
+            None
+        } else {
+            let (vec, index) = image_to_index(self.image)?;
+            let pos = state.wait_continue_pos.get_mut(vec)?.get_mut(index)?;
+            let ret = *pos;
+            // Make continue pos 0 afterwards to catch issues with unintended continues.
+            *pos = 0;
+            if ret == 0 {
+                None
+            } else {
+                Some(ret)
             }
         }
     }
@@ -2690,8 +2778,7 @@ unsafe fn invalid_aice_command(iscript: *mut bw::Iscript, image: *mut bw::Image,
         "Invalid aice command at {}, sprite {:04x} image {:04x}, animation {}",
         offset, sprite_id, (*image).image_id, animation_name((*iscript).animation),
     );
-    error!("{}", msg);
-    bw_print!("{}", msg);
+    bw_print_error!("{}", msg);
     // TODO replace with recovery
     panic!("{}", msg);
 }
@@ -2768,6 +2855,7 @@ pub unsafe fn set_as_bw_script(iscript: Iscript) {
     }
     */
     let bw_bin = crate::samase::get_iscript_bin();
+    debug!("Iscript bw data size 0x{:x}", iscript.bw_data.len());
     assert!(iscript.bw_data.len() < 0x10000);
     std::ptr::copy_nonoverlapping(iscript.bw_data.as_ptr(), bw_bin, iscript.bw_data.len());
     let line_info = iscript.line_info.clone();
@@ -2949,5 +3037,45 @@ fn do_queued_hide_show() {
         let mut globals_guard = Globals::get("do_queued_hide_show");
         let globals = &mut *globals_guard;
         mem::swap(&mut globals.iscript_state.queued_hide_show, &mut queue)
+    }
+}
+
+/// Return (0, index) for normal images, (1, index) for selection circles (0..0x50)
+/// and (1, index) for hp bars (0x50..0x5c)
+fn image_to_index(image: *mut bw::Image) -> Option<(usize, usize)> {
+    #[cold]
+    fn invalid_image(image: *mut bw::Image) -> Option<(usize, usize)> {
+        bw_print_error!("ERROR: Invalid image pointer {:p}", image);
+        None
+    }
+
+    fn check(
+        image: *mut bw::Image,
+        arr_id: usize,
+        array_start: *mut bw::Image,
+        array_size: usize,
+    ) -> Option<(usize, usize)> {
+        let offset_bytes = image.addr().wrapping_sub(array_start.addr());
+        let index = offset_bytes / size_of::<bw::Image>();
+        if offset_bytes % size_of::<bw::Image>() != 0 {
+            return None;
+        }
+        if index >= array_size {
+            return None;
+        }
+        Some((arr_id, index))
+    }
+
+    unsafe {
+        let vec = samase::images_vector();
+        let array_start = *vec;
+        let vec_size = *(vec as *mut usize).add(1);
+        check(image, 0, array_start, vec_size)
+            .or_else(|| {
+                let (selection_circles, hp_bars) = samase::selection_images();
+                check(image, 1, selection_circles, 0x50)
+                    .or_else(|| check(image, 1, hp_bars, 0xc).map(|x| (x.0, 0x50 + x.1)))
+            })
+            .or_else(|| invalid_image(image))
     }
 }

@@ -97,6 +97,9 @@ static GLOBALS: &[VarId] = &[
     VarId::IsMultiplayer,
     VarId::ActiveIscriptBullet,
     VarId::ActiveIscriptUnit,
+    VarId::ImagesVector,
+    VarId::SelectionCircleImages,
+    VarId::HpBarImages,
     // Writable
     // Optional
     VarId::RngSeed,
@@ -347,6 +350,15 @@ pub fn is_multiplayer() -> bool {
 
 pub unsafe fn active_iscript_objects() -> (*mut bw::Unit, *mut bw::Bullet) {
     let arr = read_vars(&[VarId::ActiveIscriptUnit, VarId::ActiveIscriptBullet]);
+    (arr[0] as *mut _, arr[1] as *mut _)
+}
+
+pub unsafe fn images_vector() -> *mut *mut bw::Image {
+    read_var(VarId::ImagesVector) as *mut *mut bw::Image
+}
+
+pub unsafe fn selection_images() -> (*mut bw::Image, *mut bw::Image) {
+    let arr = read_vars(&[VarId::SelectionCircleImages, VarId::HpBarImages]);
     (arr[0] as *mut _, arr[1] as *mut _)
 }
 

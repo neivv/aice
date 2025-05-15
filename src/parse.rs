@@ -396,6 +396,8 @@ pub mod aice_op {
     pub static CREATE_SPRITE_PARAMS: CommandParams = CommandParams::new(
         &[IntExprOrConstU16, IntExpr, IntExpr, IntExprOrConstU8, IntExprOrConstU8, With]
     );
+    pub const CONTINUE: u8 = 0x18;
+    pub const WAIT: u8 = 0x19;
 }
 
 quick_error! {
@@ -527,7 +529,7 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"sethorpos", bw_cmd(0x02, &[I8])),
         (b"setvertpos", bw_cmd(0x03, &[I8])),
         (b"setpos", bw_cmd(0x04, &[I8, I8])),
-        (b"wait", bw_cmd(0x05, &[U8])),
+        (b"wait", Wait),
         (b"waitrand", bw_cmd(0x06, &[U8, U8])),
         (b"goto", bw_cmd_final(0x07, &[Label])),
         (b"imgol", bw_cmd(0x08, &[U16, I8, I8])),
@@ -799,6 +801,7 @@ enum CommandPrototype {
     HideUnit,
     ShowUnit,
     CreateSprite,
+    Wait,
 }
 
 pub struct Iscript {
@@ -1638,7 +1641,7 @@ impl<'a> Parser<'a> {
                 )?;
                 Ok(())
             }
-            CommandPrototype::Sigorder | CommandPrototype::OrderDone => {
+            CommandPrototype::Sigorder | CommandPrototype::OrderDone | CommandPrototype::Wait => {
                 let mut tokens = input.params.fields();
                 let flags = tokens.next().and_then(|x| parse_u8(x));
                 let has_next = tokens.next().is_some();
@@ -1650,6 +1653,7 @@ impl<'a> Parser<'a> {
                 };
                 let op = match input.command {
                     CommandPrototype::Sigorder => aice_op::SIGORDER,
+                    CommandPrototype::Wait => aice_op::WAIT,
                     _ => aice_op::ORDER_DONE,
                 };
                 out.add_aice_command_u8(op, flags);
@@ -3446,6 +3450,10 @@ impl<'a> Compiler<'a> {
         bw_data[0x7] = 0x07;
         bw_data[0x8] = 0x05;
         bw_data[0x9] = 0x00;
+        // Wait 1, aice continue
+        bw_data[0xa] = 0x05;
+        bw_data[0xb] = 0x01;
+        // bw_data[0xc] will be aice command continue
         bw_data.extend((0..headers.len()).flat_map(|_| [
             0x53, 0x43, 0x50, 0x45, 0x1b, 0x00, 0x1b, 0x00,
         ].iter().cloned()));
@@ -3495,10 +3503,13 @@ impl<'a> Compiler<'a> {
         // Write aice animation start cmd and link the few places to it
         let anim_start_cmd_offset = self.output.aice_code.len() as u32;
         self.output.aice_code.push(aice_op::ANIMATION_START);
+        let continue_cmd_offset = self.output.aice_code.len() as u32;
+        self.output.aice_code.push(aice_op::CONTINUE);
         let mut bw_aice_cmd_offsets = self.output.bw_aice_cmd_offsets.iter()
             .map(|&(bw, aice)| (bw_code_offset_to_data_offset(&self.bw_code_parts, bw), aice))
             .collect::<FxHashMap<u16, u32>>();
         bw_aice_cmd_offsets.insert(0x0000, anim_start_cmd_offset);
+        bw_aice_cmd_offsets.insert(0x000c, continue_cmd_offset);
         bw_aice_cmd_offsets.insert(0x001b, anim_start_cmd_offset);
         bw_aice_cmd_offsets.insert(0x4353, anim_start_cmd_offset);
         bw_aice_cmd_offsets.insert(0x4550, anim_start_cmd_offset);
