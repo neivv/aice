@@ -2855,7 +2855,6 @@ pub unsafe fn set_as_bw_script(iscript: Iscript) {
     }
     */
     let bw_bin = crate::samase::get_iscript_bin();
-    debug!("Iscript bw data size 0x{:x}", iscript.bw_data.len());
     assert!(iscript.bw_data.len() < 0x10000);
     std::ptr::copy_nonoverlapping(iscript.bw_data.as_ptr(), bw_bin, iscript.bw_data.len());
     let line_info = iscript.line_info.clone();
