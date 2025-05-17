@@ -100,6 +100,8 @@ static GLOBALS: &[VarId] = &[
     VarId::ImagesVector,
     VarId::SelectionCircleImages,
     VarId::HpBarImages,
+    VarId::PlacementImages,
+    VarId::PlacementRects,
     // Writable
     // Optional
     VarId::RngSeed,
@@ -357,9 +359,19 @@ pub unsafe fn images_vector() -> *mut *mut bw::Image {
     read_var(VarId::ImagesVector) as *mut *mut bw::Image
 }
 
-pub unsafe fn selection_images() -> (*mut bw::Image, *mut bw::Image) {
-    let arr = read_vars(&[VarId::SelectionCircleImages, VarId::HpBarImages]);
-    (arr[0] as *mut _, arr[1] as *mut _)
+pub unsafe fn selection_and_placment_images() -> [*mut bw::Image; 4] {
+    let arr = read_vars(&[
+        VarId::SelectionCircleImages,
+        VarId::HpBarImages,
+        VarId::PlacementImages,
+        VarId::PlacementRects,
+    ]);
+    [
+        arr[0] as *mut _,
+        arr[1] as *mut _,
+        arr[2] as *mut _,
+        arr[3] as *mut _,
+    ]
 }
 
 static ISSUE_ORDER: GlobalFunc<

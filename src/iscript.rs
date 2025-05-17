@@ -3039,8 +3039,9 @@ fn do_queued_hide_show() {
     }
 }
 
-/// Return (0, index) for normal images, (1, index) for selection circles (0..0x50)
-/// and (1, index) for hp bars (0x50..0x5c)
+/// Return (0, index) for normal images, (1, index) for selection circles (0..0x50),
+/// (1, index) for hp bars (0x50..0x5c), (1, 0x5c..0x9c) for placement images,
+/// (1, 0x9c..0xdc) for placement rects,
 fn image_to_index(image: *mut bw::Image) -> Option<(usize, usize)> {
     #[cold]
     fn invalid_image(image: *mut bw::Image) -> Option<(usize, usize)> {
@@ -3071,9 +3072,11 @@ fn image_to_index(image: *mut bw::Image) -> Option<(usize, usize)> {
         let vec_size = *(vec as *mut usize).add(1);
         check(image, 0, array_start, vec_size)
             .or_else(|| {
-                let (selection_circles, hp_bars) = samase::selection_images();
-                check(image, 1, selection_circles, 0x50)
-                    .or_else(|| check(image, 1, hp_bars, 0xc).map(|x| (x.0, 0x50 + x.1)))
+                let images = samase::selection_and_placment_images();
+                check(image, 1, images[0], 0x50)
+                    .or_else(|| check(image, 1, images[1], 0xc).map(|x| (x.0, 0x50 + x.1)))
+                    .or_else(|| check(image, 1, images[2], 0x40).map(|x| (x.0, 0x5c + x.1)))
+                    .or_else(|| check(image, 1, images[3], 0x40).map(|x| (x.0, 0x9c + x.1)))
             })
             .or_else(|| invalid_image(image))
     }
