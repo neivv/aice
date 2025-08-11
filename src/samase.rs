@@ -3,7 +3,7 @@ use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::{AtomicUsize, AtomicU8, AtomicPtr, Ordering};
 
 use libc::c_void;
-use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
 
 use bw_dat::{OrderId, UnitId, ImageId, SpriteId};
 use samase_plugin::{FfiStr, FuncId, PluginApi, VarId};
@@ -430,7 +430,7 @@ impl std::ops::Deref for SamaseBox {
 
 impl std::ops::Drop for SamaseBox {
     fn drop(&mut self) {
-        use winapi::um::heapapi::{GetProcessHeap, HeapFree};
+        use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapFree};
         unsafe {
             HeapFree(GetProcessHeap(), 0, self.data.as_ptr() as *mut _);
         }

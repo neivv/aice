@@ -2790,7 +2790,7 @@ fn animation_name(animation: u8) -> String {
 }
 
 pub unsafe fn load_iscript() -> Iscript {
-    use winapi::um::processthreadsapi::{GetCurrentProcess, TerminateProcess};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
 
     loop {
         let iscript_txt = match crate::samase::read_file("scripts\\iscript.txt") {
@@ -2863,7 +2863,7 @@ pub unsafe fn set_as_bw_script(iscript: Iscript) {
 }
 
 pub unsafe extern "C" fn iscript_read_hook(_filename: *const u8, out_size: *mut u32) -> *mut u8 {
-    use winapi::um::heapapi::{GetProcessHeap, HeapAlloc};
+    use windows_sys::Win32::System::Memory::{GetProcessHeap, HeapAlloc};
     debug!("Iscript read hook");
     let data = HeapAlloc(GetProcessHeap(), 0, 0x10000) as *mut u8;
     *out_size = 0x10000;
