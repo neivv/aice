@@ -1,8 +1,8 @@
+use std::ffi::c_void;
 use std::mem;
 use std::ptr::{NonNull, null_mut};
 use std::sync::atomic::{AtomicUsize, AtomicU8, AtomicPtr, Ordering};
 
-use libc::c_void;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
 
 use bw_dat::{OrderId, UnitId, ImageId, SpriteId};

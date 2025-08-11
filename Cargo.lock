@@ -21,7 +21,6 @@ dependencies = [
  "fern",
  "fxhash",
  "json",
- "libc",
  "log",
  "once_cell",
  "parking_lot",

@@ -1,3 +1,4 @@
+use std::ffi::c_void;
 use std::io::Write;
 use std::mem;
 use std::ptr::{self, null_mut, NonNull};
@@ -6,7 +7,6 @@ use std::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
 
 use byteorder::{ByteOrder, LittleEndian};
 use fxhash::FxHashMap;
-use libc::c_void;
 use once_cell::sync::OnceCell;
 use serde_derive::{Serialize, Deserialize};
 
