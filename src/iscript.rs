@@ -386,346 +386,19 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
         let parent = &mut *self.parent;
         match val {
             Int::Variable(id, place_vars) => {
-                match id.place() {
-                    Place::Global(id) => parent.get_global(id),
-                    Place::SpriteLocal(unit_ref, id) => {
-                        if let Some(val) = parent.get_sprite_local(id, unit_ref) {
-                            val
-                        } else {
-                            if unit_ref.is_this() {
-                                parent.show_uninit_spritelocal_err();
-                            } else {
-                                self.evaluate_default = true;
-                            }
-                            i32::MIN
+                let mut child_ctx = parent.eval_ctx();
+                let mut vars = [0i32; 4];
+                for i in 0..place_vars.len() {
+                    if let Some(ref expr) = place_vars[i] {
+                        vars[i] = child_ctx.eval_int(expr);
+                        if child_ctx.custom.evaluate_default {
+                            self.evaluate_default = true;
+                            return 0;
                         }
                     }
-                    Place::Flingy(unit_ref, ty) => unsafe {
-                        let flingy = if unit_ref.is_this() {
-                            self.unit.map(|x| ptr::addr_of_mut!((**x).flingy))
-                                .or_else(|| self.bullet.map(|x| ptr::addr_of_mut!((*x).flingy)))
-                        } else {
-                            match parent.resolve_unit_ref(unit_ref) {
-                                Some(s) => Some(ptr::addr_of_mut!((**s).flingy)),
-                                None => {
-                                    self.evaluate_default = true;
-                                    return 0;
-                                }
-                            }
-                        };
-                        let flingy = match flingy {
-                            Some(s) => s,
-                            None => {
-                                parent.report_missing_parent("flingy");
-                                show_unit_frame0_help();
-                                show_bullet_frame0_help();
-                                return i32::MIN;
-                            }
-                        };
-                        match ty {
-                            FlingyVar::MoveTargetX => (*flingy).move_target.pos.x as i32,
-                            FlingyVar::MoveTargetY => (*flingy).move_target.pos.y as i32,
-                            FlingyVar::FacingDirection => {
-                                bw_angle_to_degrees((*flingy).facing_direction) as i32
-                            }
-                            FlingyVar::MovementDirection => {
-                                bw_angle_to_degrees((*flingy).movement_direction) as i32
-                            }
-                            FlingyVar::TargetDirection => {
-                                bw_angle_to_degrees((*flingy).target_direction) as i32
-                            }
-                            FlingyVar::TurnSpeed => (*flingy).turn_speed as i32,
-                            FlingyVar::Acceleration => (*flingy).acceleration as i32,
-                            FlingyVar::TopSpeed => (*flingy).top_speed as i32,
-                            FlingyVar::Speed => (*flingy).current_speed as i32,
-                            FlingyVar::PositionX => (*flingy).position.x as i32,
-                            FlingyVar::PositionY => (*flingy).position.y as i32,
-                            FlingyVar::Player => (*(flingy as *mut bw::Unit)).player as i32,
-                            FlingyVar::FlingyId => (*flingy).flingy_id as i32,
-                            FlingyVar::Flags => (*flingy).flingy_flags as i32,
-                        }
-                    },
-                    Place::Bullet(ty) => unsafe {
-                        let bullet = match self.bullet {
-                            Some(s) => s,
-                            None => {
-                                parent.report_missing_parent("bullet");
-                                return i32::MIN;
-                            }
-                        };
-                        match ty {
-                            BulletVar::State => (*bullet).state as i32,
-                            BulletVar::WeaponId => (*bullet).weapon_id as i32,
-                            BulletVar::BouncesRemaining => (*bullet).bounces_remaining as i32,
-                            BulletVar::DeathTimer => (*bullet).death_timer as i32,
-                            BulletVar::OrderTargetX => (*bullet).target.pos.x as i32,
-                            BulletVar::OrderTargetY => (*bullet).target.pos.y as i32,
-                            BulletVar::Flags => (*bullet).flags as i32,
-                        }
-                    },
-                    Place::Unit(unit_ref, ty) => unsafe {
-                        let unit = match parent.resolve_unit_ref(unit_ref) {
-                            Some(s) => s,
-                            None => {
-                                if unit_ref.is_this() {
-                                    parent.report_missing_parent("unit");
-                                } else {
-                                    self.evaluate_default = true;
-                                }
-                                return i32::MIN;
-                            }
-                        };
-                        match ty {
-                            UnitVar::DeathTimer => (**unit).death_timer as i32,
-                            UnitVar::MatrixTimer => (**unit).matrix_timer as i32,
-                            UnitVar::MatrixHp => (**unit).defensive_matrix_dmg as i32,
-                            UnitVar::StimTimer => (**unit).stim_timer as i32,
-                            UnitVar::EnsnareTimer => (**unit).ensnare_timer as i32,
-                            UnitVar::LockdownTimer => (**unit).lockdown_timer as i32,
-                            UnitVar::IrradiateTimer => (**unit).irradiate_timer as i32,
-                            UnitVar::StasisTimer => (**unit).stasis_timer as i32,
-                            UnitVar::PlagueTimer => (**unit).plague_timer as i32,
-                            UnitVar::MaelstormTimer => (**unit).maelstrom_timer as i32,
-                            UnitVar::IsBlind => (**unit).is_blind as i32,
-                            UnitVar::SpellUpdateTimer => (**unit).master_spell_timer as i32,
-                            UnitVar::ParasitePlayers => (**unit).parasited_by_players as i32,
-                            UnitVar::IsBeingHealed => (**unit).is_being_healed as i32,
-                            UnitVar::IsUnderStorm => (**unit).is_under_storm as i32,
-                            UnitVar::Hitpoints => unit.hitpoints(),
-                            UnitVar::Shields => unit.shields(),
-                            UnitVar::Energy => unit.energy() as i32,
-                            UnitVar::MaxHitpoints => unit.id().hitpoints(),
-                            UnitVar::MaxShields => unit.id().shields(),
-                            UnitVar::MaxEnergy => {
-                                parent.game.max_energy(unit.player(), unit.id()) as i32
-                            }
-                            UnitVar::MineralCost => unit.id().mineral_cost() as i32,
-                            UnitVar::GasCost => unit.id().gas_cost() as i32,
-                            UnitVar::SupplyCost => unit.id().supply_cost() as i32,
-                            UnitVar::OverlaySize => {
-                                match unit.id().flags() {
-                                    x if x & 0x0200_0000 != 0 => 1,
-                                    x if x & 0x0400_0000 != 0 => 2,
-                                    _ => 0,
-                                }
-                            }
-                            UnitVar::Resources => match unit.id().is_resource_container() {
-                                true => unit.resource_amount() as i32,
-                                false => 0,
-                            },
-                            UnitVar::HangarCountInside => match unit.uses_fighters() {
-                                true => (**unit).unit_specific.carrier.in_hangar_count as i32,
-                                false => 0,
-                            },
-                            UnitVar::HangarCountOutside => match unit.uses_fighters() {
-                                true => (**unit).unit_specific.carrier.out_hangar_count as i32,
-                                false => 0,
-                            },
-                            UnitVar::LoadedCount => unit.cargo_count() as i32,
-                            UnitVar::CurrentTech => unit.tech_in_progress()
-                                .unwrap_or(bw_dat::tech::NONE).0 as i32,
-                            UnitVar::CurrentUpgrade => unit.upgrade_in_progress()
-                                .unwrap_or(bw_dat::upgrade::NONE).0 as i32,
-                            UnitVar::BuildQueue => {
-                                let mut child_ctx = parent.eval_ctx();
-                                let val = place_vars[0].as_ref()
-                                    .and_then(|x| u8::try_from(child_ctx.eval_int(x)).ok())
-                                    .and_then(|x| unit.nth_queued_unit(x))
-                                    .unwrap_or(bw_dat::unit::NONE).0 as i32;
-                                self.evaluate_default = child_ctx.custom.evaluate_default;
-                                val
-                            }
-                            UnitVar::RemainingBuildTime => (**unit).remaining_build_time as i32,
-                            UnitVar::RemainingResearchTime => {
-                                if unit.tech_in_progress().is_some() ||
-                                    unit.upgrade_in_progress().is_some()
-                                {
-                                    (**unit).unit_specific.building.research_time_remaining as i32
-                                } else {
-                                    0
-                                }
-                            }
-                            UnitVar::UnitId => unit.id().0 as i32,
-                            UnitVar::Kills => unit.kills() as i32,
-                            UnitVar::CarriedResourceAmount =>
-                                unit.carried_resource_amount() as i32,
-                            UnitVar::GroundCooldown => (**unit).ground_cooldown as i32,
-                            UnitVar::AirCooldown => (**unit).air_cooldown as i32,
-                            UnitVar::SpellCooldown => (**unit).spell_cooldown as i32,
-                            UnitVar::Order => unit.order().0 as i32,
-                            UnitVar::OrderTimer => (**unit).order_timer as i32,
-                            UnitVar::OrderState => (**unit).order_state as i32,
-                            UnitVar::RankIncrease => (**unit).rank as i32,
-                            UnitVar::MineAmount => unit.mine_amount(parent.game) as i32,
-                            UnitVar::RallyX | UnitVar::RallyY => {
-                                if unit.id().is_building() && unit.id() != bw_dat::unit::PYLON {
-                                    if ty == UnitVar::RallyX {
-                                        (**unit).rally_pylon.rally.pos.x as i32
-                                    } else {
-                                        (**unit).rally_pylon.rally.pos.y as i32
-                                    }
-                                } else {
-                                    0
-                                }
-                            }
-                            UnitVar::Flags => (**unit).flags as i32,
-                            UnitVar::DetectionStatus => (**unit).detection_status as i32,
-                            UnitVar::PathingFlags => (**unit).pathing_flags as i32,
-                            UnitVar::MovementState => (**unit).movement_state as i32,
-                            UnitVar::RepulseX => (**unit).repulse_chunk_x as i32,
-                            UnitVar::RepulseY => (**unit).repulse_chunk_y as i32,
-                            UnitVar::RepulseMisc => (**unit).repulse_misc as i32,
-                            UnitVar::RepulseDirection => {
-                                bw_angle_to_degrees((**unit).repulse_direction) as i32
-                            }
-                            UnitVar::CurrentButtonSet => (**unit).buttons as i32,
-                            UnitVar::AirStrength => (**unit).air_strength as i32,
-                            UnitVar::GroundStrength => (**unit).ground_strength as i32,
-                            UnitVar::OrderTargetX => (**unit).order_target.pos.x as i32,
-                            UnitVar::OrderTargetY => (**unit).order_target.pos.y as i32,
-                            UnitVar::CloakCount => (**unit).invisibility_effects as i32,
-                            UnitVar::SecondaryOrder => (**unit).secondary_order as i32,
-                            UnitVar::SecondaryOrderState => (**unit).secondary_order_state as i32,
-                            UnitVar::LastAttackingPlayer => (**unit).last_attacking_player as i32,
-                        }
-                    },
-                    Place::UnitExt(unit_ref, field_id) => {
-                        let unit = match parent.resolve_unit_ref(unit_ref) {
-                            Some(s) => s,
-                            None => {
-                                if unit_ref.is_this() {
-                                    parent.report_missing_parent("unit");
-                                } else {
-                                    self.evaluate_default = true;
-                                }
-                                return i32::MIN;
-                            }
-                        };
-                        let unit_index = parent.unit_array().to_index(unit) as u32;
-                        let field_id = parent.samase_unit_ext_field_id(field_id);
-                        samase::read_extended_unit_field(unit_index, field_id) as i32
-                    }
-                    Place::Image(ty) => unsafe {
-                        let image = self.image;
-                        match ty {
-                            ImageVar::Drawfunc => (*image).drawfunc as i32,
-                            ImageVar::DrawfuncParam => (*image).drawfunc_param as i32,
-                            ImageVar::Frame => (*image).frame as i32,
-                            ImageVar::BaseFrame => (*image).frameset as i32,
-                        }
-                    },
-                    Place::Game(ty) => unsafe {
-                        use crate::parse::GameVar::*;
-                        let mut child_ctx = parent.eval_ctx();
-                        let mut vars = [0i32; 4];
-                        for i in 0..place_vars.len() {
-                            if let Some(ref expr) = place_vars[i] {
-                                vars[i] = child_ctx.eval_int(expr);
-                                if child_ctx.custom.evaluate_default {
-                                    self.evaluate_default = true;
-                                    return 0;
-                                }
-                            }
-                        }
-                        let game = parent.game;
-                        // Moving this outside match since it is pretty common
-                        let player = (vars[0] as u8).clamp(0, 11) as u8;
-                        match ty {
-                            Deaths => game.unit_deaths(player, UnitId(vars[1] as u16)) as i32,
-                            Kills => game.unit_kills(player, UnitId(vars[1] as u16)) as i32,
-                            UpgradeLevel => {
-                                game.upgrade_level(player, UpgradeId(vars[1] as u16)) as i32
-                            }
-                            UpgradeLimit => {
-                                game.upgrade_max_level(player, UpgradeId(vars[1] as u16)) as i32
-                            }
-                            TechLevel => {
-                                game.tech_researched(player, TechId(vars[1] as u16)) as i32
-                            }
-                            TechAvailability => {
-                                game.tech_available(player, TechId(vars[1] as u16)) as i32
-                            }
-                            UnitAvailability => {
-                                game.unit_available(player, UnitId(vars[1] as u16)) as i32
-                            }
-                            Alliance => game.allied(player, vars[1].clamp(0, 11) as u8) as i32,
-                            SharedVision => {
-                                game.shared_vision(player, vars[1].clamp(0, 11) as u8) as i32
-                            }
-                            Minerals => game.minerals(player) as i32,
-                            Gas => game.gas(player) as i32,
-                            ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax |
-                                ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed |
-                                ZergSupplyProvided | TerranSupplyProvided |
-                                ProtossSupplyProvided =>
-                            {
-                                let race = match ty {
-                                    ZergSupplyMax | ZergSupplyUsed | ZergSupplyProvided => {
-                                        Race::Zerg
-                                    }
-                                    TerranSupplyMax | TerranSupplyUsed | TerranSupplyProvided => {
-                                        Race::Terran
-                                    }
-                                    _ => Race::Protoss,
-                                };
-                                match ty {
-                                    ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax => {
-                                        game.supply_max(player, race) as i32
-                                    }
-                                    ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed => {
-                                        game.supply_used(player, race) as i32
-                                    }
-                                    _ => {
-                                        game.supply_provided(player, race) as i32
-                                    }
-                                }
-                            }
-                            UnitsTotal | UnitsProduced | UnitsOwned | UnitsLost | UnitsKilled |
-                                UnitsScore | UnitsKilledScore | BuildingsTotal |
-                                BuildingsConstructed | BuildingsOwned | BuildingsLost |
-                                BuildingsRazed | BuildingsScore | BuildingsRazedScore|
-                                FactoriesConstructed | FactoriesOwned | FactoriesLost |
-                                FactoriesRazed =>
-                            {
-                                let index = ty as u8 - UnitsTotal as u8;
-                                game.score(index, player) as i32
-                            }
-                            CustomScore => game.custom_score(player) as i32,
-                            PlayerColorChoice => {
-                                if crate::samase::is_multiplayer() {
-                                    parent.player_lobby_color_choices.get(player) as i32
-                                } else {
-                                    0x17
-                                }
-                            }
-                            PlayerType | PlayerRace => {
-                                let players = crate::samase::players();
-                                let player = players.add(player as usize);
-                                if ty == PlayerType {
-                                    (*player).player_type as i32
-                                } else {
-                                    (*player).race as i32
-                                }
-                            }
-                            LocationLeft | LocationTop | LocationRight | LocationBottom => {
-                                let location = (vars[0]).clamp(0, 254) as u8;
-                                let location = (**game).locations[location as usize];
-                                match ty {
-                                    LocationLeft => location.area.left as i32,
-                                    LocationTop => location.area.top as i32,
-                                    LocationRight => location.area.right as i32,
-                                    LocationBottom | _ => location.area.bottom as i32,
-                                }
-                            }
-                            LeaderboardType => (**game).leaderboard_type as i32,
-                            LeaderboardLocation => (**game).leaderboard_location as i32,
-                            LeaderboardParameter => (**game).leaderboard_parameter as i32,
-                            LeaderboardGoal => (**game).leaderboard_goal as i32,
-                            LeaderboardComputers => (**game).computers_in_leaderboard as i32,
-                            Dat => self.parent.read_dat(vars[0], vars[1], vars[2]),
-                        }
-                    },
                 }
+
+                self.get_int_variable(*id, &vars)
             }
             Int::Default(ref pair) => {
                 let mut child_ctx = parent.eval_ctx();
@@ -758,6 +431,339 @@ impl<'a, 'b> bw_dat::expr::CustomEval for CustomCtx<'a, 'b> {
                     self.evaluate_default = child_ctx.custom.evaluate_default;
                 }
                 val
+            }
+        }
+    }
+}
+
+impl<'a, 'b> CustomCtx<'a, 'b> {
+    fn get_int_variable(&mut self, id: PlaceId, place_vars: &[i32]) -> i32 {
+        let parent = &mut *self.parent;
+        match id.place() {
+            Place::Global(id) => parent.get_global(id),
+            Place::SpriteLocal(unit_ref, id) => {
+                if let Some(val) = parent.get_sprite_local(id, unit_ref) {
+                    val
+                } else {
+                    if unit_ref.is_this() {
+                        parent.show_uninit_spritelocal_err();
+                    } else {
+                        self.evaluate_default = true;
+                    }
+                    i32::MIN
+                }
+            }
+            Place::Flingy(unit_ref, ty) => unsafe {
+                let flingy = if unit_ref.is_this() {
+                    self.unit.map(|x| ptr::addr_of_mut!((**x).flingy))
+                        .or_else(|| self.bullet.map(|x| ptr::addr_of_mut!((*x).flingy)))
+                } else {
+                    match parent.resolve_unit_ref(unit_ref) {
+                        Some(s) => Some(ptr::addr_of_mut!((**s).flingy)),
+                        None => {
+                            self.evaluate_default = true;
+                            return 0;
+                        }
+                    }
+                };
+                let flingy = match flingy {
+                    Some(s) => s,
+                    None => {
+                        parent.report_missing_parent("flingy");
+                        show_unit_frame0_help();
+                        show_bullet_frame0_help();
+                        return i32::MIN;
+                    }
+                };
+                match ty {
+                    FlingyVar::MoveTargetX => (*flingy).move_target.pos.x as i32,
+                    FlingyVar::MoveTargetY => (*flingy).move_target.pos.y as i32,
+                    FlingyVar::FacingDirection => {
+                        bw_angle_to_degrees((*flingy).facing_direction) as i32
+                    }
+                    FlingyVar::MovementDirection => {
+                        bw_angle_to_degrees((*flingy).movement_direction) as i32
+                    }
+                    FlingyVar::TargetDirection => {
+                        bw_angle_to_degrees((*flingy).target_direction) as i32
+                    }
+                    FlingyVar::TurnSpeed => (*flingy).turn_speed as i32,
+                    FlingyVar::Acceleration => (*flingy).acceleration as i32,
+                    FlingyVar::TopSpeed => (*flingy).top_speed as i32,
+                    FlingyVar::Speed => (*flingy).current_speed as i32,
+                    FlingyVar::PositionX => (*flingy).position.x as i32,
+                    FlingyVar::PositionY => (*flingy).position.y as i32,
+                    FlingyVar::Player => (*(flingy as *mut bw::Unit)).player as i32,
+                    FlingyVar::FlingyId => (*flingy).flingy_id as i32,
+                    FlingyVar::Flags => (*flingy).flingy_flags as i32,
+                }
+            },
+            Place::Bullet(ty) => unsafe {
+                let bullet = match self.bullet {
+                    Some(s) => s,
+                    None => {
+                        parent.report_missing_parent("bullet");
+                        return i32::MIN;
+                    }
+                };
+                match ty {
+                    BulletVar::State => (*bullet).state as i32,
+                    BulletVar::WeaponId => (*bullet).weapon_id as i32,
+                    BulletVar::BouncesRemaining => (*bullet).bounces_remaining as i32,
+                    BulletVar::DeathTimer => (*bullet).death_timer as i32,
+                    BulletVar::OrderTargetX => (*bullet).target.pos.x as i32,
+                    BulletVar::OrderTargetY => (*bullet).target.pos.y as i32,
+                    BulletVar::Flags => (*bullet).flags as i32,
+                }
+            },
+            Place::Unit(unit_ref, ty) => unsafe {
+                let unit = match parent.resolve_unit_ref(unit_ref) {
+                    Some(s) => s,
+                    None => {
+                        if unit_ref.is_this() {
+                            parent.report_missing_parent("unit");
+                        } else {
+                            self.evaluate_default = true;
+                        }
+                        return i32::MIN;
+                    }
+                };
+                match ty {
+                    UnitVar::DeathTimer => (**unit).death_timer as i32,
+                    UnitVar::MatrixTimer => (**unit).matrix_timer as i32,
+                    UnitVar::MatrixHp => (**unit).defensive_matrix_dmg as i32,
+                    UnitVar::StimTimer => (**unit).stim_timer as i32,
+                    UnitVar::EnsnareTimer => (**unit).ensnare_timer as i32,
+                    UnitVar::LockdownTimer => (**unit).lockdown_timer as i32,
+                    UnitVar::IrradiateTimer => (**unit).irradiate_timer as i32,
+                    UnitVar::StasisTimer => (**unit).stasis_timer as i32,
+                    UnitVar::PlagueTimer => (**unit).plague_timer as i32,
+                    UnitVar::MaelstormTimer => (**unit).maelstrom_timer as i32,
+                    UnitVar::IsBlind => (**unit).is_blind as i32,
+                    UnitVar::SpellUpdateTimer => (**unit).master_spell_timer as i32,
+                    UnitVar::ParasitePlayers => (**unit).parasited_by_players as i32,
+                    UnitVar::IsBeingHealed => (**unit).is_being_healed as i32,
+                    UnitVar::IsUnderStorm => (**unit).is_under_storm as i32,
+                    UnitVar::Hitpoints => unit.hitpoints(),
+                    UnitVar::Shields => unit.shields(),
+                    UnitVar::Energy => unit.energy() as i32,
+                    UnitVar::MaxHitpoints => unit.id().hitpoints(),
+                    UnitVar::MaxShields => unit.id().shields(),
+                    UnitVar::MaxEnergy => {
+                        parent.game.max_energy(unit.player(), unit.id()) as i32
+                    }
+                    UnitVar::MineralCost => unit.id().mineral_cost() as i32,
+                    UnitVar::GasCost => unit.id().gas_cost() as i32,
+                    UnitVar::SupplyCost => unit.id().supply_cost() as i32,
+                    UnitVar::OverlaySize => {
+                        match unit.id().flags() {
+                            x if x & 0x0200_0000 != 0 => 1,
+                            x if x & 0x0400_0000 != 0 => 2,
+                            _ => 0,
+                        }
+                    }
+                    UnitVar::Resources => match unit.id().is_resource_container() {
+                        true => unit.resource_amount() as i32,
+                        false => 0,
+                    },
+                    UnitVar::HangarCountInside => match unit.uses_fighters() {
+                        true => (**unit).unit_specific.carrier.in_hangar_count as i32,
+                        false => 0,
+                    },
+                    UnitVar::HangarCountOutside => match unit.uses_fighters() {
+                        true => (**unit).unit_specific.carrier.out_hangar_count as i32,
+                        false => 0,
+                    },
+                    UnitVar::LoadedCount => unit.cargo_count() as i32,
+                    UnitVar::CurrentTech => unit.tech_in_progress()
+                        .unwrap_or(bw_dat::tech::NONE).0 as i32,
+                    UnitVar::CurrentUpgrade => unit.upgrade_in_progress()
+                        .unwrap_or(bw_dat::upgrade::NONE).0 as i32,
+                    UnitVar::BuildQueue => {
+                        let val = u8::try_from(place_vars[0]).ok()
+                            .and_then(|x| unit.nth_queued_unit(x))
+                            .unwrap_or(bw_dat::unit::NONE).0 as i32;
+                        val
+                    }
+                    UnitVar::RemainingBuildTime => (**unit).remaining_build_time as i32,
+                    UnitVar::RemainingResearchTime => {
+                        if unit.tech_in_progress().is_some() ||
+                            unit.upgrade_in_progress().is_some()
+                        {
+                            (**unit).unit_specific.building.research_time_remaining as i32
+                        } else {
+                            0
+                        }
+                    }
+                    UnitVar::UnitId => unit.id().0 as i32,
+                    UnitVar::Kills => unit.kills() as i32,
+                    UnitVar::CarriedResourceAmount =>
+                        unit.carried_resource_amount() as i32,
+                    UnitVar::GroundCooldown => (**unit).ground_cooldown as i32,
+                    UnitVar::AirCooldown => (**unit).air_cooldown as i32,
+                    UnitVar::SpellCooldown => (**unit).spell_cooldown as i32,
+                    UnitVar::Order => unit.order().0 as i32,
+                    UnitVar::OrderTimer => (**unit).order_timer as i32,
+                    UnitVar::OrderState => (**unit).order_state as i32,
+                    UnitVar::RankIncrease => (**unit).rank as i32,
+                    UnitVar::MineAmount => unit.mine_amount(parent.game) as i32,
+                    UnitVar::RallyX | UnitVar::RallyY => {
+                        if unit.id().is_building() && unit.id() != bw_dat::unit::PYLON {
+                            if ty == UnitVar::RallyX {
+                                (**unit).rally_pylon.rally.pos.x as i32
+                            } else {
+                                (**unit).rally_pylon.rally.pos.y as i32
+                            }
+                        } else {
+                            0
+                        }
+                    }
+                    UnitVar::Flags => (**unit).flags as i32,
+                    UnitVar::DetectionStatus => (**unit).detection_status as i32,
+                    UnitVar::PathingFlags => (**unit).pathing_flags as i32,
+                    UnitVar::MovementState => (**unit).movement_state as i32,
+                    UnitVar::RepulseX => (**unit).repulse_chunk_x as i32,
+                    UnitVar::RepulseY => (**unit).repulse_chunk_y as i32,
+                    UnitVar::RepulseMisc => (**unit).repulse_misc as i32,
+                    UnitVar::RepulseDirection => {
+                        bw_angle_to_degrees((**unit).repulse_direction) as i32
+                    }
+                    UnitVar::CurrentButtonSet => (**unit).buttons as i32,
+                    UnitVar::AirStrength => (**unit).air_strength as i32,
+                    UnitVar::GroundStrength => (**unit).ground_strength as i32,
+                    UnitVar::OrderTargetX => (**unit).order_target.pos.x as i32,
+                    UnitVar::OrderTargetY => (**unit).order_target.pos.y as i32,
+                    UnitVar::CloakCount => (**unit).invisibility_effects as i32,
+                    UnitVar::SecondaryOrder => (**unit).secondary_order as i32,
+                    UnitVar::SecondaryOrderState => (**unit).secondary_order_state as i32,
+                    UnitVar::LastAttackingPlayer => (**unit).last_attacking_player as i32,
+                }
+            },
+            Place::UnitExt(unit_ref, field_id) => {
+                let unit = match parent.resolve_unit_ref(unit_ref) {
+                    Some(s) => s,
+                    None => {
+                        if unit_ref.is_this() {
+                            parent.report_missing_parent("unit");
+                        } else {
+                            self.evaluate_default = true;
+                        }
+                        return i32::MIN;
+                    }
+                };
+                let unit_index = parent.unit_array().to_index(unit) as u32;
+                let field_id = parent.samase_unit_ext_field_id(field_id);
+                samase::read_extended_unit_field(unit_index, field_id) as i32
+            }
+            Place::Image(ty) => unsafe {
+                let image = self.image;
+                match ty {
+                    ImageVar::Drawfunc => (*image).drawfunc as i32,
+                    ImageVar::DrawfuncParam => (*image).drawfunc_param as i32,
+                    ImageVar::Frame => (*image).frame as i32,
+                    ImageVar::BaseFrame => (*image).frameset as i32,
+                }
+            },
+            Place::Game(ty) => unsafe {
+                use crate::parse::GameVar::*;
+                let game = parent.game;
+                // Moving this outside match since it is pretty common
+                let vars = place_vars;
+                let player = (vars[0] as u8).clamp(0, 11) as u8;
+                match ty {
+                    Deaths => game.unit_deaths(player, UnitId(vars[1] as u16)) as i32,
+                    Kills => game.unit_kills(player, UnitId(vars[1] as u16)) as i32,
+                    UpgradeLevel => {
+                        game.upgrade_level(player, UpgradeId(vars[1] as u16)) as i32
+                    }
+                    UpgradeLimit => {
+                        game.upgrade_max_level(player, UpgradeId(vars[1] as u16)) as i32
+                    }
+                    TechLevel => {
+                        game.tech_researched(player, TechId(vars[1] as u16)) as i32
+                    }
+                    TechAvailability => {
+                        game.tech_available(player, TechId(vars[1] as u16)) as i32
+                    }
+                    UnitAvailability => {
+                        game.unit_available(player, UnitId(vars[1] as u16)) as i32
+                    }
+                    Alliance => game.allied(player, vars[1].clamp(0, 11) as u8) as i32,
+                    SharedVision => {
+                        game.shared_vision(player, vars[1].clamp(0, 11) as u8) as i32
+                    }
+                    Minerals => game.minerals(player) as i32,
+                    Gas => game.gas(player) as i32,
+                    ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax |
+                        ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed |
+                        ZergSupplyProvided | TerranSupplyProvided |
+                        ProtossSupplyProvided =>
+                    {
+                        let race = match ty {
+                            ZergSupplyMax | ZergSupplyUsed | ZergSupplyProvided => {
+                                Race::Zerg
+                            }
+                            TerranSupplyMax | TerranSupplyUsed | TerranSupplyProvided => {
+                                Race::Terran
+                            }
+                            _ => Race::Protoss,
+                        };
+                        match ty {
+                            ZergSupplyMax | TerranSupplyMax | ProtossSupplyMax => {
+                                game.supply_max(player, race) as i32
+                            }
+                            ZergSupplyUsed | TerranSupplyUsed | ProtossSupplyUsed => {
+                                game.supply_used(player, race) as i32
+                            }
+                            _ => {
+                                game.supply_provided(player, race) as i32
+                            }
+                        }
+                    }
+                    UnitsTotal | UnitsProduced | UnitsOwned | UnitsLost | UnitsKilled |
+                        UnitsScore | UnitsKilledScore | BuildingsTotal |
+                        BuildingsConstructed | BuildingsOwned | BuildingsLost |
+                        BuildingsRazed | BuildingsScore | BuildingsRazedScore|
+                        FactoriesConstructed | FactoriesOwned | FactoriesLost |
+                        FactoriesRazed =>
+                    {
+                        let index = ty as u8 - UnitsTotal as u8;
+                        game.score(index, player) as i32
+                    }
+                    CustomScore => game.custom_score(player) as i32,
+                    PlayerColorChoice => {
+                        if crate::samase::is_multiplayer() {
+                            parent.player_lobby_color_choices.get(player) as i32
+                        } else {
+                            0x17
+                        }
+                    }
+                    PlayerType | PlayerRace => {
+                        let players = crate::samase::players();
+                        let player = players.add(player as usize);
+                        if ty == PlayerType {
+                            (*player).player_type as i32
+                        } else {
+                            (*player).race as i32
+                        }
+                    }
+                    LocationLeft | LocationTop | LocationRight | LocationBottom => {
+                        let location = (vars[0]).clamp(0, 254) as u8;
+                        let location = (**game).locations[location as usize];
+                        match ty {
+                            LocationLeft => location.area.left as i32,
+                            LocationTop => location.area.top as i32,
+                            LocationRight => location.area.right as i32,
+                            LocationBottom | _ => location.area.bottom as i32,
+                        }
+                    }
+                    LeaderboardType => (**game).leaderboard_type as i32,
+                    LeaderboardLocation => (**game).leaderboard_location as i32,
+                    LeaderboardParameter => (**game).leaderboard_parameter as i32,
+                    LeaderboardGoal => (**game).leaderboard_goal as i32,
+                    LeaderboardComputers => (**game).computers_in_leaderboard as i32,
+                    Dat => self.parent.read_dat(vars[0], vars[1], vars[2]),
+                }
             }
         }
     }
@@ -1408,6 +1414,44 @@ impl<'a> IscriptRunner<'a> {
                         return Ok(res);
                     }
                 }
+                SET_CLEAR_FLAG => {
+                    let place_id = PlaceId(self.read_u32()?);
+                    let mask = self.read_u32()?;
+                    let is_clear = self.read_u8()? != 0;
+                    let place = place_id.place();
+                    let mut var_exprs = [0u32; 4];
+                    let var_count = place.var_count() as usize;
+                    for i in 0..var_count {
+                        var_exprs[i] = self.read_u32()?;
+                    }
+                    if self.dry_run {
+                        // Bad? Ideally would have dry-run state
+                        // Maybe should stop here?
+                        continue;
+                    }
+
+                    let mut vars = [0i32; 4];
+                    for i in 0..var_count {
+                        let expr = var_exprs[i];
+                        let expression = &self.iscript.int_expressions[expr as usize];
+                        let mut eval_ctx = self.eval_ctx();
+                        vars[i] = eval_ctx.eval_int(&expression);
+                        if eval_ctx.custom.evaluate_default {
+                            continue 'op_loop;
+                        }
+                    }
+                    if let Some(old) = self.get_int_variable(place_id, &vars) {
+                        let new = if is_clear {
+                            (old as u32) & !mask
+                        } else {
+                            (old as u32) | mask
+                        };
+                        let res = self.set_variable(place, place_id, new as i32, &vars);
+                        if let Some(res) = res {
+                            return Ok(res);
+                        }
+                    }
+                }
                 PRE_END => {
                     if self.dry_run {
                         warn!("Dry run with end");
@@ -1857,6 +1901,16 @@ impl<'a> IscriptRunner<'a> {
             }
         }
         Ok(ScriptRunResult::Done)
+    }
+
+    fn get_int_variable(&mut self, id: PlaceId, place_vars: &[i32]) -> Option<i32> {
+        let mut eval_ctx = self.eval_ctx();
+        let val = eval_ctx.custom.get_int_variable(id, place_vars);
+        if eval_ctx.custom.evaluate_default {
+            None
+        } else {
+            Some(val)
+        }
     }
 
     #[must_use]

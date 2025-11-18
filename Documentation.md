@@ -98,6 +98,24 @@ set spritelocal unit some_unit_var = unit.target
 set spritelocal unit some_unit_var = null
 ```
 
+### set\_flag, clear\_flag
+
+```
+set_flag <place> <flag_hex>
+clear_flag <place> <flag_hex>
+```
+
+Clearer way to set and clear bitflags than writing `set value = value | 0x800`, you can write
+`set_flag value 800` (For this command, the integer is understood as hex, even without leading 0x)
+
+#### Examples
+
+```
+set_flag game.dat(0, 0x16, unit_id) 8000 # Make unit type gain detector
+set_flag game.dat(0, 0x16, unit_id) 0x8000 # Same as above
+clear_flag game.dat(0, 0x16, unit_id) 8000 # Make unit type lose detector
+```
+
 ### print, print\_stat\_txt
 
 ```
@@ -458,7 +476,7 @@ The following are built-in integer expressions (Available also in MTL):
     * For example, to check if the current unit is mechanical, use:
         `dat(0, 0x16, unit_id) & 0x40000000 != 0`.
     * Aice allows writing to most of the dat array values, though it requires using `game.dat(..)`
-        syntax instead of just `dat(..)`.
+        syntax instead of just `dat(..)`. Writing dats is only supported for samase extended dats.
 
 The following integer expressions work, but are (currently) incompatible with the MTL plugin's timer
 customization functionality.
@@ -703,13 +721,13 @@ bullets accelerate one unit per frame.
       vanishes when killed.
     * 0x80000000 Suiciding
 
-To set them, use e.g. `set unit.flags = unit.flags | 0x00200000` (to disable collision in this case).
-There are three ways to unset a flag:
+To set them, use e.g. `set_flag unit.flags 00200000` (to disable collision in this case).
+There are four ways to unset a flag:
+    * Use `clear_flag`, which should be simplest `clear_flag unit.flags 00200000`
     * Use e.g. `set unit.flags = unit.flags & 0xffdfffff` (a hexadecimal value with the flag's own
       value, 0x200000, subtracted);
     * Use a set followed by a toggle, e.g. `set unit.flags = (unit.flags | 0x00200000) ^ 0x00200000`;
-    * Or, use e.g. `set unit.flags = unit.flags & !0x00200000`, which appears to be the most
-      straightforward way.
+    * Or, use e.g. `set unit.flags = unit.flags & !0x00200000`
 
 - `unit.detection_status` Flags signifying which players are able to detect this unit. Can be
   written but BW will most likely quickly write the normal value again, making writing pretty

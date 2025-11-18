@@ -398,6 +398,7 @@ pub mod aice_op {
     );
     pub const CONTINUE: u8 = 0x18;
     pub const WAIT: u8 = 0x19;
+    pub const SET_CLEAR_FLAG: u8 = 0x1a;
 }
 
 quick_error! {
@@ -605,6 +606,8 @@ static COMMANDS: &[(&[u8], CommandPrototype)] = {
         (b"hide_unit", HideUnit),
         (b"show_unit", ShowUnit),
         (b"create_sprite", CreateSprite),
+        (b"set_flag", SetFlag),
+        (b"clear_flag", ClearFlag),
     ]
 };
 
@@ -802,6 +805,8 @@ enum CommandPrototype {
     ShowUnit,
     CreateSprite,
     Wait,
+    SetFlag,
+    ClearFlag,
 }
 
 pub struct Iscript {
@@ -1719,7 +1724,7 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             CommandPrototype::Set => {
-                ctx.expr_buffer[0] = None;
+                ctx.expr_buffer = [const { None }; 4];
                 let exprs = &mut self.exprs;
                 let (type_place, if_uninit, rest) =
                     exprs.parse_set_place(input.params, &mut ctx.expr_buffer, variables)?;
@@ -1740,6 +1745,33 @@ impl<'a> Parser<'a> {
                     type_place.place_id,
                     if_uninit,
                     expr,
+                    &mut ctx.expr_buffer,
+                );
+                Ok(())
+            }
+            CommandPrototype::SetFlag | CommandPrototype::ClearFlag => {
+                ctx.expr_buffer = [const { None }; 4];
+                let exprs = &mut self.exprs;
+                let (type_place, rest) =
+                    exprs.parse_place_expr(input.params, &mut ctx.expr_buffer, variables)?;
+                if type_place.ty != VariableType::Int {
+                    return Err(Error::Dynamic(format!("Invalid type {:?}", type_place.ty)));
+                }
+                let mut tokens = rest.fields();
+                let mask = tokens.next().and_then(|x| parse_u32_always_hex(x));
+                let has_next = tokens.next().is_some();
+                let mask = match (mask, has_next) {
+                    (Some(s), false) => s,
+                    _ => return Err(Error::Dynamic(format!(
+                        "Expected hex bits, got '{}'", rest.as_bstr(),
+                    ))),
+                };
+                let is_clear = matches!(input.command, CommandPrototype::ClearFlag);
+                out.add_set_clear_flag(
+                    &mut ctx.write_buffer,
+                    type_place.place_id,
+                    mask,
+                    is_clear,
                     &mut ctx.expr_buffer,
                 );
                 Ok(())
@@ -2679,6 +2711,14 @@ fn parse_label_ref<'a>(label: &'a [u8]) -> Option<Label<'a>> {
     } else {
         None
     }
+}
+
+fn parse_u32_always_hex(text: &[u8]) -> Option<u32> {
+    let text = match text.starts_with(b"0x") {
+        true => &text[2..],
+        false => text,
+    };
+    u32::from_str_radix(text.to_str().ok()?, 16).ok()
 }
 
 fn parse_u16(text: &[u8]) -> Option<u16> {
@@ -3833,6 +3873,32 @@ impl<'text> CompilerOutput<'text> {
                 anytype_expr::write_any_type(write_buffer, ty);
             }
         }
+        self.add_aice_code(&write_buffer);
+    }
+
+    fn add_set_clear_flag(
+        &mut self,
+        expr_ids: &mut CompilerExprs,
+        write_buffer: &mut Vec<u8>,
+        place: PlaceId,
+        mask: u32,
+        is_clear: bool,
+        place_vars: &mut [Option<Box<IntExpr>>; 4],
+    ) {
+        self.add_flow_to_aice();
+        write_buffer.clear();
+
+        write_buffer.push(aice_op::SET_CLEAR_FLAG);
+        write_u32(write_buffer, place.0);
+        write_u32(write_buffer, mask as u32);
+        write_buffer.push(is_clear as u8);
+        for var in place_vars.iter_mut()
+            .take_while(|x| x.is_some()).filter_map(|x| x.take())
+        {
+            let index = expr_ids.int_expr_id(*var);
+            write_u32(write_buffer, index as u32);
+        }
+
         self.add_aice_code(&write_buffer);
     }
 

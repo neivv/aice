@@ -104,6 +104,18 @@ impl<'a, 'b, 'text> ParseStage3Output<'a, 'b, 'text> {
         self.inner.out.add_set(expr_ids, write_buffer, place, if_uninit, value, place_vars)
     }
 
+    pub fn add_set_clear_flag(
+        &mut self,
+        write_buffer: &mut Vec<u8>,
+        place: PlaceId,
+        mask: u32,
+        is_clear: bool,
+        place_vars: &mut [Option<Box<IntExpr>>; 4],
+    ) {
+        let expr_ids = &mut self.inner.expr_ids;
+        self.inner.out.add_set_clear_flag(expr_ids, write_buffer, place, mask, is_clear, place_vars)
+    }
+
     pub fn add_bw_command(
         self,
         labels: &CompilerLabels<'text>,
