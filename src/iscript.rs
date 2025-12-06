@@ -326,7 +326,7 @@ pub unsafe extern "C" fn run_aice_script(
                     drop(globals_guard);
                     drop(sprite_owner_map);
                     drop(this_guard);
-                    crate::samase::transform_unit(*unit, id);
+                    do_transform(unit, id);
                 }
             }
             Ok(ScriptRunResult::HideUnit(unit)) => {
@@ -3050,12 +3050,21 @@ fn do_queued_transforms() {
                 }
             };
             if let Some(unit) = unit_array.get_by_unique_id(unit) {
-                unsafe {
-                    crate::samase::transform_unit(*unit, dest);
-                }
+                do_transform(unit, dest);
             }
         }
         QUEUED_TRANSFORMS.store(0, Ordering::Relaxed);
+    }
+}
+
+fn do_transform(unit: Unit, dest: UnitId) {
+    unsafe {
+        // Try to keep some state that is reasonable to keep unchanged
+        let energy = unit.energy();
+        let direction = (**unit).flingy.facing_direction;
+        crate::samase::transform_unit(*unit, dest);
+        (**unit).energy = energy;
+        crate::samase::set_unit_direction(*unit, direction);
     }
 }
 

@@ -458,6 +458,7 @@ static PLACE_FINISHED_UNIT_CREEP: AtomicUsize = AtomicUsize::new(0);
 static HIDE_UNIT: AtomicUsize = AtomicUsize::new(0);
 static SHOW_UNIT: AtomicUsize = AtomicUsize::new(0);
 static CREATE_LONE_SPRITE: AtomicUsize = AtomicUsize::new(0);
+static UNIT_SET_DIRECTION: AtomicUsize = AtomicUsize::new(0);
 
 #[cold]
 fn func_fatal(value: usize) -> ! {
@@ -507,6 +508,10 @@ pub unsafe fn hide_unit(unit: *mut bw::Unit) {
 
 pub unsafe fn show_unit(unit: *mut bw::Unit) {
     load_func::<unsafe extern "C" fn(*mut bw::Unit)>(&SHOW_UNIT)(unit)
+}
+
+pub unsafe fn set_unit_direction(unit: *mut bw::Unit, dir: u8) {
+    load_func::<unsafe extern "C" fn(*mut bw::Unit, u8)>(&UNIT_SET_DIRECTION)(unit, dir)
 }
 
 pub unsafe fn create_lone_sprite(
@@ -632,6 +637,7 @@ pub unsafe extern "C" fn samase_plugin_init(api: *const PluginApi) {
         (&HIDE_UNIT, FuncId::HideUnit),
         (&SHOW_UNIT, FuncId::ShowUnit),
         (&CREATE_LONE_SPRITE, FuncId::CreateLoneSprite),
+        (&UNIT_SET_DIRECTION, FuncId::UnitSetDirection),
     ];
     for &(global, func_id) in FUNCS {
         if func_id as u16 >= (*api).max_func_id {
