@@ -727,6 +727,7 @@ static IMAGE_VARS: &[(&[u8], ImageVar)] = {
         (b"drawfunc_param", DrawfuncParam),
         (b"displayed_frame", Frame),
         (b"frame", BaseFrame),
+        (b"flags", Flags),
     ]
 };
 
@@ -2988,6 +2989,7 @@ pub enum ImageVar {
     DrawfuncParam,
     Frame,
     BaseFrame,
+    Flags,
 }
 
 #[repr(u8)]

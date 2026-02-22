@@ -767,6 +767,15 @@ There are four ways to unset a flag:
       which will also change the current frame depending on rotation.
 - `image.drawfunc` Current images.dat draw function for image.
 - `image.drawfunc_param` Current images.dat draw function parameter for image.
+- `image.flags` Flags related to image state:
+    * 0x1 Redraw (Game sets whenever image has been modified this frame, does nothing in SC:R but still gets set)
+    * 0x2 Flipped (Set automatically when image faces left)
+    * 0x4 Freeze Y (Used during liftoff / land for shadows)
+    * 0x8 Images.dat Turning Graphic flag
+    * 0x10 Images.dat Use Full Iscript flag
+    * 0x20 Images.dat Clickable flag
+    * 0x40 Hidden (Modified by `tmprmgraphicstart/end`)
+    * 0x80 Position is based on main image's special .lo file (Powerups etc.)
 - `game.deaths(p, u)` Deaths of unit `u` for player `p`.
 - `game.kills(p, u)` Kills of unit `u` for player `p`.
 - `game.upgrade_level(p, u)` Upgrade level of upgrade `u` for player `p`.

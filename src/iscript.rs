@@ -665,6 +665,7 @@ impl<'a, 'b> CustomCtx<'a, 'b> {
                     ImageVar::DrawfuncParam => (*image).drawfunc_param as i32,
                     ImageVar::Frame => (*image).frame as i32,
                     ImageVar::BaseFrame => (*image).frameset as i32,
+                    ImageVar::Flags => (*image).flags as i32,
                 }
             },
             Place::Game(ty) => unsafe {
@@ -2118,6 +2119,7 @@ impl<'a> IscriptRunner<'a> {
                     }
                     ImageVar::Frame => bw_print!("Cannot set frame"),
                     ImageVar::BaseFrame => bw_print!("Cannot set base frame"),
+                    ImageVar::Flags => (*image).flags = value as u16,
                 }
             }
             Place::Game(ty) => {
