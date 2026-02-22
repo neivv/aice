@@ -535,12 +535,18 @@ expressions that are evaluated every time to determine which variable will be ac
 - `flingy.position_x` and `flingy.position_y` NOTE: Not assignable. x / y coordinates (in pixels) of the flingy.
 - `flingy.move_target_x` and `flingy.move_target_y` The point towards which a flingy is moving
   (equivalent to position when not moving).
-- `flingy.facing_direction` Flingy's facing direction in degrees (compatible with sin / cos without
-  extra conversions).
-- `flingy.movement_direction` Direction towards which the flingy is moving. Not equivalent to facing
+- `flingy.facing_direction_deg` (Old: `flingy.facing_direction`)
+  Flingy's facing direction in degrees (compatible with sin / cos without extra conversions).
+- `flingy.movement_direction_deg` (Old: `flingy.movement_direction`)
+  Direction towards which the flingy is moving. Not equivalent to facing
   direction if the a flingy is turning while having flingy.dat momentum.
-- `flingy.target_direction` Direction towards which the flingy is turning, more or less the
+- `flingy.target_direction_deg` (Old: `flingy.target_direction`)
+  Direction towards which the flingy is turning, more or less the
   direction in which the move target point is.
+- `flingy.facing_direction_bw` Flingy's facing direction in BW units (0 to 255, with 0 being
+  directly up)
+- `flingy.movement_direction_bw` Direction towards which the flingy is moving in BW units.
+- `flingy.target_direction_bw` Direction towards which the flingy is turning in BW units.
 - `flingy.turn_speed` How many *BW direction units* the flingy turns in a frame. These are not
   converted to degrees, but are in a 256-unit circle. The value for units is specified in
   flingy.dat,
@@ -695,8 +701,8 @@ bullets accelerate one unit per frame.
     * 0x1000 Uninterruptable order
     * 0x2000 nobrkcodestart active
     * 0x4000 Has creep that should disappear (Only set on dead units when lot of creep is disappearing)
-    * 0x8000 Under disruption web (BW recalculates this each frame; writing from iscript may end up
-      being useless if the recalculation code is ran between write and unit attacking)
+    * 0x8000 Under disruption web (BW recalculates this each frame; writing from iscript makes the
+      unit able to fire if the flag is cleared immediately before the attack opcode like fireweapon)
     * 0x00010000 Can turn?
     * 0x00020000 Reacts? "Intelligent"?
     * 0x00040000 Unstacking

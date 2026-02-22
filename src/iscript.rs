@@ -478,15 +478,18 @@ impl<'a, 'b> CustomCtx<'a, 'b> {
                 match ty {
                     FlingyVar::MoveTargetX => (*flingy).move_target.pos.x as i32,
                     FlingyVar::MoveTargetY => (*flingy).move_target.pos.y as i32,
-                    FlingyVar::FacingDirection => {
+                    FlingyVar::FacingDirectionDegrees => {
                         bw_angle_to_degrees((*flingy).facing_direction) as i32
                     }
-                    FlingyVar::MovementDirection => {
+                    FlingyVar::MovementDirectionDegrees => {
                         bw_angle_to_degrees((*flingy).movement_direction) as i32
                     }
-                    FlingyVar::TargetDirection => {
+                    FlingyVar::TargetDirectionDegrees => {
                         bw_angle_to_degrees((*flingy).target_direction) as i32
                     }
+                    FlingyVar::FacingDirectionBw => (*flingy).facing_direction as i32,
+                    FlingyVar::MovementDirectionBw => (*flingy).movement_direction as i32,
+                    FlingyVar::TargetDirectionBw => (*flingy).target_direction as i32,
                     FlingyVar::TurnSpeed => (*flingy).turn_speed as i32,
                     FlingyVar::Acceleration => (*flingy).acceleration as i32,
                     FlingyVar::TopSpeed => (*flingy).top_speed as i32,
@@ -2717,15 +2720,18 @@ unsafe fn set_flingy_var(flingy: *mut bw::Flingy, ty: FlingyVar, value: i32) {
             (*flingy).next_move_waypoint.y = value as i16;
             (*flingy).unk_move_waypoint.y = value as i16;
         }
-        FlingyVar::FacingDirection => {
+        FlingyVar::FacingDirectionDegrees => {
             (*flingy).facing_direction = degrees_to_bw_angle(value);
         }
-        FlingyVar::MovementDirection => {
+        FlingyVar::MovementDirectionDegrees => {
             (*flingy).movement_direction = degrees_to_bw_angle(value);
         }
-        FlingyVar::TargetDirection => {
+        FlingyVar::TargetDirectionDegrees => {
             (*flingy).target_direction = degrees_to_bw_angle(value);
         }
+        FlingyVar::FacingDirectionBw => (*flingy).facing_direction = value as u8,
+        FlingyVar::MovementDirectionBw => (*flingy).movement_direction = value as u8,
+        FlingyVar::TargetDirectionBw => (*flingy).target_direction = value as u8,
         FlingyVar::TurnSpeed => (*flingy).turn_speed = value as u8,
         FlingyVar::Acceleration => (*flingy).acceleration = clamp_i32_u16(value),
         FlingyVar::TopSpeed => (*flingy).top_speed = value.max(0) as u32,
